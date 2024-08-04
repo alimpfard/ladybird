@@ -491,6 +491,14 @@ public:
     }
 
     template<typename Callback>
+    [[nodiscard]] ALWAYS_INLINE T value_or_lazy_evaluated(Callback callback)
+    {
+        if (m_pointer != nullptr)
+            return value();
+        return callback();
+    }
+
+    template<typename Callback>
     [[nodiscard]] ALWAYS_INLINE Optional<T> value_or_lazy_evaluated_optional(Callback callback) const
     {
         if (m_pointer != nullptr)

@@ -43,8 +43,11 @@ struct BytecodeInterpreter : public Interpreter {
         BytecodeInterpreter& m_interpreter;
     };
 
+    using InterpretError = Variant<Trap, JS::Completion>;
+    template<u64 opcode>
+    ErrorOr<void, InterpretError> interpret(Configuration&, InstructionPointer, Instruction const&);
+
 protected:
-    virtual void interpret(Configuration&, InstructionPointer&, Instruction const&);
     void branch_to_label(Configuration&, LabelIndex);
     template<typename ReadT, typename PushT>
     void load_and_push(Configuration&, Instruction const&);
@@ -67,10 +70,10 @@ protected:
     template<typename M, template<typename> typename SetSign, typename VectorType = Native128ByteVectorOf<M, SetSign>>
     VectorType pop_vector(Configuration&);
     void store_to_memory(Configuration&, Instruction::MemoryArgument const&, ReadonlyBytes data, u32 base);
-    void call_address(Configuration&, FunctionAddress);
+    ErrorOr<void, InterpretError> call_address(Configuration&, FunctionAddress);
 
     template<typename PopTypeLHS, typename PushType, typename Operator, typename PopTypeRHS = PopTypeLHS, typename... Args>
-    void binary_numeric_operation(Configuration&, Args&&...);
+    ErrorOr<void, InterpretError> binary_numeric_operation(Configuration&, Args&&...);
 
     template<typename PopType, typename PushType, typename Operator, typename... Args>
     void unary_operation(Configuration&, Args&&...);
@@ -101,7 +104,7 @@ struct DebuggerBytecodeInterpreter : public BytecodeInterpreter {
     Function<bool(Configuration&, InstructionPointer&, Instruction const&, Interpreter const&)> post_interpret_hook;
 
 private:
-    virtual void interpret(Configuration&, InstructionPointer&, Instruction const&) override;
+    virtual void interpret(Configuration&) override;
 };
 
 }

@@ -464,6 +464,10 @@ namespace Instructions {
 ENUMERATE_WASM_OPCODES(M)
 #undef M
 
+#define ONE(name, value) 1
+constexpr size_t TotalOpcodeCount = 0 ENUMERATE_WASM_OPCODES(+ONE);
+#undef ONE
+
 }
 
 }
