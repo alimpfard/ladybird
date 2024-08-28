@@ -9,11 +9,18 @@
 #include <AK/HashMap.h>
 #include <LibIPC/ConnectionFromClient.h>
 #include <LibWebSocket/WebSocket.h>
+#include <LibDNS/Resolver.h>
 #include <RequestServer/Forward.h>
 #include <RequestServer/RequestClientEndpoint.h>
 #include <RequestServer/RequestServerEndpoint.h>
 
 namespace RequestServer {
+
+struct Resolver : public RefCounted<Resolver>, Weakable<Resolver> {
+    Resolver(Function<ErrorOr<DNS::Resolver::SocketResult>()> create_socket) : dns(move(create_socket)) { }
+
+    DNS::Resolver dns;
+};
 
 class ConnectionFromClient final
     : public IPC::ConnectionFromClient<RequestClientEndpoint, RequestServerEndpoint> {
@@ -61,6 +68,7 @@ private:
     RefPtr<Core::Timer> m_timer;
     HashMap<int, NonnullRefPtr<Core::Notifier>> m_read_notifiers;
     HashMap<int, NonnullRefPtr<Core::Notifier>> m_write_notifiers;
+    NonnullRefPtr<Resolver> m_resolver;
 };
 
 }

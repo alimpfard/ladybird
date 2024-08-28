@@ -25,6 +25,22 @@ ByteString g_default_certificate_path;
 static HashMap<int, RefPtr<ConnectionFromClient>> s_connections;
 static IDAllocator s_client_ids;
 
+static WeakPtr<Resolver> s_resolver {};
+static NonnullRefPtr<Resolver> default_resolver()
+{
+    if (auto resolver = s_resolver.strong_ref())
+        return *resolver;
+    auto resolver = make_ref_counted<Resolver>([] -> ErrorOr<DNS::Resolver::SocketResult> {
+        return DNS::Resolver::SocketResult {
+            MaybeOwned<Core::Socket>(TRY(TLS::TLSv12::connect("dns.cxbyte.me", 853))),
+            DNS::Resolver::ConnectionMode::TCP,
+        };
+    });
+
+    s_resolver = resolver;
+    return resolver;
+}
+
 struct ConnectionFromClient::ActiveRequest {
     CURLM* multi { nullptr };
     CURL* easy { nullptr };
@@ -176,6 +192,7 @@ int ConnectionFromClient::on_timeout_callback(void*, long timeout_ms, void* user
 
 ConnectionFromClient::ConnectionFromClient(NonnullOwnPtr<Core::LocalSocket> socket)
     : IPC::ConnectionFromClient<RequestClientEndpoint, RequestServerEndpoint>(*this, move(socket), s_client_ids.allocate())
+    , m_resolver(default_resolver())
 {
     s_connections.set(client_id(), *this);
 
@@ -247,6 +264,9 @@ void ConnectionFromClient::start_request(i32 request_id, ByteString const& metho
         return;
     }
 
+    auto host = url.serialized_host().value().to_byte_string();
+    auto promise = m_resolver->dns.lookup(host, DNS::Messages::Class::IN, Array{DNS::Messages::ResourceType::A, DNS::Messages::ResourceType::AAAA}.span());
+
     auto* easy = curl_easy_init();
     if (!easy) {
         dbgln("StartRequest: Failed to initialize curl easy handle");
@@ -313,6 +333,22 @@ void ConnectionFromClient::start_request(i32 request_id, ByteString const& metho
 
     set_option(CURLOPT_HEADERFUNCTION, &on_header_received);
     set_option(CURLOPT_HEADERDATA, reinterpret_cast<void*>(request.ptr()));
+
+    auto dns_result = MUST(promise->await());
+    dbgln("Resolved {} to {} addresses:", host, dns_result->cached_addresses().size());
+    for (auto& addr : dns_result->cached_addresses()) {
+        addr.visit(
+            [&](IPv4Address const& ipv4) {
+                dbgln("  - {}", ipv4.to_byte_string());
+                auto formatted_address = ByteString::formatted("{}:{}:{}", host, url.port_or_default(), ipv4.to_byte_string());
+                curl_easy_setopt(easy, CURLOPT_RESOLVE, formatted_address.characters());
+            },
+            [&](IPv6Address const& ipv6) {
+                dbgln("  - {}", ipv6.to_string());
+                auto formatted_address = ByteString::formatted("[{}]:{}:{}", host, url.port_or_default(), MUST(ipv6.to_string()));
+                curl_easy_setopt(easy, CURLOPT_RESOLVE, formatted_address.characters());
+            });
+    }
 
     auto result = curl_multi_add_handle(m_curl_multi, easy);
     VERIFY(result == CURLM_OK);
