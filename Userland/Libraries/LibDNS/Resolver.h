@@ -66,11 +66,15 @@ public:
     void set_id(u16 id) { m_id = id; }
     u16 id() { return m_id; }
 
+    void set_dnssec_validated(bool validated) { m_dnssec_validated = validated; }
+    bool is_dnssec_validated() const { return m_dnssec_validated; }
+
     bool is_valid() const { return m_valid; }
     Messages::DomainName const& name() const { return m_name; }
 
 private:
     bool m_valid { false };
+    bool m_dnssec_validated { false };
     Messages::DomainName m_name;
     Vector<Messages::ResourceRecord> m_cached_records;
     HashTable<Messages::ResourceType> m_desired_types;
@@ -82,6 +86,12 @@ public:
     enum class ConnectionMode {
         TCP,
         UDP,
+    };
+
+    struct LookupOptions {
+        bool validate_dnssec_locally { false };
+
+        static LookupOptions default_() { return {}; }
     };
 
     struct SocketResult {
@@ -150,23 +160,30 @@ public:
         });
     }
 
-    NonnullRefPtr<Core::Promise<NonnullRefPtr<LookupResult const>>> lookup(ByteString name, Messages::Class class_ = Messages::Class::IN)
+    NonnullRefPtr<Core::Promise<NonnullRefPtr<LookupResult const>>> lookup(ByteString name, Messages::Class class_ = Messages::Class::IN, LookupOptions options = LookupOptions::default_())
     {
-        return lookup(move(name), class_, Array { Messages::ResourceType::A, Messages::ResourceType::AAAA });
+        return lookup(move(name), class_, Array { Messages::ResourceType::A, Messages::ResourceType::AAAA }, options);
     }
 
-    NonnullRefPtr<Core::Promise<NonnullRefPtr<LookupResult const>>> lookup(ByteString name, Messages::Class class_, Span<Messages::ResourceType const> desired_types)
+    NonnullRefPtr<Core::Promise<NonnullRefPtr<LookupResult const>>> lookup(ByteString name, Messages::Class class_, Span<Messages::ResourceType const> desired_types, LookupOptions options = LookupOptions::default_())
     {
         auto promise = Core::Promise<NonnullRefPtr<LookupResult const>>::construct();
 
         if (auto result = lookup_in_cache(name, class_, desired_types)) {
-            promise->resolve(result.release_nonnull());
-            return promise;
+            if (!options.validate_dnssec_locally || result->is_dnssec_validated()) {
+                promise->resolve(result.release_nonnull());
+                return promise;
+            }
         }
 
         auto domain_name = Messages::DomainName::from_string(name);
 
         if (!has_connection()) {
+            if (options.validate_dnssec_locally) {
+                promise->reject(Error::from_string_literal("No connection available to validate DNSSEC"));
+                return promise;
+            }
+
             // Use system resolver
             // FIXME: Use an underlying resolver instead.
             dbgln("Not ready to resolve, using system resolver and skipping cache for {}", name);
@@ -194,7 +211,7 @@ public:
                 if (cache.contains(name)) {
                     auto ptr = *cache.get(name);
 
-                    already_in_cache = true;
+                    already_in_cache = !options.validate_dnssec_locally || ptr->is_dnssec_validated();
                     for (auto const& type : desired_types) {
                         if (!ptr->has_record_of_type(type, true)) {
                             already_in_cache = false;
@@ -211,6 +228,7 @@ public:
                 return *existing;
 
             auto ptr = make_ref_counted<LookupResult>(domain_name);
+            ptr->set_dnssec_validated(options.validate_dnssec_locally);
             for (auto const& type : desired_types)
                 ptr->will_add_record_of_type(type);
             cache.set(name, ptr);
@@ -258,6 +276,29 @@ public:
                 .class_ = class_,
             });
         }
+
+        if (options.validate_dnssec_locally) {
+            query.header.additional_count = 1;
+            query.header.options.set_checking_disabled(true);
+            query.header.options.set_authenticated_data(true);
+            auto opt = Messages::Records::OPT {
+                .udp_payload_size = 1024,
+                .extended_rcode_and_flags = 0,
+                .options = {},
+            };
+            opt.set_dnssec_ok(true);
+
+            query.additional_records.append(Messages::ResourceRecord {
+                .name = Messages::DomainName::from_string(""sv),
+                .type = Messages::ResourceType::OPT,
+                .class_ = class_,
+                .ttl = 0,
+                .record = move(opt),
+                .raw = {},
+            });
+        }
+
+        result->set_id(query.header.id);
 
         auto cached_entry = m_pending_lookups.with_write_locked([&](auto& pending_lookups) -> RefPtr<Core::Promise<NonnullRefPtr<LookupResult const>>> {
             // One more try to make sure we're not overwriting an existing lookup
@@ -340,6 +381,9 @@ private:
                     return Error::from_string_literal("No pending lookup found for this message");
 
                 auto result = lookup->result.strong_ref();
+                if (result->is_dnssec_validated())
+                    return validate_dnssec(move(message), *lookup);
+
                 for (auto& record : message.answers)
                     result->add_record(move(record));
 
@@ -352,6 +396,56 @@ private:
                 continue;
             }
         }
+    }
+
+    ErrorOr<void> validate_dnssec(Messages::Message message, PendingLookup& lookup)
+    {
+        return {};
+
+        struct RecordAndRRSIG {
+            Messages::ResourceRecord* record { nullptr };
+            Messages::Records::RRSIG* rrsig { nullptr };
+        };
+        HashMap<Messages::ResourceType, RecordAndRRSIG> records_with_rrsigs;
+        for (auto& record : message.answers) {
+            if (record.type == Messages::ResourceType::RRSIG) {
+                auto& rrsig = record.record.get<Messages::Records::RRSIG>();
+                if (auto found = records_with_rrsigs.get(rrsig.type_covered); found.has_value())
+                    found->rrsig = &rrsig;
+                else
+                    records_with_rrsigs.set(rrsig.type_covered, { nullptr, &rrsig });
+            } else {
+                if (auto found = records_with_rrsigs.get(record.type); found.has_value())
+                    found->record = &record;
+                else
+                    records_with_rrsigs.set(record.type, { &record, nullptr });
+            }
+        }
+
+        auto name = lookup.result->name();
+
+        // auto now = UnixDateTime::now();
+        for (auto& [type, pair] : records_with_rrsigs) {
+            if (!pair.record)
+                continue;
+
+            // auto& record = *pair.record;
+            // auto& rrsig = *pair.rrsig;
+
+            this->lookup(lookup.name, Messages::Class::IN, Array { Messages::ResourceType::DNSKEY }.span(), { .validate_dnssec_locally = true })
+                ->when_resolved([&](NonnullRefPtr<LookupResult const>& dnskey_lookup_result) {
+                    dbgln("DNSKEY for {}:", name.to_string());
+                    for (auto& record : dnskey_lookup_result->records())
+                        dbgln("DNSKEY: {}", record.to_string());
+                    lookup.promise->reject(Error::from_string_literal("WIP"));
+                })
+                .when_rejected([&](auto& error) {
+                    dbgln("Failed to resolve DNSKEY for {}: {}", name.to_string(), error);
+                    lookup.promise->reject(move(error));
+                });
+        }
+
+        return {};
     }
 
     bool has_connection(bool attempt_restart = true)
