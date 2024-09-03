@@ -58,7 +58,8 @@
       "name": "vulkan-headers",
       "platform": "!android"
     },
-    "woff2"
+    "woff2",
+    "libxml2"
   ],
   "overrides": [
     {

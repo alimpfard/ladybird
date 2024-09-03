@@ -149,6 +149,8 @@ interface Document : Node {
     boolean queryCommandState(DOMString commandId);
     boolean queryCommandSupported(DOMString commandId);
     DOMString queryCommandValue(DOMString commandId);
+
+    undefined evaluate(DOMString expression, optional Node? contextNode = null);
 };
 
 dictionary ElementCreationOptions {

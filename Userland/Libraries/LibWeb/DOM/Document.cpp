@@ -8,11 +8,13 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/BumpAllocator.h>
 #include <AK/CharacterTypes.h>
 #include <AK/Debug.h>
 #include <AK/GenericLexer.h>
 #include <AK/InsertionSort.h>
 #include <AK/StringBuilder.h>
+#include <LibWeb/DOM/NamedNodeMap.h>
 #include <AK/Utf8View.h>
 #include <LibCore/Timer.h>
 #include <LibJS/Runtime/Array.h>
@@ -129,6 +131,9 @@
 #include <LibWeb/WebIDL/AbstractOperations.h>
 #include <LibWeb/WebIDL/DOMException.h>
 #include <LibWeb/WebIDL/ExceptionOr.h>
+
+#include <libxml/tree.h>
+#include <libxml/xpath.h>
 
 namespace Web::DOM {
 
@@ -4952,6 +4957,171 @@ bool Document::query_command_supported(String)
 String Document::query_command_value(String)
 {
     return String {};
+}
+
+WebIDL::ExceptionOr<void> Document::evaluate(String expression, JS::GCPtr<Node> context_node)
+{
+    auto& context = context_node ? *context_node : *this;
+
+    using MirroredNode = Variant<xmlNodePtr, xmlDocPtr, xmlAttrPtr>;
+    Function<MirroredNode (Node const&)> mirror_node = [&mirror_node](Node const& node) -> MirroredNode {
+        switch (node.type()) {
+        case NodeType::INVALID:
+            return static_cast<xmlNodePtr>(nullptr);
+        case NodeType::ELEMENT_NODE: {
+            auto& element = static_cast<Element const&>(node);
+            ByteString name = element.local_name().bytes_as_string_view();
+            auto* xml_element = xmlNewNode(nullptr, reinterpret_cast<xmlChar const*>(name.characters()));
+            xml_element->_private = bit_cast<void*>(&node);
+            for (size_t i = 0; i < element.attribute_list_size(); ++i) {
+                auto& attribute = *element.attributes()->item(i);
+                ByteString attr_name = attribute.name().bytes_as_string_view();
+                ByteString attr_value = attribute.value().bytes_as_string_view();
+                auto attr = xmlSetProp(xml_element, reinterpret_cast<xmlChar const*>(attr_name.characters()), reinterpret_cast<xmlChar const*>(attr_value.characters()));
+                attr->_private = bit_cast<void*>(&attribute);
+            }
+            auto children = element.children_as_vector();
+            for (auto& child : children) {
+                mirror_node(*child).visit(
+                    [&](xmlDocPtr) { VERIFY_NOT_REACHED(); },
+                    [&](xmlAttrPtr attr) {
+                        xmlCopyProp(xml_element, attr);
+                        xmlFreeProp(attr);
+                    },
+                    [&](xmlNodePtr child) { xmlAddChild(xml_element, child); });
+            }
+            return xml_element;
+        }
+        case NodeType::ATTRIBUTE_NODE: {
+            auto& attribute = static_cast<Attr const&>(node);
+            ByteString name = attribute.name().bytes_as_string_view();
+            ByteString value = attribute.value().bytes_as_string_view();
+            auto* xml_attribute = xmlNewProp(nullptr, reinterpret_cast<xmlChar const*>(name.characters()), reinterpret_cast<xmlChar const*>(value.characters()));
+            xml_attribute->_private = bit_cast<void*>(&node);
+            return xml_attribute;
+        }
+        case NodeType::TEXT_NODE: {
+            auto& text = static_cast<Text const&>(node);
+            auto* xml_text = xmlNewText(reinterpret_cast<xmlChar const*>(text.data().to_byte_string().characters()));
+            xml_text->_private = bit_cast<void*>(&node);
+            return xml_text;
+        }
+        case NodeType::CDATA_SECTION_NODE: {
+            auto& cdata = static_cast<CDATASection const&>(node);
+            ByteString data = cdata.data().bytes_as_string_view();
+            auto* xml_cdata = xmlNewCDataBlock(nullptr, reinterpret_cast<xmlChar const*>(data.characters()), data.length());
+            xml_cdata->_private = bit_cast<void*>(&node);
+            return xml_cdata;
+        }
+        case NodeType::ENTITY_REFERENCE_NODE: {
+            TODO();
+        }
+        case NodeType::ENTITY_NODE: {
+            TODO();
+        }
+        case NodeType::PROCESSING_INSTRUCTION_NODE: {
+            auto& processing_instruction = static_cast<ProcessingInstruction const&>(node);
+            auto* xml_pi = xmlNewPI(reinterpret_cast<xmlChar const*>(processing_instruction.target().to_byte_string().characters()), reinterpret_cast<xmlChar const*>(processing_instruction.data().to_byte_string().characters()));
+            xml_pi->_private = bit_cast<void*>(&node);
+            return xml_pi;
+        }
+        case NodeType::COMMENT_NODE: {
+            auto& comment = static_cast<Comment const&>(node);
+            auto* xml_comment = xmlNewComment(reinterpret_cast<xmlChar const*>(comment.data().to_byte_string().characters()));
+            xml_comment->_private = bit_cast<void*>(&node);
+            return xml_comment;
+        }
+        case NodeType::DOCUMENT_NODE: {
+            auto& document = static_cast<Document const&>(node);
+            auto* xml_document = xmlNewDoc(nullptr);
+            xml_document->_private = bit_cast<void*>(&node);
+            auto children = document.children_as_vector();
+            for (auto& child : children) {
+                if (xmlDocGetRootElement(xml_document) != nullptr)
+                    VERIFY_NOT_REACHED();
+
+                mirror_node(*child).visit(
+                    [&](xmlDocPtr) { VERIFY_NOT_REACHED(); },
+                    [&](xmlAttrPtr) { VERIFY_NOT_REACHED(); },
+                    [&](xmlNodePtr child) { xmlDocSetRootElement(xml_document, child); });
+            }
+            return xml_document;
+        }
+        case NodeType::DOCUMENT_TYPE_NODE: {
+            TODO();
+        }
+        case NodeType::DOCUMENT_FRAGMENT_NODE: {
+            auto& fragment = static_cast<DocumentFragment const&>(node);
+            auto* xml_fragment = xmlNewDocFragment(nullptr);
+            xml_fragment->_private = bit_cast<void*>(&node);
+            auto children = fragment.children_as_vector();
+            for (auto& child : children) {
+                mirror_node(*child).visit(
+                    [&](xmlDocPtr) { VERIFY_NOT_REACHED(); },
+                    [&](xmlAttrPtr) { VERIFY_NOT_REACHED(); },
+                    [&](xmlNodePtr child) { xmlAddChild(xml_fragment, child); });
+            }
+            return xml_fragment;
+        }
+        case NodeType::NOTATION_NODE: {
+            TODO();
+        }
+        }
+    };
+
+    // Parse the expression as xpath
+    ByteString bytes = expression.bytes_as_string_view();
+    auto compiled = xmlXPathCompile(reinterpret_cast<xmlChar const*>(bytes.characters()));
+    if (!compiled)
+        return WebIDL::SyntaxError::create(realm(), "Invalid XPath expression"_string);
+
+    // Get the context node
+    auto mirrored_dom = mirror_node(context);
+    ScopeGuard dom_cleanup = [&] {
+        mirrored_dom.visit(
+            [&](xmlNodePtr node) { xmlFreeNode(node); },
+            [&](xmlDocPtr document) { xmlFreeDoc(document); },
+            [&](xmlAttrPtr attr) { xmlFreeProp(attr); });
+    };
+
+    // Create the xpath context
+    auto xpath_context = xmlXPathNewContext(nullptr);
+
+    // Set the context node
+    mirrored_dom.visit(
+        [&](xmlNodePtr node) {
+            xmlXPathSetContextNode(node, xpath_context);
+        },
+        [&](xmlDocPtr document) {
+            xmlXPathSetContextNode(xmlDocGetRootElement(document), xpath_context);
+        },
+        [&](xmlAttrPtr) {
+            VERIFY_NOT_REACHED();
+        });
+
+    // Evaluate the expression
+    auto result = xmlXPathCompiledEval(compiled, xpath_context);
+
+    // Clean up
+    xmlXPathFreeContext(xpath_context);
+    xmlXPathFreeCompExpr(compiled);
+
+    if (!result) {
+        dbgln("No result");
+        return {};
+    }
+    // Convert the result to a DOM node
+    dbgln("result = {}, as node set = {}", result, result->nodesetval);
+    if (!result->nodesetval || result->nodesetval->nodeNr == 0) {
+        dbgln("No nodes");
+        return {};
+    }
+
+    auto* node = result->nodesetval->nodeTab[0];
+    auto* dom_node = static_cast<Node*>(node->_private);
+
+    dbgln("Result: {}", dom_node->node_name());
+    return {};
 }
 
 // https://drafts.csswg.org/resize-observer-1/#calculate-depth-for-node

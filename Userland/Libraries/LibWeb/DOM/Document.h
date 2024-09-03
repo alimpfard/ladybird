@@ -565,6 +565,8 @@ public:
     bool query_command_supported(String command_id);
     String query_command_value(String command_id);
 
+    WebIDL::ExceptionOr<void> evaluate(String expression, JS::GCPtr<Node> context_node);
+
     bool is_allowed_to_use_feature(PolicyControlledFeature) const;
 
     void did_stop_being_active_document_in_navigable();
