@@ -24,6 +24,47 @@ ByteString g_default_certificate_path;
 static HashMap<int, RefPtr<ConnectionFromClient>> s_connections;
 static IDAllocator s_client_ids;
 static long s_connect_timeout_seconds = 90L;
+static HashMap<ByteString, ByteString> g_dns_cache; // host -> curl "resolve" string
+static struct {
+    Optional<Core::SocketAddress> server_address;
+    Optional<ByteString> server_hostname;
+    u16 port;
+    bool use_dns_over_tls = true;
+} g_dns_info;
+
+static WeakPtr<Resolver> s_resolver {};
+static NonnullRefPtr<Resolver> default_resolver()
+{
+    if (auto resolver = s_resolver.strong_ref())
+        return *resolver;
+    auto resolver = make_ref_counted<Resolver>([] -> ErrorOr<DNS::Resolver::SocketResult> {
+        if (!g_dns_info.server_address.has_value()) {
+            if (!g_dns_info.server_hostname.has_value())
+                return Error::from_string_literal("No DNS server configured");
+
+            auto resolved = TRY(default_resolver()->dns.lookup(*g_dns_info.server_hostname)->await());
+            if (resolved->cached_addresses().is_empty())
+                return Error::from_string_literal("Failed to resolve DNS server hostname");
+            auto address = resolved->cached_addresses().first().visit([](auto& addr) -> Core::SocketAddress { return { addr, g_dns_info.port }; });
+            g_dns_info.server_address = address;
+        }
+
+        if (g_dns_info.use_dns_over_tls) {
+            return DNS::Resolver::SocketResult {
+                MaybeOwned<Core::Socket>(TRY(TLS::TLSv12::connect(*g_dns_info.server_address, *g_dns_info.server_hostname))),
+                DNS::Resolver::ConnectionMode::TCP,
+            };
+        }
+
+        return DNS::Resolver::SocketResult {
+            MaybeOwned<Core::Socket>(TRY(Core::BufferedSocket<Core::UDPSocket>::create(TRY(Core::UDPSocket::connect(*g_dns_info.server_address))))),
+            DNS::Resolver::ConnectionMode::UDP,
+        };
+    });
+
+    s_resolver = resolver;
+    return resolver;
+}
 
 struct ConnectionFromClient::ActiveRequest {
     CURLM* multi { nullptr };
@@ -199,6 +240,7 @@ int ConnectionFromClient::on_timeout_callback(void*, long timeout_ms, void* user
 
 ConnectionFromClient::ConnectionFromClient(IPC::Transport transport)
     : IPC::ConnectionFromClient<RequestClientEndpoint, RequestServerEndpoint>(*this, move(transport), s_client_ids.allocate())
+    , m_resolver(default_resolver())
 {
     s_connections.set(client_id(), *this);
 
@@ -264,6 +306,66 @@ Messages::RequestServer::IsSupportedProtocolResponse ConnectionFromClient::is_su
     return protocol == "http"sv || protocol == "https"sv;
 }
 
+void ConnectionFromClient::set_dns_server(ByteString const& host_or_address, u16 port, bool use_tls)
+{
+    if (host_or_address == g_dns_info.server_hostname && port == g_dns_info.port && use_tls == g_dns_info.use_dns_over_tls)
+        return;
+
+    auto result = [&] -> ErrorOr<void> {
+        Core::SocketAddress addr;
+        if (auto v4 = IPv4Address::from_string(host_or_address); v4.has_value())
+            addr = { v4.value(), port };
+        else if (auto v6 = IPv6Address::from_string(host_or_address); v6.has_value())
+            addr = { v6.value(), port };
+        else
+            TRY(m_resolver->dns.lookup(host_or_address)->await())->cached_addresses().first().visit([&](auto& address) { addr = { address, port }; });
+
+        g_dns_info.server_address = addr;
+        g_dns_info.server_hostname = host_or_address;
+        g_dns_info.port = port;
+        g_dns_info.use_dns_over_tls = use_tls;
+        return {};
+    }();
+
+    if (result.is_error())
+        dbgln("Failed to set DNS server: {}", result.error());
+    else
+        m_resolver->dns.reset_connection();
+}
+
+static ErrorOr<curl_slist*> lookup_host_and_add_to_curl_cache(ByteString host, u16 port)
+{
+    auto dns_promise = default_resolver()->dns.lookup(host, DNS::Messages::Class::IN, Array { DNS::Messages::ResourceType::A, DNS::Messages::ResourceType::AAAA }.span());
+    auto resolve_result = dns_promise->await();
+    if (resolve_result.is_error()) {
+        dbgln("StartRequest: DNS lookup failed for '{}': {}", host, resolve_result.error());
+        return Error::from_string_literal("Resolve failed");
+    }
+
+    auto dns_result = resolve_result.release_value();
+    if (dns_result->records().is_empty()) {
+        dbgln("StartRequest: DNS lookup failed for '{}'", host);
+        return Error::from_string_literal("Resolve failed");
+    }
+
+    StringBuilder resolve_opt_builder;
+    resolve_opt_builder.appendff("{}:{}:", host, port);
+    auto first = true;
+    for (auto& addr : dns_result->cached_addresses()) {
+        auto formatted_address = addr.visit(
+            [&](IPv4Address const& ipv4) { return ipv4.to_byte_string(); },
+            [&](IPv6Address const& ipv6) { return MUST(ipv6.to_string()).to_byte_string(); });
+        if (!first)
+            resolve_opt_builder.append(',');
+        first = false;
+        resolve_opt_builder.append(formatted_address);
+    }
+
+    auto formatted_address = resolve_opt_builder.to_byte_string();
+    g_dns_cache.set(host, formatted_address);
+    return curl_slist_append(nullptr, formatted_address.characters());
+}
+
 void ConnectionFromClient::start_request(i32 request_id, ByteString const& method, URL::URL const& url, HTTP::HeaderMap const& request_headers, ByteBuffer const& request_body, Core::ProxyData const& proxy_data)
 {
     if (!url.is_valid()) {
@@ -271,6 +373,15 @@ void ConnectionFromClient::start_request(i32 request_id, ByteString const& metho
         async_request_finished(request_id, 0, Requests::NetworkError::MalformedUrl);
         return;
     }
+
+    auto host = url.serialized_host().value().to_byte_string();
+    auto maybe_resolve_list = lookup_host_and_add_to_curl_cache(host, url.port_or_default());
+    if (maybe_resolve_list.is_error()) {
+        async_request_finished(request_id, 0, Requests::NetworkError::UnableToResolveHost);
+        return;
+    }
+
+    auto resolve_list = maybe_resolve_list.release_value();
 
     auto* easy = curl_easy_init();
     if (!easy) {
@@ -339,6 +450,8 @@ void ConnectionFromClient::start_request(i32 request_id, ByteString const& metho
 
     set_option(CURLOPT_HEADERFUNCTION, &on_header_received);
     set_option(CURLOPT_HEADERDATA, reinterpret_cast<void*>(request.ptr()));
+
+    set_option(CURLOPT_RESOLVE, resolve_list);
 
     auto result = curl_multi_add_handle(m_curl_multi, easy);
     VERIFY(result == CURLM_OK);
@@ -455,6 +568,10 @@ void ConnectionFromClient::ensure_connection(URL::URL const& url, ::RequestServe
             dbgln("EnsureConnection: Failed to initialize curl easy handle");
             return;
         }
+        auto host = url.serialized_host().value().to_byte_string();
+        auto maybe_resolve_list = lookup_host_and_add_to_curl_cache(host, url.port_or_default());
+        if (maybe_resolve_list.is_error())
+            return;
 
         auto set_option = [easy](auto option, auto value) {
             auto result = curl_easy_setopt(easy, option, value);
@@ -471,11 +588,14 @@ void ConnectionFromClient::ensure_connection(URL::URL const& url, ::RequestServe
         request->url = url_string_value;
         request->is_connect_only = true;
 
+        auto resolve_list = maybe_resolve_list.release_value();
+
         set_option(CURLOPT_PRIVATE, request.ptr());
         set_option(CURLOPT_URL, url_string_value.to_byte_string().characters());
         set_option(CURLOPT_PORT, url.port_or_default());
         set_option(CURLOPT_CONNECTTIMEOUT, s_connect_timeout_seconds);
         set_option(CURLOPT_CONNECT_ONLY, 1L);
+        set_option(CURLOPT_RESOLVE, resolve_list);
 
         auto const result = curl_multi_add_handle(m_curl_multi, easy);
         VERIFY(result == CURLM_OK);
