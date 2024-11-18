@@ -56,8 +56,11 @@ public:
     struct Extern {
         ExternAddress address;
     };
+    struct Exception {
+        // TODO
+    };
 
-    using RefType = Variant<Null, Func, Extern>;
+    using RefType = Variant<Null, Func, Extern, Exception>;
     explicit Reference(RefType ref)
         : m_ref(move(ref))
     {
@@ -92,6 +95,10 @@ public:
         case ValueType::ExternReference:
             // ref.null externref
             m_value = u128(0, 3);
+            break;
+        case ValueType::ExceptionReference:
+            // ref.null exnref
+            m_value = u128(0, 4);
             break;
         }
     }
@@ -139,10 +146,13 @@ public:
         // 1: externref
         // 2: null funcref
         // 3: null externref
+        // 4: null exnref
+        // 5: exnref
         ref.ref().visit(
             [&](Reference::Func const& func) { m_value = u128(bit_cast<u64>(func.address), bit_cast<u64>(func.source_module.ptr())); },
             [&](Reference::Extern const& func) { m_value = u128(bit_cast<u64>(func.address), 1); },
-            [&](Reference::Null const& null) { m_value = u128(0, null.type.kind() == ValueType::Kind::FunctionReference ? 2 : 3); });
+            [&](Reference::Null const& null) { m_value = u128(0, null.type.kind() == ValueType::Kind::FunctionReference ? 2 : null.type.kind() == ValueType::Kind::ExceptionReference ? 4 : 3); },
+            [&](Reference::Exception const&) { m_value = u128(0, 5); }); // TODO
     }
 
     template<SameAs<u128> T>

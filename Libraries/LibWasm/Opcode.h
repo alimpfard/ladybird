@@ -22,6 +22,8 @@ namespace Instructions {
     M(if_, 0x04)                              \
     M(structured_else, 0x05)                  \
     M(structured_end, 0x0b)                   \
+    M(throw_, 0x08)                           \
+    M(throw_ref, 0x0a)                        \
     M(br, 0x0c)                               \
     M(br_if, 0x0d)                            \
     M(br_table, 0x0e)                         \
@@ -31,6 +33,7 @@ namespace Instructions {
     M(drop, 0x1a)                             \
     M(select, 0x1b)                           \
     M(select_typed, 0x1c)                     \
+    M(try_table, 0x1f)                        \
     M(local_get, 0x20)                        \
     M(local_set, 0x21)                        \
     M(local_tee, 0x22)                        \

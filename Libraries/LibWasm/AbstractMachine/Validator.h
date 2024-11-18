@@ -30,6 +30,7 @@ struct Context {
     COWVector<ValueType> elements;
     COWVector<bool> datas;
     COWVector<ValueType> locals;
+    COWVector<TagType> tags;
     Optional<u32> data_count;
     RefPtr<RefRBTree> references { make_ref_counted<RefRBTree>() };
     size_t imported_function_count { 0 };
@@ -68,6 +69,7 @@ public:
     ErrorOr<void, ValidationError> validate(MemorySection const&);
     ErrorOr<void, ValidationError> validate(TableSection const&);
     ErrorOr<void, ValidationError> validate(CodeSection const&);
+    ErrorOr<void, ValidationError> validate(TagSection const&);
     ErrorOr<void, ValidationError> validate(FunctionSection const&) { return {}; }
     ErrorOr<void, ValidationError> validate(DataCountSection const&) { return {}; }
     ErrorOr<void, ValidationError> validate(TypeSection const&) { return {}; }
@@ -134,6 +136,11 @@ public:
         if (index.value() < m_context.tables.size())
             return {};
         return Errors::invalid("TableIndex"sv);
+    }
+
+    ErrorOr<void, ValidationError> validate(TagIndex) const
+    {
+        return Errors::invalid("Unimplemented"sv);
     }
 
     enum class FrameKind {
@@ -276,6 +283,7 @@ public:
     ErrorOr<void, ValidationError> validate(TableType const&);
     ErrorOr<void, ValidationError> validate(MemoryType const&);
     ErrorOr<void, ValidationError> validate(GlobalType const&) { return {}; }
+    ErrorOr<void, ValidationError> validate(TagType const&);
 
 private:
     explicit Validator(Context context)

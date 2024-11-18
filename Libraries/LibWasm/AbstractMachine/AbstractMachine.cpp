@@ -203,6 +203,9 @@ InstantiationResult AbstractMachine::instantiate(Module const& module, Vector<Ex
                     return ByteString::formatted("Function import and extern do not match, parameters: {} vs {}", type.parameters(), other_type.parameters());
                 return {};
             },
+            [&](TagType const&) -> Optional<ByteString> {
+                return "Not implemented"sv;
+            },
             [&](TypeIndex type_index) -> Optional<ByteString> {
                 if (!extern_.has<FunctionAddress>())
                     return "Expected function import"sv;
@@ -459,6 +462,9 @@ Optional<InstantiationError> AbstractMachine::allocate_all_initial_phase(Module 
                     address = GlobalAddress { module_instance.globals()[index.value()] };
                 else
                     dbgln("Failed to export '{}', the exported address ({}) was out of bounds (min: 0, max: {})", entry.name(), index.value(), module_instance.globals().size());
+            },
+            [&](TagIndex const&) {
+                dbgln("Failed to export '{}', tags are not supported yet", entry.name());
             });
 
         if (address.has<Empty>()) {
