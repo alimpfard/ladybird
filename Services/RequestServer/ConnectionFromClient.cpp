@@ -82,6 +82,8 @@ struct ConnectionFromClient::ActiveRequest {
     String url;
     Optional<String> reason_phrase;
     ByteBuffer body;
+    ByteBuffer unread_response;
+    bool waiting_for_client { false };
 
     ActiveRequest(ConnectionFromClient& client, CURLM* multi, CURL* easy, i32 request_id, int writer_fd)
         : multi(multi)
@@ -154,12 +156,11 @@ size_t ConnectionFromClient::on_data_received(void* buffer, size_t size, size_t 
     auto* request = static_cast<ActiveRequest*>(user_data);
     request->flush_headers_if_needed();
 
-    size_t total_size = size * nmemb;
+    size_t blocked_write_attempts = 32;
 
-    size_t remaining_length = total_size;
-    u8 const* remaining_data = static_cast<u8 const*>(buffer);
-    while (remaining_length > 0) {
-        auto result = Core::System::write(request->writer_fd, { remaining_data, remaining_length });
+    auto unread_response = request->unread_response.span();
+    for (; blocked_write_attempts > 0 && !unread_response.is_empty(); blocked_write_attempts--) {
+        auto result = Core::System::write(request->writer_fd, unread_response);
         if (result.is_error()) {
             if (result.error().code() != EAGAIN) {
                 dbgln("on_data_received: write failed: {}", result.error());
@@ -169,13 +170,40 @@ size_t ConnectionFromClient::on_data_received(void* buffer, size_t size, size_t 
             continue;
         }
         auto nwritten = result.value();
-        if (nwritten == 0) {
-            dbgln("on_data_received: write returned 0");
-            VERIFY_NOT_REACHED();
-        }
-        remaining_data += nwritten;
-        remaining_length -= nwritten;
+        unread_response = unread_response.slice(nwritten);
     }
+
+    size_t total_size = size * nmemb;
+    size_t remaining_length = total_size;
+    u8 const* remaining_data = static_cast<u8 const*>(buffer);
+
+    if (unread_response.is_empty()) {
+        request->unread_response.trim(0, true);
+        for (; blocked_write_attempts > 0 && remaining_length > 0; blocked_write_attempts--) {
+            auto result = Core::System::write(request->writer_fd, { remaining_data, remaining_length });
+            if (result.is_error()) {
+                if (result.error().code() != EAGAIN) {
+                    dbgln("on_data_received: write failed: {}", result.error());
+                    VERIFY_NOT_REACHED();
+                }
+                sched_yield();
+                continue;
+            }
+            auto nwritten = result.value();
+            if (nwritten == 0) {
+                dbgln("on_data_received: write returned 0");
+                VERIFY_NOT_REACHED();
+            }
+            remaining_data += nwritten;
+            remaining_length -= nwritten;
+        }
+    } else {
+        request->unread_response.overwrite(0, unread_response.data(), unread_response.size());
+        request->unread_response.resize(unread_response.size());
+    }
+
+    if (remaining_length > 0)
+        request->unread_response.append({ remaining_data, remaining_length });
 
     Optional<u64> content_length_for_ipc;
     curl_off_t content_length = -1;
@@ -518,11 +546,46 @@ void ConnectionFromClient::check_active_requests()
                 }
             }
 
+            if (!request->unread_response.is_empty()) {
+                request->waiting_for_client = true;
+                continue;
+            }
+
             async_request_finished(request->request_id, request->downloaded_so_far, network_error);
         }
 
         m_active_requests.remove(request->request_id);
     }
+
+    HashTable<i32> to_remove;
+    for (auto& entry : m_active_requests) {
+        auto& request = entry.value;
+        if (!request->waiting_for_client)
+            continue;
+        auto unread_response = request->unread_response.span();
+        for (size_t blocked_write_attempts = 32; blocked_write_attempts > 0 && !unread_response.is_empty(); blocked_write_attempts--) {
+            auto result = Core::System::write(request->writer_fd, unread_response);
+            if (result.is_error()) {
+                if (result.error().code() != EAGAIN) {
+                    dbgln("on_data_received: write failed: {}", result.error());
+                    VERIFY_NOT_REACHED();
+                }
+                sched_yield();
+                continue;
+            }
+            auto nwritten = result.value();
+            unread_response = unread_response.slice(nwritten);
+        }
+
+        if (!unread_response.is_empty())
+            continue;
+
+        async_request_finished(request->request_id, request->downloaded_so_far, OptionalNone {});
+        to_remove.set(entry.key);
+    }
+
+    for (auto entry : to_remove)
+        m_active_requests.remove(entry);
 }
 
 Messages::RequestServer::StopRequestResponse ConnectionFromClient::stop_request(i32 request_id)
