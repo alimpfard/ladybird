@@ -158,7 +158,11 @@ public:
     Messages::DomainName const& name() const { return m_name; }
 
     Vector<Messages::Records::DNSKEY> const& used_dnskeys() const { return m_used_dnskeys; }
-    void add_dnskey(Messages::Records::DNSKEY key) { m_used_dnskeys.append(move(key)); }
+    void add_dnskey(Messages::Records::DNSKEY key)
+    {
+        if (m_seen_key_tags.set(key.calculated_key_tag) == AK::HashSetResult::InsertedNewEntry)
+            m_used_dnskeys.append(move(key));
+    }
 
 private:
     bool m_valid { false };
@@ -175,6 +179,7 @@ private:
     Vector<RecordWithExpiration> m_cached_records;
     HashTable<Messages::ResourceType> m_desired_types;
     Vector<Messages::Records::DNSKEY> m_used_dnskeys {};
+    HashTable<u16> m_seen_key_tags;
     u16 m_id { 0 };
 };
 
@@ -803,7 +808,9 @@ private:
                 }
 
                 auto promise = Core::Promise<Empty>::after(move(promises))
-                                   ->when_resolved([result, lookup](Empty) {
+                                   ->when_resolved([result, lookup, keys = move(keys)](Empty) {
+                                       for (auto& key : keys)
+                                           result->add_dnskey(key);
                                        result->set_dnssec_validated(true);
                                        result->set_being_dnssec_validated(false);
                                        result->finished_request();
@@ -818,6 +825,7 @@ private:
 
                 lookup.promise = move(promise);
             };
+
             if (is_root_zone) {
                 resolve_using_keys(Vector<Messages::Records::DNSKEY> {
                     {
@@ -850,7 +858,7 @@ private:
                     for (auto& record : parent_zone_keys)
                         keys.append(record);
                     for (auto& record : key_records)
-                            keys.append(move(record.record).get<Messages::Records::DNSKEY>());
+                        keys.append(move(record.record).get<Messages::Records::DNSKEY>());
                     resolve_using_keys(move(keys));
                 })
                 .when_rejected([=](auto& error) mutable {
