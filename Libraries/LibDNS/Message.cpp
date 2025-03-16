@@ -105,8 +105,8 @@ ErrorOr<size_t> Message::to_raw(ByteBuffer& out) const
 {
     // NOTE: This is minimally implemented to allow for sending queries,
     //       server-side responses are not implemented yet.
-    VERIFY(header.answer_count == 0);
-    VERIFY(header.authority_count == 0);
+    //VERIFY(header.answer_count == 0);
+    //VERIFY(header.authority_count == 0);
 
     auto start_size = out.size();
 
@@ -115,6 +115,12 @@ ErrorOr<size_t> Message::to_raw(ByteBuffer& out) const
 
     for (size_t i = 0; i < header.question_count; i++)
         TRY(questions[i].to_raw(out));
+
+    for (size_t i = 0; i < header.answer_count; i++)
+        TRY(answers[i].to_raw(out));
+
+    for (size_t i = 0; i < header.authority_count; i++)
+        TRY(authorities[i].to_raw(out));
 
     for (size_t i = 0; i < header.additional_count; i++)
         TRY(additional_records[i].to_raw(out));
@@ -1063,6 +1069,18 @@ ErrorOr<Records::MX> Records::MX::from_raw(ParseContext& ctx)
     auto exchange = TRY(DomainName::from_raw(ctx));
     return Records::MX { preference, move(exchange) };
 }
+
+ErrorOr<void> Records::MX::to_raw(ByteBuffer& buffer) const
+{
+    auto const output_size = sizeof(u16);
+    FixedMemoryStream stream { TRY(buffer.get_bytes_for_writing(output_size)) };
+
+    TRY(stream.write_value(static_cast<NetworkOrdered<u16>>(preference)));
+    TRY(exchange.to_raw(buffer));
+
+    return {};
+}
+
 
 ErrorOr<Records::PTR> Records::PTR::from_raw(ParseContext& ctx)
 {

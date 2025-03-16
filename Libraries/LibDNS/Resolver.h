@@ -164,6 +164,9 @@ public:
             m_used_dnskeys.append(move(key));
     }
 
+    void set_singular_response(ByteBuffer response) { m_singular_response = move(response); }
+    auto const& singular_response() const { return m_singular_response; }
+
 private:
     bool m_valid { false };
     bool m_request_done { false };
@@ -180,6 +183,7 @@ private:
     HashTable<Messages::ResourceType> m_desired_types;
     Vector<Messages::Records::DNSKEY> m_used_dnskeys {};
     HashTable<u16> m_seen_key_tags;
+    ByteBuffer m_singular_response;
     u16 m_id { 0 };
 };
 
@@ -588,6 +592,7 @@ private:
                 break;
             }
 
+
             auto message = message_or_err.release_value();
             auto result = m_pending_lookups.with_write_locked([&](auto& lookups) -> ErrorOr<void> {
                 auto* lookup = lookups->find(message.header.id);
@@ -602,6 +607,10 @@ private:
                 lookup->repeat_timer->stop();
 
                 auto result = lookup->result.strong_ref();
+                ByteBuffer raw;
+                TRY(message.to_raw(raw));
+                result->set_singular_response(move(raw));
+
                 if (result->is_dnssec_validated())
                     return validate_dnssec(move(message), *lookup, *result);
 

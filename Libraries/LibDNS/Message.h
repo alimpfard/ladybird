@@ -434,7 +434,7 @@ struct MX {
 
     static constexpr ResourceType type = ResourceType::MX;
     static ErrorOr<MX> from_raw(ParseContext&);
-    ErrorOr<void> to_raw(ByteBuffer&) const { return Error::from_string_literal("Not implemented: MX::to_raw"); }
+    ErrorOr<void> to_raw(ByteBuffer&) const;
     ErrorOr<String> to_string() const { return String::formatted("MX Preference: {}, Exchange: '{}'", preference, exchange.to_string()); }
 };
 struct PTR {

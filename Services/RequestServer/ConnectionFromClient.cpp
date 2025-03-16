@@ -380,20 +380,28 @@ void ConnectionFromClient::start_request(i32 request_id, ByteString method, URL:
     if (host.starts_with("["sv) && host.ends_with("]"sv))
         host = host.substring(1, host.length() - 2);
 
-    m_resolver->dns.lookup(host, DNS::Messages::Class::IN, { DNS::Messages::ResourceType::A, DNS::Messages::ResourceType::AAAA }, {.validate_dnssec_locally = true})
+    auto port = url.port_or_default();
+
+    auto dns_result = MUST(m_resolver->dns.lookup(host, DNS::Messages::Class::IN, { DNS::Messages::ResourceType::A, DNS::Messages::ResourceType::AAAA }, {.validate_dnssec_locally = true})
         ->when_rejected([this, request_id](auto const& error) {
             dbgln("StartRequest: DNS lookup failed: {}", error);
             // FIXME: Implement timing info for DNS lookup failure.
             async_request_finished(request_id, 0, {}, Requests::NetworkError::UnableToResolveHost);
         })
-        .when_resolved([this, request_id, host = move(host), url = move(url), method = move(method), request_body = move(request_body), request_headers = move(request_headers), proxy_data](auto const& dns_result) mutable {
+        .when_resolved([this, request_id, host](auto const& dns_result) mutable {
             if (dns_result->records().is_empty() || dns_result->cached_addresses().is_empty()) {
                 dbgln("StartRequest: DNS lookup failed for '{}'", host);
                 // FIXME: Implement timing info for DNS lookup failure.
                 async_request_finished(request_id, 0, {}, Requests::NetworkError::UnableToResolveHost);
-                return;
             }
+        }).await());
 
+    m_resolver->dns.lookup(ByteString::formatted("_{}._tcp.{}", port, host), DNS::Messages::Class::IN, { DNS::Messages::ResourceType::TLSA }, { .validate_dnssec_locally = false })
+        ->when_rejected([this, request_id](auto const& error) {
+            dbgln("StartRequest: TLSA lookup failed: {}", error);
+            async_request_finished(request_id, 0, {}, Requests::NetworkError::UnableToResolveHost);
+        })
+        .when_resolved([this, request_id, host = host, url = url, method = method, request_body = move(request_body), request_headers = move(request_headers), proxy_data, dns_result](auto const& tlsa_data) mutable {
             auto* easy = curl_easy_init();
             if (!easy) {
                 dbgln("StartRequest: Failed to initialize curl easy handle");
@@ -433,6 +441,11 @@ void ConnectionFromClient::start_request(i32 request_id, ByteString method, URL:
             set_option(CURLOPT_PORT, url.port_or_default());
             set_option(CURLOPT_CONNECTTIMEOUT, s_connect_timeout_seconds);
 
+            auto raw = MUST(encode_base64(tlsa_data->singular_response())).to_byte_string();
+            dbgln("TLSA record: {} ({})", raw, tlsa_data->singular_response().size());
+            set_option(CURLOPT_ADD_DNS_RR, raw.characters());
+            ;
+
             bool did_set_body = false;
 
             if (method == "GET"sv) {
@@ -450,6 +463,8 @@ void ConnectionFromClient::start_request(i32 request_id, ByteString method, URL:
             set_option(CURLOPT_FOLLOWLOCATION, 0);
 
             struct curl_slist* curl_headers = nullptr;
+
+            tlsa_data->records();
 
             // NOTE: CURLOPT_POSTFIELDS automatically sets the Content-Type header.
             //       Set it to empty if the headers passed in don't contain a content type.
@@ -728,7 +743,7 @@ void ConnectionFromClient::websocket_connect(i64 websocket_id, URL::URL url, Byt
             dbgln("WebSocketConnect: DNS lookup failed: {}", error);
             async_websocket_errored(websocket_id, static_cast<i32>(Requests::WebSocket::Error::CouldNotEstablishConnection));
         })
-        .when_resolved([this, websocket_id, host = move(host), url = move(url), origin = move(origin), protocols = move(protocols), extensions = move(extensions), additional_request_headers = move(additional_request_headers)](auto const& dns_result) mutable {
+        .when_resolved([this, websocket_id, host = host, url = move(url), origin = move(origin), protocols = move(protocols), extensions = move(extensions), additional_request_headers = move(additional_request_headers)](auto const& dns_result) mutable {
             if (dns_result->records().is_empty() || dns_result->cached_addresses().is_empty()) {
                 dbgln("WebSocketConnect: DNS lookup failed for '{}'", host);
                 async_websocket_errored(websocket_id, static_cast<i32>(Requests::WebSocket::Error::CouldNotEstablishConnection));
