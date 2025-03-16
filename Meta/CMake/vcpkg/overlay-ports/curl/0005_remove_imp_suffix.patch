@@ -1,0 +1,13 @@
+diff --git a/lib/CMakeLists.txt b/lib/CMakeLists.txt
+index b838245..3199160 100644
+--- a/lib/CMakeLists.txt
++++ b/lib/CMakeLists.txt
+@@ -71,7 +71,7 @@ if(NOT DEFINED IMPORT_LIB_SUFFIX)
+   # the generated static "libcurl.lib" (typically with MSVC).
+   if(WIN32 AND BUILD_SHARED_LIBS AND
+      CMAKE_IMPORT_LIBRARY_SUFFIX STREQUAL CMAKE_STATIC_LIBRARY_SUFFIX)
+-    set(IMPORT_LIB_SUFFIX "_imp")
++    set(IMPORT_LIB_SUFFIX "")
+   else()
+     set(IMPORT_LIB_SUFFIX "")
+   endif()
