@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <AK/Assertions.h>
 #include <AK/Badge.h>
 #include <AK/Function.h>
 #include <AK/HashTable.h>
@@ -15,6 +16,7 @@
 #include <AK/StackInfo.h>
 #include <AK/Swift.h>
 #include <AK/Types.h>
+#include <AK/TypeCasts.h>
 #include <AK/Vector.h>
 #include <LibCore/Forward.h>
 #include <LibGC/Cell.h>

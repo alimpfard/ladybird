@@ -104,3 +104,5 @@ if (Python3_FOUND)
         USES_TERMINAL
     )
 endif()
+
+include(jakt)

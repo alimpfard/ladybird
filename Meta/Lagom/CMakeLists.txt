@@ -173,6 +173,8 @@ set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} ${LINKER_FLAGS}")
 
 configure_file(../../AK/Debug.h.in AK/Debug.h @ONLY)
 
+include(jakt)
+
 include_directories(../..)
 include_directories(../../Libraries)
 include_directories(../../Services)

@@ -5,6 +5,8 @@
  */
 
 #include "TestHeap.h"
+#include <AK/Assertions.h>
+#include <AK/TypeCasts.h>
 #include <LibGC/Heap.h>
 
 GC::Heap& test_gc_heap()

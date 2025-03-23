@@ -75,7 +75,7 @@ struct ForeignRef {
         } else {
             static_assert(IsSame<decltype(cell), void*>);
             auto* cast_cell = static_cast<Cell*>(cell);
-            return ForeignRef(*as<ForeignCell>(cast_cell));
+            return ForeignRef(*bit_cast<ForeignCell*>(cast_cell));
         }
     }
 

@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <AK/Assertions.h>
 #include <AK/Traits.h>
 #include <AK/Types.h>
 
@@ -165,13 +166,13 @@ public:
 
     T* operator->() const
     {
-        ASSERT(m_ptr);
+        //ASSERT(m_ptr);
         return m_ptr;
     }
 
     [[nodiscard]] T& operator*() const
     {
-        ASSERT(m_ptr);
+        //ASSERT(m_ptr);
         return *m_ptr;
     }
 

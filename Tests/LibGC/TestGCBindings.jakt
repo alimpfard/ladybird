@@ -1,0 +1,36 @@
+import extern "LibGC/Heap.h"
+import extern "TestInterop.h"
+
+export "HeapString.h" { HeapString }
+
+type AK::StringView implements(FromStringLiteral) {}
+
+struct HeapString: GC::Cell {
+    string: String
+
+    destructor {
+        eprintln("HeapString destructor called, I was holding on to a string: {}", .string)
+    }
+
+    public fn getString(this) -> raw const c_char {
+        return .string.c_string()
+    }
+
+    public fn getCell(this) -> raw GC::Cell {
+        let self = &this
+        return &raw self
+    }
+
+    public fn create(anon mut heap_ptr: raw GC::Heap, anon str: String) -> raw void {
+        let heap = &mut unsafe *heap_ptr
+        return heap.allocate<HeapString>(str).ptr() as! raw void
+    }
+
+    virtual fn class_name(this) -> AK::StringView {return "HeapString"}
+
+    virtual fn visit_edges(mut this, anon visitor: &mut GC::Visitor) {}
+
+    virtual fn finalize(mut this) {}
+}
+
+fn main() { test_interop() }
