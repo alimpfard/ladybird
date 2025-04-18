@@ -117,8 +117,8 @@ enum class BoundaryCheckType : ByteCodeValueType {
 };
 
 struct CharRange {
-    u32 const from;
-    u32 const to;
+    u32 from;
+    u32 to;
 
     CharRange(u64 value)
         : from(value >> 32)
@@ -642,6 +642,40 @@ StringView opcode_id_name(OpCodeId opcode_id);
 StringView boundary_check_type_name(BoundaryCheckType);
 StringView character_compare_type_name(CharacterCompareType result);
 StringView character_class_name(CharClass ch_class);
+
+struct DFA {
+    struct Transition {
+        using GroupMask = ByteCodeValueType;
+
+        enum class Guard : u8 {
+            None,
+            AnchorStart, // CheckBegin, ^
+            AnchorEnd,   // CheckEnd, $
+            WordBoundary, // CheckBoundary Word, \b
+            NonWordBoundary, // CheckBoundary NonWord, \B
+            Digit, // Compare CharClass Digit, \d
+            NonDigit, // Compare Negate CharClass Digit, \D
+            Space, // Compare CharClass Space, \s
+            NonSpace, // Compare Negate CharClass Space, \S
+            Word, // Compare CharClass Word, \w
+            NonWord, // Compare Negate CharClass Word, \W
+        };
+
+        CharRange range;
+        u32 target_state_id;
+        Guard guard;
+    };
+
+    struct StateInfo {
+        u32 transition_offset; // Offset into m_transitions
+        u16 transition_count;
+        bool accepting;
+    };
+
+    Vector<Transition> transitions;
+    Vector<StateInfo> state_infos;
+    u32 start_state_id { 0 };
+};
 
 class OpCode {
 public:

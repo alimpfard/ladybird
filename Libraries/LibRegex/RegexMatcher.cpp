@@ -156,6 +156,108 @@ RegexResult Matcher<Parser>::match(RegexStringView view, Optional<typename Parse
 }
 
 template<typename Parser>
+bool Matcher<Parser>::match_dfa(DFA const& dfa, MatchInput const& input, MatchState& state, size_t view_index) const
+{
+    auto const length = input.view.length();
+
+    state.string_position = view_index;
+    state.string_position_in_code_units = view_index;
+    state.string_position_before_match = view_index;
+
+    auto isword = [](auto ch) { return is_ascii_alphanumeric(ch) || ch == '_'; };
+    auto is_word_boundary = [&] {
+        if (state.string_position == input.view.length()) {
+            return (state.string_position > 0 && isword(input.view[state.string_position_in_code_units - 1]));
+        }
+
+        if (state.string_position == 0) {
+            return (isword(input.view[0]));
+        }
+
+        return !!(isword(input.view[state.string_position_in_code_units]) ^ isword(input.view[state.string_position_in_code_units - 1]));
+    };
+
+    u32 dfa_state = dfa.start_state_id;
+    while (true) {
+        auto const& info = dfa.state_infos[dfa_state];
+        auto did_advance = false;
+        for (auto transition_index = 0uz; transition_index < info.transition_count; ++transition_index) {
+            auto const& transition = dfa.transitions[info.transition_offset + transition_index];
+            // 1. Don't overrun the input.
+            if (state.string_position >= length)
+                break;
+
+            // 2. Range
+            auto code_point = input.view[state.string_position];
+            if (transition.range.from > code_point || transition.range.to < code_point)
+                continue;
+
+            // 3. Guard check
+            switch (transition.guard) {
+            case DFA::Transition::Guard::None:
+                break;
+            case DFA::Transition::Guard::AnchorStart:
+                if (state.string_position != 0)
+                    continue;
+                break;
+            case DFA::Transition::Guard::AnchorEnd:
+                if (state.string_position != length)
+                    continue;
+                break;
+            case DFA::Transition::Guard::WordBoundary:
+                if (!is_word_boundary())
+                    continue;
+                break;
+            case DFA::Transition::Guard::NonWordBoundary:
+                if (is_word_boundary())
+                    continue;
+                break;
+            case DFA::Transition::Guard::Digit:
+                if (!is_ascii_digit(code_point))
+                    continue;
+                break;
+            case DFA::Transition::Guard::NonDigit:
+                if (is_ascii_digit(code_point))
+                    continue;
+                break;
+            case DFA::Transition::Guard::Space:
+                if (!is_ascii_space(code_point))
+                    continue;
+                break;
+            case DFA::Transition::Guard::NonSpace:
+                if (is_ascii_space(code_point))
+                    continue;
+                break;
+            case DFA::Transition::Guard::Word:
+                if (!isword(code_point))
+                    continue;
+                break;
+            case DFA::Transition::Guard::NonWord:
+                if (isword(code_point))
+                    continue;
+                break;
+            }
+
+            // 4. take the transition
+            dfa_state = transition.target_state_id;
+            state.string_position++;
+            state.string_position_in_code_units++;
+            did_advance = true;
+            break;
+        }
+
+        if (!did_advance)
+            break;
+    }
+
+    auto const& info = dfa.state_infos[dfa_state];
+    if (!info.accepting)
+        return false;
+
+    return true;
+}
+
+template<typename Parser>
 RegexResult Matcher<Parser>::match(Vector<RegexStringView> const& views, Optional<typename ParserTraits<Parser>::OptionsType> regex_options) const
 {
     // If the pattern *itself* isn't stateful, reset any changes to start_offset.
@@ -288,6 +390,12 @@ RegexResult Matcher<Parser>::match(Vector<RegexStringView> const& views, Optiona
 
             if (auto& starting_ranges = m_pattern->parser_result.optimization_data.starting_ranges; !starting_ranges.is_empty()) {
                 if (!binary_search(starting_ranges, input.view.code_unit_at(view_index), nullptr, compare_range))
+                    goto done_matching;
+            }
+
+            if (auto& as_dfa = m_pattern->parser_result.optimization_data.as_dfa; as_dfa.has_value()) {
+                auto& dfa = as_dfa.value();
+                if (!match_dfa(dfa, input, state, view_index))
                     goto done_matching;
             }
 

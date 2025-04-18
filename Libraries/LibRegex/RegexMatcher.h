@@ -72,6 +72,7 @@ public:
 
 private:
     bool execute(MatchInput const& input, MatchState& state, size_t& operations) const;
+    bool match_dfa(DFA const&, MatchInput const&, MatchState&, size_t view_index) const;
 
     Regex<Parser> const* m_pattern;
     typename ParserTraits<Parser>::OptionsType const m_regex_options;
@@ -229,6 +230,7 @@ public:
 private:
     void run_optimization_passes();
     void attempt_rewrite_loops_as_atomic_groups(BasicBlockList const&);
+    Optional<DFA> attempt_generate_dfa(BasicBlockList const&);
     bool attempt_rewrite_entire_match_as_substring_search(BasicBlockList const&);
     void fill_optimization_data(BasicBlockList const&);
 };

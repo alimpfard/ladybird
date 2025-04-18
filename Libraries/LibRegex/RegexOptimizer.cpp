@@ -9,6 +9,7 @@
 #include <AK/QuickSort.h>
 #include <AK/RedBlackTree.h>
 #include <AK/Stack.h>
+#include <AK/TemporaryChange.h>
 #include <AK/Trie.h>
 #include <AK/Vector.h>
 #include <LibRegex/Regex.h>
@@ -18,6 +19,52 @@
 #    include <AK/ScopeGuard.h>
 #    include <AK/ScopeLogger.h>
 #endif
+
+namespace regex {
+
+struct DFAIPSet {
+    HashTable<size_t> instruction_positions;
+};
+
+struct DFASymbol {
+    CharRange range { 0, NumericLimits<u32>::max() };
+    DFA::Transition::Guard guard { DFA::Transition::Guard::None };
+
+    bool operator==(DFASymbol const& other) const = default;
+};
+
+}
+
+template<>
+struct AK::Traits<regex::DFAIPSet> : DefaultTraits<regex::DFAIPSet> {
+    static unsigned hash(regex::DFAIPSet const& value)
+    {
+        unsigned hash = 0;
+        for (auto& ip : value.instruction_positions)
+            hash = pair_int_hash(hash, ip);
+        return hash;
+    }
+
+    static constexpr bool equals(regex::DFAIPSet const& a, regex::DFAIPSet const& b)
+    {
+        if (a.instruction_positions.size() != b.instruction_positions.size())
+            return false;
+        for (auto& ip : a.instruction_positions) {
+            if (!b.instruction_positions.contains(ip))
+                return false;
+        }
+        return true;
+    }
+};
+
+template<>
+struct AK::Traits<regex::DFASymbol> : DefaultTraits<regex::DFASymbol> {
+    static unsigned hash(regex::DFASymbol const& value)
+    {
+        auto const hash = Traits<regex::ByteCodeValueType>::hash(value.range);
+        return pair_int_hash(hash, to_underlying(value.guard));
+    }
+};
 
 namespace regex {
 
@@ -36,7 +83,9 @@ void Regex<Parser>::run_optimization_passes()
     // e.g. a*b -> (ATOMIC a*)b
     attempt_rewrite_loops_as_atomic_groups(blocks);
 
-    fill_optimization_data(split_basic_blocks(parser_result.bytecode));
+    blocks = split_basic_blocks(parser_result.bytecode);
+    fill_optimization_data(blocks);
+    parser_result.optimization_data.as_dfa = attempt_generate_dfa(blocks);
 
     parser_result.bytecode.flatten();
 }
@@ -1087,6 +1136,296 @@ void Regex<Parser>::attempt_rewrite_loops_as_atomic_groups(BasicBlockList const&
     }
 }
 
+template<class Parser>
+Optional<DFA> Regex<Parser>::attempt_generate_dfa(BasicBlockList const& blocks)
+{
+    // The DFA supports only Compares against:
+    // - Char
+    // - CharRange
+    // - CharClass[Word,Digit,Whitespace]
+    // - CheckBegin/CheckEnd
+    // - CheckBoundary[Word,NonWord]
+    // - Unconditional jumps (as epsilon transitions)
+    // - ForkReplaceJump/ForkReplaceStay (as epsilon transitions in NFA)
+
+    if constexpr (REGEX_DEBUG) {
+        dbgln("Attempting to generate DFA for regex: {}", pattern_value);
+        RegexDebug dbg;
+        dbg.print_bytecode(*this);
+        for (auto& block : blocks)
+            dbgln("block from {} to {} (comment: {})", block.start, block.end, block.comment);
+    }
+
+    DFA dfa;
+
+    // Check if the regex contains operations that can't be represented by a DFA
+    auto& bytecode = parser_result.bytecode;
+    auto state = MatchState::only_for_enumeration();
+
+    // First pass: scan for unsupported operations
+    for (auto& block : blocks) {
+        for (state.instruction_position = block.start; state.instruction_position < block.end;) {
+            auto& opcode = bytecode.get_opcode(state);
+
+            switch (opcode.opcode_id()) {
+            // Supported operations
+            case OpCodeId::Compare: {
+                auto& compare = static_cast<OpCode_Compare const&>(opcode);
+                auto compares = compare.flat_compares();
+
+                // Check if all compares are supported
+                for (auto& pair : compares) {
+                    switch (pair.type) {
+                    case CharacterCompareType::Char:
+                    case CharacterCompareType::CharRange:
+                        // These are directly supported
+                        break;
+                    case CharacterCompareType::CharClass:
+                        // Only Word, Digit, and Whitespace character classes are supported
+                        if (static_cast<CharClass>(pair.value) != CharClass::Word && static_cast<CharClass>(pair.value) != CharClass::Digit && static_cast<CharClass>(pair.value) != CharClass::Blank) {
+                            dbgln_if(REGEX_DEBUG, "Unsupported CharClass: {}", character_class_name(static_cast<CharClass>(pair.value)));
+                            return {};
+                        }
+                        break;
+                    default:
+                        // Other compare types are not supported
+                        dbgln_if(REGEX_DEBUG, "Unsupported Compare type: {}", character_compare_type_name(pair.type));
+                        return {};
+                    }
+                }
+                break;
+            }
+            case OpCodeId::JumpNonEmpty: {
+                if (auto form = static_cast<OpCode_JumpNonEmpty const&>(opcode).form(); form != OpCodeId::Jump && form != OpCodeId::ForkReplaceJump && form != OpCodeId::ForkReplaceStay) {
+                    dbgln_if(REGEX_DEBUG, "Unsupported JumpNonEmpty form: {}", to_underlying(form));
+                    return {};
+                }
+                break;
+            }
+            case OpCodeId::CheckBegin:
+            case OpCodeId::CheckEnd:
+            case OpCodeId::Jump:
+            case OpCodeId::CheckBoundary:
+            case OpCodeId::ForkReplaceJump:
+            case OpCodeId::ForkReplaceStay:
+            case OpCodeId::Exit:
+                // These are supported
+            case OpCodeId::Checkpoint:
+                // This is fine to have if everything else is fine.
+                break;
+
+            // Unsupported operations
+            case OpCodeId::ForkJump:
+            case OpCodeId::ForkStay:
+            case OpCodeId::FailForks:
+            case OpCodeId::Repeat:
+            case OpCodeId::Save:
+            case OpCodeId::Restore:
+            case OpCodeId::ClearCaptureGroup:
+            case OpCodeId::SaveLeftCaptureGroup:
+            case OpCodeId::GoBack:
+            case OpCodeId::PopSaved:
+            case OpCodeId::SaveRightCaptureGroup:
+            case OpCodeId::SaveRightNamedCaptureGroup:
+            case OpCodeId::ResetRepeat:
+                // These operations can't be represented by a DFA
+                dbgln_if(REGEX_DEBUG, "Unsupported operation: {}", opcode.to_byte_string());
+                return {};
+            }
+
+            state.instruction_position += opcode.size();
+        }
+    }
+
+    // Second pass: build the DFA
+    auto epsilon_close = [&](DFAIPSet ip_set) {
+        TemporaryChange state_ip_change { state.instruction_position, 0uz };
+        Vector<size_t, 64> work;
+        work.ensure_capacity(2 * ip_set.instruction_positions.size());
+        for (auto ip : ip_set.instruction_positions)
+            work.append(ip);
+
+        auto& ips = ip_set.instruction_positions;
+
+        while (!work.is_empty()) {
+            auto ip = work.take_last();
+            state.instruction_position = ip;
+            auto& opcode = bytecode.get_opcode(state);
+            auto next_ip = ip + opcode.size();
+
+            switch (opcode.opcode_id()) {
+            case OpCodeId::Checkpoint:
+                if (ips.set(next_ip) == HashSetResult::InsertedNewEntry)
+                    work.append(next_ip);
+                break;
+            case OpCodeId::Jump: {
+                auto const& j = static_cast<OpCode_Jump const&>(opcode);
+                size_t tgt = next_ip + j.offset();
+                if (ips.set(tgt) == HashSetResult::InsertedNewEntry)
+                    work.append(tgt);
+                break;
+            }
+            case OpCodeId::JumpNonEmpty: {
+                auto const& jn = static_cast<OpCode_JumpNonEmpty const&>(opcode);
+                // both branches
+                for (auto tgt : { next_ip, next_ip + jn.offset() })
+                    if (ips.set(tgt) == HashSetResult::InsertedNewEntry)
+                        work.append(tgt);
+                break;
+            }
+            case OpCodeId::ForkReplaceJump: {
+                auto const& fj = static_cast<OpCode_ForkReplaceJump const&>(opcode);
+                for (auto tgt : { next_ip, next_ip + fj.offset() })
+                    if (ips.set(tgt) == HashSetResult::InsertedNewEntry)
+                        work.append(tgt);
+                break;
+            }
+            case OpCodeId::ForkReplaceStay: {
+                auto const& fs = static_cast<OpCode_ForkReplaceStay const&>(opcode);
+                for (auto tgt : { next_ip, next_ip + fs.offset() })
+                    if (ips.set(tgt) == HashSetResult::InsertedNewEntry)
+                        work.append(tgt);
+                break;
+            }
+            default:
+                // any real consuming opcode or Exit/Checkpoint-breaker
+                break;
+            }
+        }
+
+        return ip_set;
+    };
+
+    HashMap<DFAIPSet, u32> closure_states;
+    Vector<DFAIPSet, 64> worklist;
+
+    HashTable<size_t> ips;
+    ips.set(0);
+    auto start = epsilon_close({ ips });
+    u32 start_state = dfa.state_infos.size();
+    dfa.state_infos.append({ 0, 0, false });
+    dfa.start_state_id = start_state;
+    closure_states.set(start, start_state);
+    worklist.append(start);
+
+    while (!worklist.is_empty()) {
+        auto current = worklist.take_last();
+        auto maybe_current_state = closure_states.get(current);
+
+        if (!maybe_current_state.has_value()) {
+            dbgln_if(REGEX_DEBUG, "Failed to find state for current IP set");
+            VERIFY_NOT_REACHED();
+        }
+
+        auto current_state = maybe_current_state.value();
+
+        // Gather all symbols
+        HashMap<DFASymbol, DFAIPSet> symbol_ips;
+        for (auto ip : current.instruction_positions) {
+            TemporaryChange state_ip_change { state.instruction_position, ip };
+            auto& opcode = bytecode.get_opcode(state);
+            switch (opcode.opcode_id()) {
+            case OpCodeId::Compare:
+                for (auto& p : static_cast<OpCode_Compare const&>(opcode).flat_compares()) {
+                    if (p.type == CharacterCompareType::Char) {
+                        auto cp = static_cast<u32>(p.value);
+                        auto symbol = DFASymbol { .range = { cp, cp } };
+                        symbol_ips.ensure(symbol).instruction_positions.set(ip);
+                    } else if (p.type == CharacterCompareType::CharRange) {
+                        auto symbol = DFASymbol { .range = p.value };
+                        symbol_ips.ensure(symbol).instruction_positions.set(ip);
+                    } else if (p.type == CharacterCompareType::CharClass) {
+                        DFA::Transition::Guard guard;
+                        switch (static_cast<CharClass>(p.value)) {
+                        case CharClass::Word:
+                            guard = DFA::Transition::Guard::Word;
+                            break;
+                        case CharClass::Digit:
+                            guard = DFA::Transition::Guard::Digit;
+                            break;
+                        case CharClass::Blank:
+                            guard = DFA::Transition::Guard::Space;
+                            break;
+                        default:
+                            return {};
+                        }
+                        auto symbol = DFASymbol { .guard = guard };
+                        symbol_ips.ensure(symbol).instruction_positions.set(ip);
+                    } else {
+                        // Unsupported compare type
+                        dbgln_if(REGEX_DEBUG, "Unsupported Compare type: {}", character_compare_type_name(p.type));
+                        return {};
+                    }
+                }
+                break;
+            case OpCodeId::CheckBegin:
+                symbol_ips.ensure({ .guard = DFA::Transition::Guard::AnchorStart }).instruction_positions.set(ip);
+                break;
+            case OpCodeId::CheckEnd:
+                symbol_ips.ensure({ .guard = DFA::Transition::Guard::AnchorEnd }).instruction_positions.set(ip);
+                break;
+            case OpCodeId::CheckBoundary:
+                symbol_ips.ensure({ .guard = static_cast<OpCode_CheckBoundary&>(opcode).type() == BoundaryCheckType::Word ? DFA::Transition::Guard::WordBoundary : DFA::Transition::Guard::NonWordBoundary }).instruction_positions.set(ip);
+                break;
+            default:
+                break;
+            }
+        }
+
+        for (auto& [symbol, ips_with_symbol] : symbol_ips) {
+            DFAIPSet post;
+            for (auto ip : ips_with_symbol.instruction_positions) {
+                TemporaryChange state_ip_change { state.instruction_position, ip };
+                auto& opcode = bytecode.get_opcode(state);
+                post.instruction_positions.set(ip + opcode.size());
+            }
+            auto target_closure = epsilon_close(post);
+            u32 target_state;
+            if (auto it = closure_states.find(target_closure); it != closure_states.end()) {
+                target_state = it->value;
+            } else {
+                target_state = dfa.state_infos.size();
+                dfa.state_infos.append({ 0, 0, false });
+                closure_states.set(target_closure, target_state);
+                worklist.append(target_closure);
+            }
+
+            dfa.transitions.empend(symbol.range, target_state, symbol.guard);
+            auto& state_info = dfa.state_infos[current_state];
+            if (state_info.transition_count == 0)
+                state_info.transition_offset = dfa.transitions.size() - 1;
+            state_info.transition_count++;
+        }
+
+        if (any_of(current.instruction_positions, [&](auto ip) {
+                TemporaryChange state_ip_change { state.instruction_position, ip };
+                return ip == bytecode.size() || bytecode.get_opcode(state).opcode_id() == OpCodeId::Exit;
+            })) {
+            auto& state_info = dfa.state_infos[current_state];
+            state_info.accepting = true;
+        }
+    }
+
+    dbgln_if(REGEX_DEBUG, "DFA generated with {} states and {} transitions", dfa.state_infos.size(), dfa.transitions.size());
+    if constexpr (REGEX_DEBUG) {
+        // Print the DFA for debugging (as ASCII tree)
+        for (size_t i = 0; i < dfa.state_infos.size(); ++i) {
+            auto& state_info = dfa.state_infos[i];
+            dbgln("State {}: accepting = {}, transition_count = {}", i, state_info.accepting, state_info.transition_count);
+            for (size_t j = 0; j < state_info.transition_count; ++j) {
+                auto& transition = dfa.transitions[state_info.transition_offset + j];
+                dbgln("  Transition to state {}: range = {}-{}, guard = {}", transition.target_state_id, transition.range.from, transition.range.to, to_underlying(transition.guard));
+            }
+        }
+        dbgln("Transitions:");
+        for (auto& transition : dfa.transitions) {
+            dbgln("  Transition to state {}: range = {}-{}, guard = {}", transition.target_state_id, transition.range.from, transition.range.to, to_underlying(transition.guard));
+        }
+    }
+
+    return dfa;
+}
+
 void Optimizer::append_alternation(ByteCode& target, ByteCode&& left, ByteCode&& right)
 {
     Array<ByteCode, 2> alternatives;
@@ -1681,3 +2020,4 @@ template void Regex<PosixBasicParser>::run_optimization_passes();
 template void Regex<PosixExtendedParser>::run_optimization_passes();
 template void Regex<ECMA262Parser>::run_optimization_passes();
 }
+

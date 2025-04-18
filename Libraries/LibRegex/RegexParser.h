@@ -67,6 +67,8 @@ public:
             // If populated, the pattern only accepts strings that start with a character in these ranges.
             Vector<CharRange> starting_ranges;
             bool only_start_of_line = false;
+            // If populated, the accepting states of the pattern can be fully represented as a DFA.
+            Optional<DFA> as_dfa;
         } optimization_data {};
     };
 
