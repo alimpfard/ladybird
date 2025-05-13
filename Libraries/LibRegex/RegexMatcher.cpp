@@ -478,7 +478,23 @@ template<class Parser>
 bool Matcher<Parser>::execute(MatchInput const& input, MatchState& state, size_t& operations) const
 {
     BumpAllocatedLinkedList<MatchState> states_to_try_next;
-    HashTable<u64, SufficientlyUniformValueTraits> seen_state_hashes;
+    static HashTable<u64, SufficientlyUniformValueTraits, true> seen_state_hashes;
+    ScopeGuard reset = [&] {
+        static size_t util = 0;
+        static size_t util_count = 0;
+
+        util += seen_state_hashes.size();
+        ++util_count;
+
+        if (util < seen_state_hashes.capacity() * util_count / 16) {
+            util_count = 0;
+            util = 0;
+            seen_state_hashes.clear();
+        } else {
+            seen_state_hashes.clear_with_capacity();
+        }
+    };
+
 #if REGEX_DEBUG
     size_t recursion_level = 0;
 #endif
