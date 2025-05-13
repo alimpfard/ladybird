@@ -55,20 +55,23 @@ private:
             return;
         do {
             ++m_bucket;
+            ++m_state;
             if (m_bucket == m_end_bucket) {
                 m_bucket = nullptr;
                 return;
             }
-        } while (m_bucket->state == BucketState::Free);
+        } while (*m_state == BucketState::Free);
     }
 
-    HashTableIterator(BucketType* bucket, BucketType* end_bucket)
+    HashTableIterator(BucketType* bucket, BucketState* state, BucketType* end_bucket)
         : m_bucket(bucket)
+        , m_state(state)
         , m_end_bucket(end_bucket)
     {
     }
 
     BucketType* m_bucket { nullptr };
+    BucketState* m_state { nullptr };
     BucketType* m_end_bucket { nullptr };
 };
 
@@ -81,16 +84,28 @@ public:
     bool operator!=(OrderedHashTableIterator const& other) const { return m_bucket != other.m_bucket; }
     T& operator*() { return *m_bucket->slot(); }
     T* operator->() { return m_bucket->slot(); }
-    void operator++() { m_bucket = m_bucket->next; }
-    void operator--() { m_bucket = m_bucket->previous; }
+    void operator++()
+    {
+        auto diff = m_bucket->next - m_bucket;
+        m_bucket = m_bucket->next;
+        m_state += diff;
+    }
+    void operator--()
+    {
+        auto diff = m_bucket->prev - m_bucket;
+        m_bucket = m_bucket->previous;
+        m_state += diff;
+    }
 
 private:
-    OrderedHashTableIterator(BucketType* bucket, BucketType*)
+    OrderedHashTableIterator(BucketType* bucket, BucketState* state, BucketType*)
         : m_bucket(bucket)
+        , m_state(state)
     {
     }
 
     BucketType* m_bucket { nullptr };
+    BucketState* m_state { nullptr };
 };
 
 template<typename OrderedHashTableType, typename T, typename BucketType>
@@ -124,7 +139,6 @@ class HashTable {
     static constexpr size_t grow_capacity_increase_percent = 60;
 
     struct Bucket {
-        BucketState state;
         alignas(T) u8 storage[sizeof(T)];
         T* slot() { return reinterpret_cast<T*>(storage); }
         T const* slot() const { return reinterpret_cast<T const*>(storage); }
@@ -133,7 +147,6 @@ class HashTable {
     struct OrderedBucket {
         OrderedBucket* previous;
         OrderedBucket* next;
-        BucketState state;
         alignas(T) u8 storage[sizeof(T)];
         T* slot() { return reinterpret_cast<T*>(storage); }
         T const* slot() const { return reinterpret_cast<T const*>(storage); }
@@ -162,12 +175,13 @@ public:
 
         if constexpr (!IsTriviallyDestructible<T>) {
             for (size_t i = 0; i < m_capacity; ++i) {
-                if (m_buckets[i].state != BucketState::Free)
+                if (m_bucket_states[i] != BucketState::Free)
                     m_buckets[i].slot()->~T();
             }
         }
 
         kfree_sized(m_buckets, size_in_bytes(m_capacity));
+        kfree_sized(m_bucket_states, m_capacity * sizeof(BucketState));
     }
 
     HashTable(HashTable const& other)
@@ -186,13 +200,17 @@ public:
 
     HashTable(HashTable&& other) noexcept
         : m_buckets(other.m_buckets)
+        , m_bucket_states(other.m_bucket_states)
         , m_collection_data(other.m_collection_data)
         , m_size(other.m_size)
         , m_capacity(other.m_capacity)
+        , m_touched_states(other.m_touched_states)
     {
         other.m_size = 0;
         other.m_capacity = 0;
         other.m_buckets = nullptr;
+        other.m_bucket_states = nullptr;
+        other.m_touched_states = false;
         if constexpr (IsOrdered)
             other.m_collection_data = { nullptr, nullptr };
     }
@@ -207,8 +225,10 @@ public:
     friend void swap(HashTable& a, HashTable& b) noexcept
     {
         swap(a.m_buckets, b.m_buckets);
+        swap(a.m_bucket_states, b.m_bucket_states);
         swap(a.m_size, b.m_size);
         swap(a.m_capacity, b.m_capacity);
+        swap(a.m_touched_states, b.m_touched_states);
 
         if constexpr (IsOrdered)
             swap(a.m_collection_data, b.m_collection_data);
@@ -265,18 +285,18 @@ public:
     [[nodiscard]] Iterator begin()
     {
         if constexpr (IsOrdered)
-            return Iterator(m_collection_data.head, end_bucket());
+            return Iterator(m_collection_data.head, &m_bucket_states[m_collection_data.head - m_buckets], end_bucket());
 
         for (size_t i = 0; i < m_capacity; ++i) {
-            if (m_buckets[i].state != BucketState::Free)
-                return Iterator(&m_buckets[i], end_bucket());
+            if (m_bucket_states[i] != BucketState::Free)
+                return Iterator(&m_buckets[i], &m_bucket_states[i], end_bucket());
         }
         return end();
     }
 
     [[nodiscard]] Iterator end()
     {
-        return Iterator(nullptr, nullptr);
+        return Iterator(nullptr, nullptr, nullptr);
     }
 
     using ConstIterator = Conditional<IsOrdered,
@@ -286,18 +306,18 @@ public:
     [[nodiscard]] ConstIterator begin() const
     {
         if constexpr (IsOrdered)
-            return ConstIterator(m_collection_data.head, end_bucket());
+            return ConstIterator(m_collection_data.head, &m_bucket_states[m_collection_data.head - m_buckets], end_bucket());
 
         for (size_t i = 0; i < m_capacity; ++i) {
-            if (m_buckets[i].state != BucketState::Free)
-                return ConstIterator(&m_buckets[i], end_bucket());
+            if (m_bucket_states[i] != BucketState::Free)
+                return ConstIterator(&m_buckets[i], &m_bucket_states[i], end_bucket());
         }
         return end();
     }
 
     [[nodiscard]] ConstIterator end() const
     {
-        return ConstIterator(nullptr, nullptr);
+        return ConstIterator(nullptr, nullptr, nullptr);
     }
 
     using ReverseIterator = Conditional<IsOrdered,
@@ -349,7 +369,11 @@ public:
             for (auto* bucket : *this)
                 bucket->~T();
         }
-        __builtin_memset(m_buckets, 0, size_in_bytes(m_capacity));
+        if constexpr (IsOrdered)
+            __builtin_memset(m_buckets, 0, m_capacity * sizeof(BucketType));
+        if (m_touched_states)
+            __builtin_memset(m_bucket_states, 0, m_capacity * sizeof(BucketState));
+        m_touched_states = false;
         m_size = 0;
 
         if constexpr (IsOrdered)
@@ -373,7 +397,10 @@ public:
     template<typename TUnaryPredicate>
     [[nodiscard]] Iterator find(unsigned hash, TUnaryPredicate predicate)
     {
-        return Iterator(lookup_with_hash(hash, move(predicate)), end_bucket());
+        auto index = lookup_with_hash(hash, move(predicate));
+        if (index.has_value())
+            return Iterator(&m_buckets[*index], &m_bucket_states[*index], end_bucket());
+        return end();
     }
 
     [[nodiscard]] Iterator find(T const& value)
@@ -386,7 +413,10 @@ public:
     template<typename TUnaryPredicate>
     [[nodiscard]] ConstIterator find(unsigned hash, TUnaryPredicate predicate) const
     {
-        return ConstIterator(lookup_with_hash(hash, move(predicate)), end_bucket());
+        auto index = lookup_with_hash(hash, move(predicate));
+        if (index.has_value())
+            return ConstIterator(&m_buckets[*index], &m_bucket_states[*index], end_bucket());
+        return end();
     }
 
     [[nodiscard]] ConstIterator find(T const& value) const
@@ -455,7 +485,7 @@ public:
     {
         auto* bucket = iterator.m_bucket;
         VERIFY(bucket);
-        delete_bucket(*bucket);
+        delete_bucket(*bucket, *iterator.m_state);
         iterator.m_bucket = nullptr;
     }
 
@@ -465,14 +495,15 @@ public:
         bool has_removed_anything = false;
         for (size_t i = 0; i < m_capacity; ++i) {
             auto& bucket = m_buckets[i];
-            if (bucket.state == BucketState::Free || !predicate(*bucket.slot()))
+            auto& state = m_bucket_states[i];
+            if (state == BucketState::Free || !predicate(*bucket.slot()))
                 continue;
 
-            delete_bucket(bucket);
+            delete_bucket(bucket, state);
             has_removed_anything = true;
 
             // If a bucket was shifted up, reevaluate this bucket index
-            if (bucket.state != BucketState::Free)
+            if (state != BucketState::Free)
                 --i;
         }
         return has_removed_anything;
@@ -483,7 +514,7 @@ public:
     {
         VERIFY(!is_empty());
         T element = move(*m_collection_data.tail->slot());
-        delete_bucket(*m_collection_data.tail);
+        delete_bucket(*m_collection_data.tail, m_bucket_states[m_collection_data.tail - m_buckets]);
         return element;
     }
 
@@ -492,7 +523,7 @@ public:
     {
         VERIFY(!is_empty());
         T element = move(*m_collection_data.head->slot());
-        delete_bucket(*m_collection_data.head);
+        delete_bucket(*m_collection_data.head, m_bucket_states[m_collection_data.head - m_buckets]);
         return element;
     }
 
@@ -528,14 +559,28 @@ private:
         VERIFY(new_capacity >= size());
 
         auto* old_buckets = m_buckets;
+        auto* old_states = m_bucket_states;
+        auto old_capacity = m_capacity;
         auto old_buckets_size = size_in_bytes(m_capacity);
         Iterator old_iter = begin();
 
-        auto* new_buckets = kcalloc(1, size_in_bytes(new_capacity));
+        void* new_buckets;
+        if constexpr (IsOrdered)
+            new_buckets = kcalloc(1, size_in_bytes(new_capacity));
+        else
+            new_buckets = kmalloc(size_in_bytes(new_capacity)); // We don't need to zero the memory here.
+
         if (!new_buckets)
             return Error::from_errno(ENOMEM);
 
+        auto* new_states = kcalloc(new_capacity, sizeof(BucketState));
+        if (!new_states) {
+            kfree_sized(new_buckets, size_in_bytes(new_capacity));
+            return Error::from_errno(ENOMEM);
+        }
+
         m_buckets = static_cast<BucketType*>(new_buckets);
+        m_bucket_states = static_cast<BucketState*>(new_states);
         m_capacity = new_capacity;
 
         if constexpr (IsOrdered)
@@ -545,12 +590,14 @@ private:
             return {};
 
         m_size = 0;
+        m_touched_states = false;
         for (auto it = move(old_iter); it != end(); ++it) {
             write_value(move(*it), HashSetExistingEntryBehavior::Keep);
             it->~T();
         }
 
         kfree_sized(old_buckets, old_buckets_size);
+        kfree_sized(old_states, old_capacity * sizeof(BucketState));
         return {};
     }
     void rehash(size_t new_capacity)
@@ -559,28 +606,29 @@ private:
     }
 
     template<typename TUnaryPredicate>
-    [[nodiscard]] BucketType* lookup_with_hash(unsigned hash, TUnaryPredicate predicate) const
+    [[nodiscard]] Optional<size_t> lookup_with_hash(unsigned hash, TUnaryPredicate predicate) const
     {
         if (is_empty())
-            return nullptr;
+            return {};
 
         hash %= m_capacity;
         for (;;) {
             auto* bucket = &m_buckets[hash];
-            if (bucket->state == BucketState::Free)
-                return nullptr;
+            auto& state = m_bucket_states[hash];
+            if (state == BucketState::Free)
+                return {};
             if (predicate(*bucket->slot()))
-                return bucket;
+                return hash;
             if (++hash == m_capacity) [[unlikely]]
                 hash = 0;
         }
     }
 
-    size_t used_bucket_probe_length(BucketType const& bucket) const
+    size_t used_bucket_probe_length(BucketType const& bucket, BucketState state) const
     {
-        VERIFY(bucket.state != BucketState::Free);
+        VERIFY(state != BucketState::Free);
 
-        if (bucket.state == BucketState::CalculateLength) {
+        if (state == BucketState::CalculateLength) {
             size_t ideal_bucket_index = TraitsForT::hash(*bucket.slot()) % m_capacity;
 
             VERIFY(&bucket >= m_buckets);
@@ -591,7 +639,7 @@ private:
             return actual_bucket_index - ideal_bucket_index;
         }
 
-        return static_cast<u8>(bucket.state) - 1;
+        return static_cast<u8>(state) - 1;
     }
 
     ALWAYS_INLINE constexpr BucketState bucket_state_for_probe_length(size_t probe_length)
@@ -648,11 +696,13 @@ private:
         size_t probe_length = 0;
         for (;;) {
             auto* bucket = &m_buckets[bucket_index];
+            auto* state = &m_bucket_states[bucket_index];
 
             // We found a free bucket, write to it and stop
-            if (bucket->state == BucketState::Free) {
+            if (*state == BucketState::Free) {
                 new (bucket->slot()) T(forward<U>(value));
-                bucket->state = bucket_state_for_probe_length(probe_length);
+                *state = bucket_state_for_probe_length(probe_length);
+                m_touched_states = true;
                 update_collection_for_new_bucket(*bucket);
                 ++m_size;
                 return HashSetResult::InsertedNewEntry;
@@ -669,7 +719,7 @@ private:
 
             // Robin hood: if our probe length is larger (poor) than this bucket's (rich), steal its position!
             // This ensures that we will always traverse buckets in order of probe length.
-            auto target_probe_length = used_bucket_probe_length(*bucket);
+            auto target_probe_length = used_bucket_probe_length(*bucket, *state);
             if (probe_length > target_probe_length) {
                 // Copy out bucket
                 BucketType bucket_to_move = move(*bucket);
@@ -677,7 +727,8 @@ private:
 
                 // Write new bucket
                 new (bucket->slot()) T(forward<U>(value));
-                bucket->state = bucket_state_for_probe_length(probe_length);
+                *state = bucket_state_for_probe_length(probe_length);
+                m_touched_states = true;
                 probe_length = target_probe_length;
                 if constexpr (IsOrdered)
                     bucket->next = nullptr;
@@ -689,19 +740,22 @@ private:
                     if (++bucket_index == m_capacity) [[unlikely]]
                         bucket_index = 0;
                     bucket = &m_buckets[bucket_index];
+                    state = &m_bucket_states[bucket_index];
                     ++probe_length;
 
-                    if (bucket->state == BucketState::Free) {
+                    if (*state == BucketState::Free) {
                         *bucket = move(bucket_to_move);
-                        bucket->state = bucket_state_for_probe_length(probe_length);
+                        *state = bucket_state_for_probe_length(probe_length);
+                        m_touched_states = true;
                         update_collection_for_swapped_buckets(&bucket_to_move, bucket);
                         break;
                     }
 
-                    target_probe_length = used_bucket_probe_length(*bucket);
+                    target_probe_length = used_bucket_probe_length(*bucket, *state);
                     if (probe_length > target_probe_length) {
                         swap(bucket_to_move, *bucket);
-                        bucket->state = bucket_state_for_probe_length(probe_length);
+                        *state = bucket_state_for_probe_length(probe_length);
+                        m_touched_states = true;
                         probe_length = target_probe_length;
                         update_collection_for_swapped_buckets(&bucket_to_move, bucket);
                     }
@@ -717,9 +771,9 @@ private:
         }
     }
 
-    void delete_bucket(auto& bucket)
+    void delete_bucket(auto& bucket, BucketState state)
     {
-        VERIFY(bucket.state != BucketState::Free);
+        VERIFY(state != BucketState::Free);
 
         // Delete the bucket
         bucket.slot()->~T();
@@ -763,20 +817,23 @@ private:
                 shift_from_index = 0;
 
             auto* shift_from_bucket = &m_buckets[shift_from_index];
-            if (shift_from_bucket->state == BucketState::Free)
+            auto* shift_from_state = &m_bucket_states[shift_from_index];
+            if (*shift_from_state == BucketState::Free)
                 break;
 
-            auto shift_from_probe_length = used_bucket_probe_length(*shift_from_bucket);
+            auto shift_from_probe_length = used_bucket_probe_length(*shift_from_bucket, *shift_from_state);
             if (shift_from_probe_length == 0)
                 break;
 
             auto* shift_to_bucket = &m_buckets[shift_to_index];
+            auto* shift_to_state = &m_bucket_states[shift_to_index];
             *shift_to_bucket = move(*shift_from_bucket);
             if constexpr (IsOrdered) {
                 shift_from_bucket->previous = nullptr;
                 shift_from_bucket->next = nullptr;
             }
-            shift_to_bucket->state = bucket_state_for_probe_length(shift_from_probe_length - 1);
+            *shift_to_state = bucket_state_for_probe_length(shift_from_probe_length - 1);
+            m_touched_states = true;
             update_bucket_neighbors(shift_to_bucket);
 
             if (++shift_to_index == m_capacity) [[unlikely]]
@@ -784,14 +841,16 @@ private:
         }
 
         // Mark last bucket as free
-        m_buckets[shift_to_index].state = BucketState::Free;
+        m_bucket_states[shift_to_index] = BucketState::Free;
     }
 
     BucketType* m_buckets { nullptr };
+    BucketState* m_bucket_states { nullptr };
 
     NO_UNIQUE_ADDRESS CollectionDataType m_collection_data;
     size_t m_size { 0 };
     size_t m_capacity { 0 };
+    bool m_touched_states { false };
 };
 }
 
