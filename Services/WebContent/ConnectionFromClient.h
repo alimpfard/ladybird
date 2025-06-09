@@ -119,7 +119,7 @@ private:
     virtual void set_system_visibility_state(u64 page_id, Web::HTML::VisibilityState) override;
 
     virtual void js_console_input(u64 page_id, String) override;
-    virtual void run_javascript(u64 page_id, String) override;
+    virtual void run_javascript(u64 page_id, String source, String filename, bool is_module) override;
     virtual void js_console_request_messages(u64 page_id, i32) override;
 
     virtual void alert_closed(u64 page_id) override;

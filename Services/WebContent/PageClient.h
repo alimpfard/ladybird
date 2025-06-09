@@ -86,7 +86,7 @@ public:
     void initialize_js_console(Web::DOM::Document& document);
     void js_console_input(StringView js_source);
     void did_execute_js_console_input(JsonValue const&);
-    void run_javascript(StringView js_source);
+    void run_javascript(StringView js_source, StringView filename = "(run_javascript)"sv, bool is_module = false);
     void js_console_request_messages(i32 start_index);
     void did_output_js_console_message(i32 message_index);
     void console_peer_did_misbehave(char const* reason);

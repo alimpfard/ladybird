@@ -34,6 +34,10 @@
 #include <WebContent/WebDriverConnection.h>
 #include <WebContent/WebUIConnection.h>
 
+namespace Web::HTML {
+void fetch_inline_module_script_graph(JS::Realm&, ByteString const& filename, ByteString const& source_text, URL::URL const& base_url, EnvironmentSettingsObject& settings_object, GC::Ref<GC::Function<void(GC::Ptr<Script>)>> on_complete);
+}
+
 namespace WebContent {
 
 static PageClient::UseSkiaPainter s_use_skia_painter = PageClient::UseSkiaPainter::GPUBackendIfAvailable;
@@ -767,7 +771,7 @@ void PageClient::js_console_input(StringView js_source)
         m_top_level_document_console_client->handle_input(js_source);
 }
 
-void PageClient::run_javascript(StringView js_source)
+void PageClient::run_javascript(StringView js_source, StringView filename, bool is_module)
 {
     auto* active_document = page().top_level_browsing_context().active_document();
 
@@ -782,15 +786,33 @@ void PageClient::run_javascript(StringView js_source)
     // Let baseURL be settings's API base URL.
     auto base_url = settings.api_base_url();
 
-    // Let script be the result of creating a classic script given scriptSource, setting's realm, baseURL, and the default classic script fetch options.
-    // FIXME: This doesn't pass in "default classic script fetch options"
-    // FIXME: What should the filename be here?
-    auto script = Web::HTML::ClassicScript::create("(client connection run_javascript)", js_source, settings.realm(), move(base_url));
+    Optional<JS::Completion> evaluation_status;
 
-    // Let evaluationStatus be the result of running the classic script script.
-    auto evaluation_status = script->run();
+    if (is_module) {
+        Web::HTML::fetch_inline_module_script_graph(
+            settings.realm(),
+            filename,
+            js_source,
+            base_url,
+            settings,
+            GC::create_function(heap(), [](GC::Ptr<Web::HTML::Script> script) {
+                if (auto ptr = as_if<Web::HTML::JavaScriptModuleScript>(*script))
+                    ptr->run();
+                else if (auto ptr = as_if<Web::HTML::ClassicScript>(*script))
+                    (void)ptr->run();
+                else
+                    VERIFY_NOT_REACHED();
+            }));
+    } else {
+        // Let script be the result of creating a classic script given scriptSource, setting's realm, baseURL, and the default classic script fetch options.
+        // FIXME: This doesn't pass in "default classic script fetch options"
+        auto script = Web::HTML::ClassicScript::create(filename, js_source, settings.realm(), move(base_url));
 
-    if (evaluation_status.is_error())
+        // Let evaluationStatus be the result of running the classic script script.
+        evaluation_status = script->run();
+    }
+
+    if (evaluation_status.has_value() && evaluation_status->is_error())
         dbgln("Exception :(");
 }
 

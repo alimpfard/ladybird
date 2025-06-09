@@ -79,6 +79,8 @@ void platform_init()
 #endif
     }();
     Core::ResourceImplementation::install(make<Core::ResourceImplementationFile>(MUST(String::from_byte_string(s_ladybird_resource_root))));
+    if (Core::Environment::get("AK_DISABLE_DEBUG_LOGS"sv).value_or(""sv) != ""sv)
+        AK::set_debug_enabled(false);
 }
 
 void copy_default_config_files(StringView config_path)

@@ -411,9 +411,9 @@ void ViewImplementation::debug_request(ByteString const& request, ByteString con
     client().async_debug_request(page_id(), request, argument);
 }
 
-void ViewImplementation::run_javascript(String const& js_source)
+void ViewImplementation::run_javascript(String const& js_source, String const& filename, bool is_module)
 {
-    client().async_run_javascript(page_id(), js_source);
+    client().async_run_javascript(page_id(), js_source, filename, is_module);
 }
 
 void ViewImplementation::js_console_input(String const& js_source)

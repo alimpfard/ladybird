@@ -265,6 +265,26 @@ public:
         };
     }
 
+    auto hide_for_external_terminal_edits()
+    {
+        auto is_active = m_is_editing;
+        if (m_initialized)
+            restore();
+        if (is_active)
+            (void)cleanup(false);
+
+        return ScopeGuard {
+            [this, is_active] {
+                if (is_active) {
+                    m_refresh_needed = true;
+                    initialize();
+                    (void)set_origin(false);
+                    (void)refresh_display();
+                }
+            }
+        };
+    }
+
 private:
     explicit Editor(Configuration configuration = Configuration::from_config());
 
@@ -332,7 +352,7 @@ private:
     }
 
     ErrorOr<void> refresh_display();
-    ErrorOr<void> cleanup();
+    ErrorOr<void> cleanup(bool reset_origin = true);
     ErrorOr<void> cleanup_suggestions();
     ErrorOr<void> really_quit_event_loop();
 
@@ -360,8 +380,7 @@ private:
     size_t cursor_line() const
     {
         auto cursor = m_drawn_cursor;
-        if (cursor > m_cursor)
-            cursor = m_cursor;
+        cursor = min(min(cursor, m_cursor), m_buffer.size());
         return current_prompt_metrics().lines_with_addition(
             actual_rendered_string_metrics(buffer_view().substring_view(0, cursor), m_current_masks),
             m_num_columns);
@@ -370,8 +389,7 @@ private:
     size_t offset_in_line() const
     {
         auto cursor = m_drawn_cursor;
-        if (cursor > m_cursor)
-            cursor = m_cursor;
+        cursor = min(min(cursor, m_cursor), m_buffer.size());
         auto buffer_metrics = actual_rendered_string_metrics(buffer_view().substring_view(0, cursor), m_current_masks);
         return current_prompt_metrics().offset_with_addition(buffer_metrics, m_num_columns);
     }

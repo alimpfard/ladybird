@@ -1359,7 +1359,7 @@ void Editor::recalculate_origin()
     // refresh cycle.
 }
 
-ErrorOr<void> Editor::cleanup()
+ErrorOr<void> Editor::cleanup(bool reset_origin)
 {
     auto current_buffer_metrics = actual_rendered_string_metrics(buffer_view(), m_current_masks);
     auto new_lines = current_prompt_metrics().lines_with_addition(current_buffer_metrics, m_num_columns);
@@ -1371,7 +1371,8 @@ ErrorOr<void> Editor::cleanup()
     auto current_line = num_lines() - 1;
     TRY(VT::clear_lines(current_line, m_extra_forward_lines, *stderr_stream));
     m_extra_forward_lines = 0;
-    TRY(reposition_cursor(*stderr_stream));
+    if (reset_origin)
+        TRY(reposition_cursor(*stderr_stream));
     return {};
 }
 
@@ -2102,9 +2103,6 @@ Result<Vector<size_t, 2>, Editor::Error> Editor::vt_dsr()
     if (m_input_error.has_value())
         return m_input_error.value();
 
-    fputs("\033[6n", stderr);
-    fflush(stderr);
-
     // Parse the DSR response
     // it should be of the form .*\e[\d+;\d+R.*
     // Anything not part of the response is just added to the incomplete data.
@@ -2121,9 +2119,13 @@ Result<Vector<size_t, 2>, Editor::Error> Editor::vt_dsr()
     Vector<char, 4> coordinate_buffer;
     size_t row { 1 }, col { 1 };
 
+    fputs("\033[6n", stderr);
+    fflush(stderr);
+
     do {
         char c;
         auto nread = read(0, &c, 1);
+        dbgln("Read {}", nread);
         if (nread < 0) {
             if (errno == 0 || errno == EINTR) {
                 // ????

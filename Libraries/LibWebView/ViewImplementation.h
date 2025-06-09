@@ -119,7 +119,7 @@ public:
 
     void debug_request(ByteString const& request, ByteString const& argument = {});
 
-    void run_javascript(String const&);
+    void run_javascript(String const&, String const& filename = "(run_javascript)"_string, bool is_module = false);
     void js_console_input(String const&);
     void js_console_request_messages(i32 start_index);
 

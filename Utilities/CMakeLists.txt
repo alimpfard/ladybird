@@ -11,6 +11,10 @@ endif()
 
 lagom_utility(abench SOURCES abench.cpp LIBS LibMain LibFileSystem LibMedia)
 lagom_utility(dns SOURCES dns.cpp LIBS LibDNS LibMain LibTLS LibCrypto)
+lagom_utility(web-js
+    SOURCES web-js.cpp
+    LIBS AK LibCore LibFileSystem LibGfx LibImageDecoderClient LibIPC LibJS LibMain LibWeb LibWebView LibRequests LibURL LibJS LibMain LibFileSystem LibCrypto LibUnicode LibTextCodec LibGC Threads::Threads LibLine
+)
 
 if (ENABLE_GUI_TARGETS)
     lagom_utility(animation SOURCES animation.cpp LIBS LibGfx LibMain)

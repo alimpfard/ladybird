@@ -1209,10 +1209,10 @@ void ConnectionFromClient::js_console_input(u64 page_id, String js_source)
     page->js_console_input(js_source);
 }
 
-void ConnectionFromClient::run_javascript(u64 page_id, String js_source)
+void ConnectionFromClient::run_javascript(u64 page_id, String js_source, String filename, bool is_module)
 {
     if (auto page = this->page(page_id); page.has_value())
-        page->run_javascript(js_source);
+        page->run_javascript(js_source, filename, is_module);
 }
 
 void ConnectionFromClient::js_console_request_messages(u64 page_id, i32 start_index)
