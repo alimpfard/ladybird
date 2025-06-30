@@ -15,6 +15,8 @@
 
 namespace RequestServer {
 
+static constexpr auto MaxRequestRecursionCount = 4;
+
 struct Resolver : public RefCounted<Resolver>
     , Weakable<Resolver> {
     Resolver(Function<ErrorOr<DNS::Resolver::SocketResult>()> create_socket)
@@ -42,10 +44,15 @@ private:
     virtual Messages::RequestServer::IsSupportedProtocolResponse is_supported_protocol(ByteString) override;
     virtual void set_dns_server(ByteString host_or_address, u16 port, bool use_tls, bool validate_dnssec_locally) override;
     virtual void set_use_system_dns() override;
-    virtual void start_request(i32 request_id, ByteString, URL::URL, HTTP::HeaderMap, ByteBuffer, Core::ProxyData) override;
+    virtual void start_request(i32 request_id, ByteString method, URL::URL url, HTTP::HeaderMap headers, ByteBuffer body, Core::ProxyData proxy_data) override
+    {
+        return start_request_impl(request_id, move(method), move(url), move(headers), move(body), move(proxy_data));
+    }
     virtual Messages::RequestServer::StopRequestResponse stop_request(i32) override;
     virtual Messages::RequestServer::SetCertificateResponse set_certificate(i32, ByteString, ByteString) override;
     virtual void ensure_connection(URL::URL url, ::RequestServer::CacheLevel cache_level) override;
+
+    void start_request_impl(i32 request_id, ByteString, URL::URL, HTTP::HeaderMap, ByteBuffer, Core::ProxyData, size_t recursion_count = 0);
 
     virtual void websocket_connect(i64 websocket_id, URL::URL, ByteString, Vector<ByteString>, Vector<ByteString>, HTTP::HeaderMap) override;
     virtual void websocket_send(i64 websocket_id, bool, ByteBuffer) override;
@@ -70,6 +77,7 @@ private:
     HashMap<int, NonnullRefPtr<Core::Notifier>> m_read_notifiers;
     HashMap<int, NonnullRefPtr<Core::Notifier>> m_write_notifiers;
     NonnullRefPtr<Resolver> m_resolver;
+    HashMap<int, RefPtr<Core::Promise<NonnullRefPtr<DNS::LookupResult const>>>> m_active_dns_lookups;
 };
 
 // FIXME: Find a good home for this

@@ -7,6 +7,7 @@
 #pragma once
 
 #include <AK/Base64.h>
+#include <AK/ByteReader.h>
 #include <AK/IPv4Address.h>
 #include <AK/IPv6Address.h>
 #include <AK/RedBlackTree.h>
@@ -92,6 +93,7 @@ struct DomainName {
     ErrorOr<void> to_raw(ByteBuffer&) const;
     String to_string() const;
     String to_canonical_string() const;
+    String to_url_string() const;
     DomainName parent() const
     {
         auto copy = *this;
@@ -360,6 +362,42 @@ static inline StringView to_string(NSEC3HashAlgorithm hash_algorithm)
 
 }
 
+namespace SVCB {
+enum class SvcParamType : u16 {
+    Mandatory = 0,
+    ALPN = 1,
+    NoDefaultALPN = 2,
+    Port = 3,
+    IPv4Hint = 4,
+    ECH = 5,
+    IPv6Hint = 6,
+    Reserved = 65535,
+};
+
+static StringView to_string(SvcParamType type)
+{
+    switch (type) {
+    case SvcParamType::Mandatory:
+        return "Mandatory"sv;
+    case SvcParamType::ALPN:
+        return "ALPN"sv;
+    case SvcParamType::NoDefaultALPN:
+        return "NoDefaultALPN"sv;
+    case SvcParamType::Port:
+        return "Port"sv;
+    case SvcParamType::IPv4Hint:
+        return "IPv4Hint"sv;
+    case SvcParamType::ECH:
+        return "ECH"sv;
+    case SvcParamType::IPv6Hint:
+        return "IPv6Hint"sv;
+    default:
+        break;
+    }
+    return "Reserved"sv;
+}
+}
+
 struct Question {
     DomainName name;
     ResourceType type;
@@ -620,6 +658,74 @@ struct HINFO {
     ErrorOr<void> to_raw(ByteBuffer&) const;
     ErrorOr<String> to_string() const { return String::formatted("HINFO CPU: '{}', OS: '{}'", StringView { cpu }, StringView { os }); }
 };
+
+struct SVCB {
+    struct Mandatory { };
+    struct ALPN { Vector<StringView> value; };
+    struct NoDefaultALPN { };
+    struct Port { u16 value; };
+    struct IPv4Hint { IPv4Address value; };
+    struct IPv6Hint { IPv6Address value; };
+
+    struct SvcParam {
+        Messages::SVCB::SvcParamType type;
+        ByteBuffer value;
+
+        Variant<Mandatory, ALPN, NoDefaultALPN, Port, IPv4Hint, IPv6Hint, Empty> parsed() const;
+    };
+
+    u16 priority;
+    DomainName target_name;
+    Vector<SvcParam> svc_params;
+
+    static constexpr ResourceType type = ResourceType::SVCB;
+    static ErrorOr<SVCB> from_raw(ParseContext&);
+    ErrorOr<void> to_raw(ByteBuffer&) const { return Error::from_string_literal("Not implemented: SVCB::to_raw"); }
+    ErrorOr<String> to_string() const
+    {
+        StringBuilder builder;
+        builder.appendff("Priority: {}, Target Name: '{}', Params: [", priority, target_name.to_string());
+        for (size_t i = 0; i < svc_params.size(); ++i) {
+            auto& param = svc_params[i];
+            builder.appendff("\n\t  {}=", Messages::SVCB::to_string(param.type));
+            switch (param.type) {
+            case Messages::SVCB::SvcParamType::Mandatory:
+            case Messages::SVCB::SvcParamType::ALPN:
+                builder.appendff("{}", StringView{param.value});
+                break;
+            case Messages::SVCB::SvcParamType::NoDefaultALPN:
+                break;
+            case Messages::SVCB::SvcParamType::Port:
+                builder.appendff("{}", bit_cast<NetworkOrdered<u16>>(ByteReader::load16(param.value.data())));
+                break;
+            case Messages::SVCB::SvcParamType::IPv4Hint:
+                builder.appendff("{}", IPv4Address(static_cast<NetworkOrdered<u32>>(ByteReader::load32(param.value.data()))));
+                break;
+            default:
+                builder.appendff("{:hex-dump}", StringView { param.value });
+            }
+            if (i < svc_params.size() - 1)
+                builder.append(", "sv);
+        }
+        if (svc_params.is_empty())
+            builder.append("No Params"sv);
+        else
+            builder.append("\n\t"sv);
+        builder.append("]"sv);
+        return builder.to_string();
+    }
+};
+struct HTTPS : SVCB {
+    template<typename... Ts>
+    HTTPS(Ts&&... args)
+        : SVCB(forward<Ts>(args)...)
+    {
+    }
+
+    static constexpr ResourceType type = ResourceType::HTTPS;
+    static ErrorOr<HTTPS> from_raw(ParseContext& raw) { return SVCB::from_raw(raw); }
+    ErrorOr<void> to_raw(ByteBuffer& buffer) const { return SVCB::to_raw(buffer); }
+};
 struct OPT {
     struct Option {
         u16 code;
@@ -690,6 +796,8 @@ using Record = Variant<
     Records::TLSA,
     Records::HINFO,
     Records::OPT,
+    Records::SVCB,
+    Records::HTTPS,
     // TODO: Add more records.
     ByteBuffer>; // Fallback for unknown records.
 

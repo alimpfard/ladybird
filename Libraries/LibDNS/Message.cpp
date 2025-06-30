@@ -741,6 +741,30 @@ String DomainName::to_canonical_string() const
     return MUST(builder.to_string());
 }
 
+// NOTE: Ad-hoc!
+String DomainName::to_url_string() const
+{
+    if (labels.is_empty())
+        return ""_string;
+
+    StringBuilder builder;
+    auto first = true;
+    for (size_t i = 0; i < labels.size(); ++i) {
+        if (!first)
+            builder.append('.');
+        first = false;
+        auto& label = labels[i];
+        for (size_t j = 0; j < label.length(); ++j) {
+            auto ch = label[j];
+            if (ch >= 'A' && ch <= 'Z')
+                ch = to_ascii_lowercase(ch);
+            builder.append(ch);
+        }
+    }
+
+    return MUST(builder.to_string());
+}
+
 class RecordingStream final : public Stream {
 public:
     explicit RecordingStream(Stream& stream)
@@ -876,6 +900,10 @@ ErrorOr<ResourceRecord> ResourceRecord::from_raw(ParseContext& ctx)
     //     PARSE_AS_RR(TLSA);
     case ResourceType::HINFO:
         PARSE_AS_RR(HINFO);
+    case ResourceType::SVCB:
+        PARSE_AS_RR(SVCB);
+    case ResourceType::HTTPS:
+        PARSE_AS_RR(HTTPS);
     default:
         return ResourceRecord { move(name), type, class_, ttl, move(rdata), move(rr_raw_data) };
     }
@@ -1334,6 +1362,85 @@ ErrorOr<void> Records::OPT::to_raw(ByteBuffer& buffer) const
     }
 
     return {};
+}
+
+Variant<Records::SVCB::Mandatory, Records::SVCB::ALPN, Records::SVCB::NoDefaultALPN, Records::SVCB::Port, Records::SVCB::IPv4Hint, Records::SVCB::IPv6Hint, Empty> Records::SVCB::SvcParam::parsed() const
+{
+    switch (type) {
+    case Messages::SVCB::SvcParamType::Mandatory:
+        return Mandatory{};
+    case Messages::SVCB::SvcParamType::ALPN: {
+        if (value.size() < 2)
+            return Empty{};
+        u16 const length = bit_cast<NetworkOrdered<u16>>(ByteReader::load16(value.data()));
+        if (value.size() < 2 + length || length == 0)
+            return Empty{};
+
+        return ALPN { StringView{value.offset_pointer(2), length}.split_view(',') };
+    }
+    case Messages::SVCB::SvcParamType::NoDefaultALPN:
+        return NoDefaultALPN {};
+    case Messages::SVCB::SvcParamType::Port:
+        if (value.size() < 2)
+            return Empty{};
+        return Port { bit_cast<NetworkOrdered<u16>>(ByteReader::load16(value.data())) };
+    case Messages::SVCB::SvcParamType::IPv4Hint:
+        if (value.size() != 4)
+            return Empty{};
+        return IPv4Hint { IPv4Address { static_cast<NetworkOrdered<u32>>(ByteReader::load32(value.data())) } };
+    case Messages::SVCB::SvcParamType::IPv6Hint:
+        if (value.size() != 16)
+            return Empty{};
+        u8 address[16];
+        (void)value.bytes().copy_trimmed_to(address);
+        return IPv6Hint { { address } };
+    default:
+        return Empty{};
+    }
+}
+
+
+ErrorOr<Records::SVCB> Records::SVCB::from_raw(ParseContext& context)
+{
+    // The RDATA for the SVCB RR consists of:
+    // *  a 2-octet field for SvcPriority as an integer in network byte
+    //    order.
+    // *  the uncompressed, fully qualified TargetName, represented as a
+    //    sequence of length-prefixed labels per Section 3.1 of [RFC1035].
+    // *  the SvcParams, consuming the remainder of the record (so smaller
+    //    than 65535 octets and constrained by the RDATA and DNS message
+    //    sizes).
+    // When the list of SvcParams is non-empty, it contains a series of
+    // SvcParamKey=SvcParamValue pairs, represented as:
+    // *  a 2-octet field containing the SvcParamKey as an integer in
+    //    network byte order.  (See Section 14.3.2 for the defined values.)
+    // *  a 2-octet field containing the length of the SvcParamValue as an
+    //    integer between 0 and 65535 in network byte order.
+    // *  an octet string of this length whose contents are the
+    //    SvcParamValue in a format determined by the SvcParamKey.
+    // SvcParamKeys SHALL appear in increasing numeric order.
+    // Clients MUST consider an RR malformed if:
+    // *  the end of the RDATA occurs within a SvcParam.
+    // *  SvcParamKeys are not in strictly increasing numeric order.
+    // *  the SvcParamValue for a SvcParamKey does not have the expected
+    //    format.
+    // Note that the second condition implies that there are no duplicate
+    // SvcParamKeys.
+
+    auto priority = static_cast<u16>(TRY(context.stream.read_value<NetworkOrdered<u16>>()));
+    auto target_name = TRY(DomainName::from_raw(context));
+    Vector<SvcParam> params;
+    while (!context.stream.is_eof()) {
+        auto key = static_cast<Messages::SVCB::SvcParamType>(static_cast<u16>(TRY(context.stream.read_value<NetworkOrdered<u16>>())));
+        auto value_length = static_cast<u16>(TRY(context.stream.read_value<NetworkOrdered<u16>>()));
+        ByteBuffer value;
+        TRY(context.stream.read_until_filled(TRY(value.get_bytes_for_writing(value_length))));
+        if (value_length != value.size())
+            return Error::from_string_literal("Invalid SVCB record: value length mismatch");
+        params.empend(key, move(value));
+    }
+
+    return SVCB { priority, target_name, move(params) };
 }
 
 }

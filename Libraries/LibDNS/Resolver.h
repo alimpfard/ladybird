@@ -144,6 +144,20 @@ public:
         VERIFY_NOT_REACHED();
     }
 
+    template<typename RR, typename Compare>
+    Vector<RR const*> sorted_records(Compare&& compare) const
+    {
+        Vector<RR const*> result;
+        for (auto const& re : m_cached_records) {
+            if (re.record.type != RR::type)
+                continue;
+            auto const& record = re.record.record.get<RR>();
+            result.append(&record);
+        }
+        quick_sort(result, forward<Compare>(compare));
+        return result;
+    }
+
     bool has_record_of_type(Messages::ResourceType type, bool later = false) const
     {
         if (later && m_desired_types.contains(type))
