@@ -32,8 +32,37 @@
     },
     {
       "hidden": true,
+      "name": "base no vcpkg",
+      "displayName": "Default Config Without VcPkg",
+      "generator": "Ninja",
+      "binaryDir": "${fileDir}/Build/release-sys",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "SERENITY_CACHE_DIR": "${fileDir}/Build/caches"
+      },
+      "environment": {
+        "LADYBIRD_SOURCE_DIR": "${fileDir}"
+      },
+      "vendor": {
+        "jetbrains.com/clion": {
+          "toolchain": "Default"
+        }
+      }
+    },
+    {
+      "hidden": true,
       "name": "unix_base",
       "inherits": "base",
+      "condition": {
+        "type": "notEquals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "hidden": true,
+      "name": "unix_base no vcpkg",
+      "inherits": "base no vcpkg",
       "condition": {
         "type": "notEquals",
         "lhs": "${hostSystemName}",
@@ -68,6 +97,11 @@
       "name": "Release",
       "inherits": "unix_base",
       "displayName": "Release Config"
+    },
+    {
+      "name": "ReleaseNoVcPkg",
+      "inherits": "unix_base no vcpkg",
+      "displayName": "Release Config No VcPkg"
     },
     {
       "name": "Debug",

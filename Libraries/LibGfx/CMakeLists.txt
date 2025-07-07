@@ -127,13 +127,14 @@ if (HAS_FONTCONFIG)
 endif()
 
 set(CMAKE_REQUIRED_LIBRARIES PNG::PNG)
-check_c_source_compiles([=[
+try_compile(LIBPNG_HAS_APNG
+    SOURCE_FROM_CONTENT test.c [=[
     #include <png.h>
     #if !defined(PNG_APNG_SUPPORTED) || !defined(PNG_READ_APNG_SUPPORTED) || !defined(PNG_READ_APNG_SUPPORTED)
     #error "APNG support is required"
     #endif
-    int main() {}
-]=] LIBPNG_HAS_APNG)
+    int main() { return 0; }
+]=])
 unset(CMAKE_REQUIRED_LIBRARIES)
 
 if (NOT LIBPNG_HAS_APNG)
