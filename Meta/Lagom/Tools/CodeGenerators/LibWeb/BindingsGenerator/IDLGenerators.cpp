@@ -138,6 +138,7 @@ static bool is_platform_object(Type const& type)
         "Window"sv,
         "WindowProxy"sv,
         "WritableStream"sv,
+        "XPathResult"sv,
     };
     if (type.name().ends_with("Element"sv))
         return true;

@@ -1,0 +1,24 @@
+#import <DOM/Document.idl>
+#import <DOM/XPathResult.idl>
+#import <DOM/XPathExpression.idl>
+
+interface mixin XPathEvaluatorBase {
+  [NewObject] XPathExpression createExpression(DOMString expression, optional XPathNSResolver? resolver = null);
+  Node createNSResolver(Node nodeResolver); // legacy
+  // XPathResult.ANY_TYPE = 0
+  // FIXME: resolver: optional XPathNSResolver? resolver = null, currently checked manually.
+  XPathResult evaluate(DOMString expression, Node contextNode, optional object? resolver = null, optional unsigned short type = 0, optional XPathResult? result = null);
+};
+
+// FIXME: callback interfaces not supported.
+// callback interface XPathNSResolver {
+//   DOMString? lookupNamespaceURI(DOMString? prefix);
+// };
+
+[Exposed=Window]
+interface XPathExpression {
+  // XPathResult.ANY_TYPE = 0
+  XPathResult evaluate(Node contextNode, optional unsigned short type = 0, optional XPathResult? result = null);
+};
+
+Document includes XPathEvaluatorBase;

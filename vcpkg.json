@@ -68,6 +68,7 @@
     "icu",
     "libjpeg-turbo",
     "libjxl",
+    "libxml2",
     {
       "name": "libpng",
       "features": [
