@@ -259,6 +259,7 @@ ErrorOr<void, ValidationError> Validator::validate(CodeSection const& section)
         auto function_validator = fork();
         function_validator.m_context.locals = {};
         function_validator.m_context.locals.extend(function_type.parameters());
+        function_validator.m_context.current_function_parameter_count = function_type.parameters().size();
         for (auto& local : function.locals()) {
             for (size_t i = 0; i < local.n(); ++i)
                 function_validator.m_context.locals.append(local.type());
@@ -1353,8 +1354,7 @@ VALIDATE_INSTRUCTION(select_typed)
 // https://webassembly.github.io/spec/core/bikeshed/#variable-instructions%E2%91%A2
 VALIDATE_INSTRUCTION(local_get)
 {
-    auto index = instruction.local_index();
-    TRY(validate(index));
+    auto index = TRY(validate(instruction.local_index()));
 
     stack.append(m_context.locals[index.value()]);
     return {};
@@ -1362,8 +1362,7 @@ VALIDATE_INSTRUCTION(local_get)
 
 VALIDATE_INSTRUCTION(local_set)
 {
-    auto index = instruction.local_index();
-    TRY(validate(index));
+    auto index = TRY(validate(instruction.local_index()));
 
     auto& value_type = m_context.locals[index.value()];
     TRY(stack.take(value_type));
@@ -1373,8 +1372,7 @@ VALIDATE_INSTRUCTION(local_set)
 
 VALIDATE_INSTRUCTION(local_tee)
 {
-    auto index = instruction.local_index();
-    TRY(validate(index));
+    auto index = TRY(validate(instruction.local_index()));
 
     auto& value_type = m_context.locals[index.value()];
     TRY(stack.take(value_type));
