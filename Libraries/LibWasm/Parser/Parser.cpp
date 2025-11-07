@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include "AK/Enumerate.h"
+
 #include <AK/ConstrainedStream.h>
 #include <AK/Debug.h>
 #include <AK/Endian.h>
@@ -1474,8 +1476,31 @@ ParseResult<NonnullRefPtr<Module>> Module::parse(Stream& stream)
             return ParseError::SectionSizeMismatch;
     }
 
+    module_ptr->preprocess();
+
     return module_ptr;
 }
+
+void Module::preprocess()
+{
+    for (auto const& [i, type_id] : enumerate(function_section().types())) {
+        if (type_id.value() >= type_section().types().size() || i >= code_section().functions().size()) {
+            dbgln("WASM Module preprocessing: skipping function {} with invalid type id {}", i, type_id.value());
+            continue;
+        }
+
+        auto& function = code_section().functions()[i];
+        auto const parameter_count = type_section().types()[type_id.value()].parameters().size();
+        for (auto& instruction : function.func().body().instructions()) {
+            auto& mutable_instruction = const_cast<Instruction&>(instruction);
+            if (instruction.local_index() < parameter_count)
+                mutable_instruction.set_local_index({}, instruction.local_index().value() | LocalArgumentMarker);
+            else
+                mutable_instruction.set_local_index({}, instruction.local_index().value() - parameter_count);
+        }
+    }
+}
+
 
 ByteString parse_error_to_byte_string(ParseError error)
 {
