@@ -479,8 +479,12 @@ void Printer::print(Wasm::Instruction const& instruction)
     print_indent();
     print("({}", instruction_name(instruction.opcode()));
     if (instruction.arguments().has<u8>()) {
-        if (instruction.opcode() == Instructions::local_get || instruction.opcode() == Instructions::local_set || instruction.opcode() == Instructions::local_tee)
-            print(" (local index {})", instruction.local_index());
+        if (instruction.opcode() == Instructions::local_get || instruction.opcode() == Instructions::local_set || instruction.opcode() == Instructions::local_tee) {
+                if (instruction.local_index().value() & LocalArgumentMarker)
+                    print(" (argument index {})", instruction.local_index().value() & ~LocalArgumentMarker);
+                else
+                    print(" (local index {})", instruction.local_index().value());
+        }
         print(")\n");
     } else {
         print(" ");
