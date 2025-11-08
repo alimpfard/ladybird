@@ -89,7 +89,7 @@ public:
 
     ALWAYS_INLINE FLATTEN void push_to_destination(Value value, Dispatch::RegisterOrStack destination)
     {
-        if (destination == Dispatch::RegisterOrStack::Stack) {
+        if (destination & Dispatch::RegisterOrStack::Stack) [[unlikely]] {
             value_stack().unchecked_append(value);
             return;
         }
@@ -100,7 +100,7 @@ public:
     {
         // Note: The last source in a dispatch *must* be equal to the destination for this to be valid.
         auto const source = sources[index];
-        if (source == Dispatch::RegisterOrStack::Stack)
+        if (source & Dispatch::RegisterOrStack::Stack) [[unlikely]]
             return value_stack().unsafe_last();
         return regs.data()[to_underlying(source)];
     }
@@ -108,7 +108,7 @@ public:
     ALWAYS_INLINE FLATTEN Value take_source(u8 index, Dispatch::RegisterOrStack const* sources)
     {
         auto const source = sources[index];
-        if (source == Dispatch::RegisterOrStack::Stack)
+        if (source & Dispatch::RegisterOrStack::Stack) [[unlikely]]
             return value_stack().unsafe_take_last();
         return regs.data()[to_underlying(source)];
     }

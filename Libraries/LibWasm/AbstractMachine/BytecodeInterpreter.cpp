@@ -139,6 +139,8 @@ struct Continue {
     {
         current_ip_value++;
         auto const instruction = cc[current_ip_value].instruction;
+        __builtin_prefetch(cc + current_ip_value + 1, /* read only */ 0, /* into l1 */ 3);
+        __builtin_prefetch(instruction + 1, /* read only */ 0, /* into l3 */ 1);
         auto const handler = bit_cast<Outcome (*)(HANDLER_PARAMS(DECOMPOSE_PARAMS_TYPE_ONLY))>(cc[current_ip_value].handler_ptr);
         addresses.sources_and_destination = cc[current_ip_value].sources_and_destination;
         TAILCALL return handler(interpreter, configuration, instruction, addresses, current_ip_value, cc);
@@ -4510,7 +4512,6 @@ CompiledInstructions try_compile_instructions(Expression const& expression, Span
     // - Any instruction that produces polymorphic stack, or requires its inputs on the stack must sink all active values to the stack.
     // - All instructions must have the same location for their last input and their destination value (if any).
     // - Any value left at the end of the expression must be on the stack.
-    // - All inputs and outputs of call instructions with <4 inputs and <=1 output must be on the stack.
 
     using ValueID = DistinctNumeric<size_t, struct ValueIDTag, AK::DistinctNumericFeature::Comparison, AK::DistinctNumericFeature::Arithmetic, AK::DistinctNumericFeature::Increment>;
     using IP = DistinctNumeric<size_t, struct IPTag, AK::DistinctNumericFeature::Comparison>;
@@ -4597,10 +4598,6 @@ CompiledInstructions try_compile_instructions(Expression const& expression, Span
         Vector<ValueID> dependent_ids;
 
         bool variadic_or_unknown = false;
-        // auto const is_known_call = opcode == Instructions::synthetic_call_00 || opcode == Instructions::synthetic_call_01
-        //     || opcode == Instructions::synthetic_call_10 || opcode == Instructions::synthetic_call_11
-        //     || opcode == Instructions::synthetic_call_20 || opcode == Instructions::synthetic_call_21
-        //     || opcode == Instructions::synthetic_call_30 || opcode == Instructions::synthetic_call_31;
 
         switch (opcode.value()) {
 #define M(name, _, ins, outs)                    \
@@ -4658,9 +4655,6 @@ CompiledInstructions try_compile_instructions(Expression const& expression, Span
             auto& value = values.get(input_value).value();
             value.uses.append(i);
             value.last_use = max(value.last_use, i);
-
-            // if (is_known_call)
-            //     forced_stack_values.append(input_value);
         }
         instr_to_input_values.set(i, input_ids);
         instr_to_dependent_values.set(i, dependent_ids);
@@ -4673,9 +4667,6 @@ CompiledInstructions try_compile_instructions(Expression const& expression, Span
             instr_to_output_value.set(i, id);
             output_id = id;
             ensure_id_space(id);
-
-            // if (is_known_call)
-            //     forced_stack_values.append(id);
         }
 
         // Alias the output with the last input, if one exists.
@@ -4703,31 +4694,6 @@ CompiledInstructions try_compile_instructions(Expression const& expression, Span
 
     for (size_t i = 0; i < final_roots.size(); ++i)
         final_roots[i] = find_root(i);
-
-    // One more pass to ensure that all inputs and outputs of known calls are forced to the stack after aliases are resolved.
-    // for (size_t i = 0; i < result.dispatches.size(); ++i) {
-    //     auto const opcode = result.dispatches[i].instruction->opcode();
-    //     auto const is_known_call = opcode == Instructions::synthetic_call_00 || opcode == Instructions::synthetic_call_01
-    //         || opcode == Instructions::synthetic_call_10 || opcode == Instructions::synthetic_call_11
-    //         || opcode == Instructions::synthetic_call_20 || opcode == Instructions::synthetic_call_21
-    //         || opcode == Instructions::synthetic_call_30 || opcode == Instructions::synthetic_call_31;
-
-    //     if (is_known_call) {
-    //         if (auto input_ids = instr_to_input_values.get(i); input_ids.has_value()) {
-    //             for (auto input_id : *input_ids) {
-    //                 if (input_id.value() < final_roots.size()) {
-    //                     stack_forced_roots.set(final_roots[input_id.value()]);
-    //                 }
-    //             }
-    //         }
-
-    //         if (auto output_id = instr_to_output_value.get(i); output_id.has_value()) {
-    //             if (output_id->value() < final_roots.size()) {
-    //                 stack_forced_roots.set(final_roots[output_id->value()]);
-    //             }
-    //         }
-    //     }
-    // }
 
     struct LiveInterval {
         ValueID value_id;

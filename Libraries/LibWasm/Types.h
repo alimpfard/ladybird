@@ -622,6 +622,8 @@ struct Dispatch {
         Stack = CountRegisters,
     };
 
+    static_assert(is_power_of_two(to_underlying(Stack)), "Stack marker must be a single bit");
+
     union {
         OpCode instruction_opcode;
         FlatPtr handler_ptr;
@@ -634,7 +636,10 @@ struct Dispatch {
         };
         u32 sources_and_destination;
     };
+
+    u8 _pad[8] {}; // Pay the cache tax and avoid silly multiply-by-24 addressing; FIXME: See if it's possible to reduce to 16 bytes instead?
 };
+
 struct CompiledInstructions {
     Vector<Dispatch> dispatches;
     Vector<Instruction, 0, FastLastAccess::Yes> extra_instruction_storage;
