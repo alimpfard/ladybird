@@ -186,6 +186,8 @@ struct Continue {
     {
         current_ip_value++;
         auto const instruction = cc[current_ip_value].instruction;
+        __builtin_prefetch(cc + current_ip_value + 1, /* read only */ 0, /* into l1 */ 3);
+        __builtin_prefetch(instruction + 1, /* read only */ 0, /* into l3 */ 1);
         auto const handler = bit_cast<Outcome (*)(HANDLER_PARAMS(DECOMPOSE_PARAMS_TYPE_ONLY))>(cc[current_ip_value].handler_ptr);
         addresses = addresses_ptr[current_ip_value];
         TAILCALL return handler(interpreter, configuration, instruction, addresses, current_ip_value, cc, addresses_ptr);
