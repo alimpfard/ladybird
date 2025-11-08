@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 from typing import Literal
 from typing import Union
+from typing import Optional
 
 
 class ParseException(Exception):
@@ -29,8 +30,16 @@ class WasmVector:
     lanes: list[str]
     num_bits: int
 
+@dataclass
+class WasmGCValue:
+    kind: str
+    value: Optional[str] = None
 
-WasmValue = Union[WasmPrimitiveValue, WasmVector]
+@dataclass
+class EitherOf:
+    options: list["WasmValue"]
+
+WasmValue = Union[WasmPrimitiveValue, WasmVector, WasmGCValue, EitherOf]
 
 
 @dataclass
@@ -76,6 +85,10 @@ class AssertTrap:
     messsage: str
     action: Action
 
+@dataclass
+class AssertException:
+    line: int
+    action: Action
 
 @dataclass
 class ActionCommand:
@@ -86,7 +99,7 @@ class ActionCommand:
 @dataclass
 class AssertInvalid:
     line: int
-    filename: str
+    filename: Path
     message: str
 
 
@@ -96,6 +109,7 @@ Command = Union[
     AssertTrap,
     ActionCommand,
     AssertInvalid,
+    AssertException,
     Register,
 ]
 
@@ -116,7 +130,11 @@ class GeneratedVector:
     num_bits: int
 
 
-GeneratedValue = Union[str, ArithmeticNan, CanonicalNan, GeneratedVector]
+@dataclass
+class GeneratedEitherOf:
+    options: list["GeneratedValue"]
+
+GeneratedValue = Union[str, ArithmeticNan, CanonicalNan, GeneratedVector, GeneratedEitherOf]
 
 
 @dataclass
@@ -134,13 +152,25 @@ class Context:
 def parse_value(arg: dict[str, str]) -> WasmValue:
     type_ = arg["type"]
     match type_:
-        case "i32" | "i64" | "f32" | "f64" | "externref" | "funcref":
+        case "i32" | "i64" | "f32" | "f64":
             return WasmPrimitiveValue(type_, arg["value"])
+        case "externref" | "funcref":
+            if "value" in arg:
+                return WasmPrimitiveValue(type_, arg["value"])
+            return WasmGCValue(type_)
+        case "refnull":
+            return WasmPrimitiveValue("externref", "null")
+        case "nullfuncref":
+            return WasmPrimitiveValue("funcref", "null")
         case "v128":
             if not isinstance(arg["value"], list):
                 raise ParseException("Got unknown type for Wasm value")
             num_bits = int(arg["lane_type"][1:])
             return WasmVector(arg["value"], num_bits)
+        case "arrayref" | "structref" | "eqref" | "anyref" | "i31ref" | "exnref" | "nullref" | "nullexnref" | "nullexternref":
+            return WasmGCValue(type_, arg.get("value"))
+        case "either":
+            return EitherOf([parse_value(opt) for opt in arg["values"]])
         case _:
             raise ParseException(f"Unknown value type: {type_}")
 
@@ -159,14 +189,27 @@ def parse_action(action: dict[str, Any]) -> Action:
             raise ParseException(f"Action not implemented: {action['type']}")
 
 
+def module_binary_filename(raw_cmd: dict[str, str]) -> Path:
+    return Path(raw_cmd["filename"] if raw_cmd.get("module_type") != "text" else raw_cmd["binary_filename"])
+
+
 def parse(raw: dict[str, Any]) -> WastDescription:
     commands: list[Command] = []
+    defined_modules: dict[str, Path] = {}
     for raw_cmd in raw["commands"]:
         line = raw_cmd["line"]
         cmd: Command
         match raw_cmd["type"]:
             case "module":
-                cmd = ModuleCommand(line, Path(raw_cmd["filename"]), raw_cmd.get("name"))
+                cmd = ModuleCommand(line, module_binary_filename(raw_cmd), raw_cmd.get("name"))
+            case "module_definition":
+                if "name" in raw_cmd:
+                    defined_modules[raw_cmd["name"]] = module_binary_filename(raw_cmd)
+                    continue
+                else:
+                    cmd = ModuleCommand(line, module_binary_filename(raw_cmd), None)
+            case "module_instance":
+                cmd = ModuleCommand(line, defined_modules[raw_cmd["module"]], raw_cmd.get("instance"))
             case "action":
                 cmd = ActionCommand(line, parse_action(raw_cmd["action"]))
             case "register":
@@ -182,7 +225,9 @@ def parse(raw: dict[str, Any]) -> WastDescription:
             case "assert_invalid" | "assert_malformed" | "assert_uninstantiable" | "assert_unlinkable":
                 if raw_cmd.get("module_type") == "text":
                     continue
-                cmd = AssertInvalid(line, raw_cmd["filename"], raw_cmd["text"])
+                cmd = AssertInvalid(line, module_binary_filename(raw_cmd), raw_cmd["text"])
+            case "assert_exception":
+                cmd = AssertException(line, parse_action(raw_cmd["action"]))
             case _:
                 raise ParseException(f"Unknown command type: {raw_cmd['type']}")
         commands.append(cmd)
@@ -197,17 +242,24 @@ def escape(s: str) -> str:
 def make_description(input_path: Path, name: str, out_path: Path) -> WastDescription:
     out_json_path = out_path / f"{name}.json"
     result = subprocess.run(
-        ["wast2json", "--enable-all", input_path, f"--output={out_json_path}", "--no-check"],
+        ["wasm-tools", "json-from-wast", input_path, "-o", out_json_path, "--wasm-dir", str(out_path)],
     )
     result.check_returncode()
     with open(out_json_path, "r") as f:
         description = json.load(f)
     return parse(description)
 
+def to_vector_element(value: str, bits: int, addition: str) -> str:
+    if value.isdigit():
+        return value + addition
+    if value.startswith('-') and value[1:].isdigit():
+        unsigned_value = (1 << bits) + int(value)
+        return str(unsigned_value) + addition
+    return f'"{value}"'
 
 def gen_vector(vec: WasmVector, *, array=False) -> str:
     addition = "n" if vec.num_bits == 64 else ""
-    vals = ", ".join(v + addition if v.isdigit() else f'"{v}"' for v in vec.lanes)
+    vals = ", ".join(to_vector_element(v, vec.num_bits, addition) for v in vec.lanes)
     if not array:
         type_ = "BigUint64Array" if vec.num_bits == 64 else f"Uint{vec.num_bits}Array"
         return f"new {type_}([{vals}])"
@@ -215,8 +267,14 @@ def gen_vector(vec: WasmVector, *, array=False) -> str:
 
 
 def gen_value_arg(value: WasmValue) -> str:
+    if isinstance(value, WasmGCValue):
+        return "null"
+
     if isinstance(value, WasmVector):
         return gen_vector(value)
+
+    if isinstance(value, EitherOf):
+        assert False, "EitherOf should not appear here"
 
     def unsigned_to_signed(uint: int, bits: int) -> int:
         max_value = 2**bits
@@ -268,6 +326,9 @@ def gen_value_result(value: WasmValue) -> GeneratedValue:
     if isinstance(value, WasmVector):
         return GeneratedVector(gen_vector(value, array=True), value.num_bits)
 
+    if isinstance(value, EitherOf):
+        return GeneratedEitherOf([gen_value_result(option) for option in value.options])
+
     if (value.kind == "f32" or value.kind == "f64") and value.value.startswith("nan"):
         num_bits = int(value.kind[1:])
         match value.value:
@@ -316,7 +377,7 @@ def gen_invalid(invalid: AssertInvalid, ctx: Context):
     if ctx.has_unclosed:
         print("});")
         ctx.has_unclosed = False
-    stem = Path(invalid.filename).stem
+    stem = invalid.filename.stem
     print(
         f"""
 describe("{stem}", () => {{
@@ -331,6 +392,55 @@ expect(() => parseWebAssemblyModule(content, globalImportObject)).toThrow(Error,
 
 def gen_pretty_expect(expr: str, got: str, expect: str):
     print(f"if (!{expr}) {{ expect().fail(`Failed with ${{{got}}}, expected {expect}`); }}")
+
+
+def gen_expectation(gen_result: GeneratedValue):
+    match gen_result:
+        case str():
+            print(f"expect(_result).toBe({gen_result});")
+        case ArithmeticNan():
+            gen_pretty_expect(
+                f"isArithmeticNaN{gen_result.num_bits}(_result)",
+                "_result",
+                "nan:arithmetic",
+            )
+        case CanonicalNan():
+            gen_pretty_expect(
+                f"isCanonicalNaN{gen_result.num_bits}(_result)",
+                "_result",
+                "nan:canonical",
+            )
+        case GeneratedVector():
+            if gen_result.num_bits == 64:
+                array = "new BigUint64Array(_result)"
+            else:
+                array = f"new Uint{gen_result.num_bits}Array(_result)"
+            gen_pretty_expect(
+                f"testSIMDVector({gen_result.repr}, {array})",
+                array,
+                gen_result.repr,
+            )
+        case GeneratedEitherOf():
+            print("let matched = false;")
+            print("let error_sample = null;")
+            expectations = []
+            for option in gen_result.options:
+                print("try {")
+                gen_expectation(option)
+                print("matched = true;")
+                print("} catch (e) { error_sample = e; }")
+                expectation = "unknown"
+                match option:
+                    case str():
+                        expectation = option
+                    case ArithmeticNan():
+                        expectation = "nan:arithmetic"
+                    case CanonicalNan():
+                        expectation = "nan:canonical"
+                    case GeneratedVector():
+                        expectation = option.repr
+                expectations.append(expectation)
+            print(f'if (!matched) {{ expect().fail(`Expected one of {", ".join(expectations)}, got ${{_result}}: ${{error_sample}}`); }}')
 
 
 def gen_invoke(
@@ -358,31 +468,7 @@ expect(_field).not.toBeUndefined();"""
         print(f"let _result = {module}.invoke(_field, {gen_args(invoke.args)});")
     if result is not None:
         gen_result = gen_value_result(result)
-        match gen_result:
-            case str():
-                print(f"expect(_result).toBe({gen_result});")
-            case ArithmeticNan():
-                gen_pretty_expect(
-                    f"isArithmeticNaN{gen_result.num_bits}(_result)",
-                    "_result",
-                    "nan:arithmetic",
-                )
-            case CanonicalNan():
-                gen_pretty_expect(
-                    f"isCanonicalNaN{gen_result.num_bits}(_result)",
-                    "_result",
-                    "nan:canonical",
-                )
-            case GeneratedVector():
-                if gen_result.num_bits == 64:
-                    array = "new BigUint64Array(_result)"
-                else:
-                    array = f"new Uint{gen_result.num_bits}Array(_result)"
-                gen_pretty_expect(
-                    f"testSIMDVector({gen_result.repr}, {array})",
-                    array,
-                    gen_result.repr,
-                )
+        gen_expectation(gen_result)
     print("});")
     if not ctx.has_unclosed:
         print("});")
@@ -431,6 +517,10 @@ def gen_command(command: Command, ctx: Context):
             if not isinstance(command.action, Invoke):
                 raise GenerateException(f"Not implemented: {type(command.action)}")
             gen_invoke(command.line, command.action, None, ctx, fail_msg=command.messsage)
+        case AssertException():
+            if not isinstance(command.action, Invoke):
+                raise GenerateException(f"Not implemented: {type(command.action)}")
+            gen_invoke(command.line, command.action, None, ctx, fail_msg="exception")
 
 
 def generate(description: WastDescription):
