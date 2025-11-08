@@ -479,11 +479,14 @@ void Printer::print(Wasm::Instruction const& instruction)
     print_indent();
     print("({}", instruction_name(instruction.opcode()));
     if (instruction.arguments().has<u8>()) {
-        if (instruction.opcode() == Instructions::local_get || instruction.opcode() == Instructions::local_set || instruction.opcode() == Instructions::local_tee) {
-                if (instruction.local_index().value() & LocalArgumentMarker)
-                    print(" (argument index {})", instruction.local_index().value() & ~LocalArgumentMarker);
-                else
-                    print(" (local index {})", instruction.local_index().value());
+        if (instruction.opcode() == Instructions::local_get
+            || instruction.opcode() == Instructions::local_set
+            || instruction.opcode() == Instructions::local_tee
+            || instruction.opcode() == Instructions::synthetic_argument_get) {
+            if (instruction.local_index().value() & LocalArgumentMarker)
+                print(" (argument index {})", instruction.local_index().value() & ~LocalArgumentMarker);
+            else
+                print(" (local index {})", instruction.local_index().value());
         }
         print(")\n");
     } else {
@@ -545,7 +548,12 @@ void Printer::print(Wasm::Instruction const& instruction)
             [&](Vector<ValueType> const&) { print("(types...)"); },
             [&](auto const& value) { print("(const {})", value); });
 
-        if (instruction.local_index().value()) {
+        if (instruction.opcode() == Instructions::local_get
+            || instruction.opcode() == Instructions::local_set
+            || instruction.opcode() == Instructions::local_tee
+            || instruction.opcode() == Instructions::synthetic_argument_get
+            || instruction.opcode() == Instructions::synthetic_local_seti32_const
+            || instruction.opcode() == Instructions::synthetic_i32_storelocal) {
             if (instruction.local_index().value() & LocalArgumentMarker)
                 print(" (argument index {})", instruction.local_index().value() & ~LocalArgumentMarker);
             else
