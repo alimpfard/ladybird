@@ -62,6 +62,20 @@ public:
     ALWAYS_INLINE Value const& local(LocalIndex index) const { return m_locals_base[index.value()]; }
     ALWAYS_INLINE Value& local(LocalIndex index) { return m_locals_base[index.value()]; }
 
+    void allocate_call_record(size_t size)
+    {
+        m_current_call_record.resize_with_default_value(size, Value(0));
+        m_call_record_base = m_current_call_record.data();
+        // dbgln("allocate_call_record of size {} at {:p}", size, m_call_record_base);
+    }
+
+    auto take_call_record()
+    {
+        // dbgln("take_call_record of size {} from {:p}", m_current_call_record.size(), m_call_record_base);
+        m_call_record_base = nullptr;
+        return move(m_current_call_record);
+    }
+
     struct CallFrameHandle {
         explicit CallFrameHandle(Configuration& configuration)
             : configuration(configuration)
@@ -89,28 +103,47 @@ public:
 
     ALWAYS_INLINE FLATTEN void push_to_destination(Value value, Dispatch::RegisterOrStack destination)
     {
-        if (destination & Dispatch::RegisterOrStack::Stack) [[unlikely]] {
-            value_stack().unchecked_append(value);
+        if (destination < Dispatch::Stack) [[likely]] {
+            regs.data()[to_underlying(destination)] = value;
             return;
         }
-        regs.data()[to_underlying(destination)] = value;
+
+        if (destination != Dispatch::RegisterOrStack::Stack) {
+            // dbgln("Pushing to call record at index {} (size={})", to_underlying(destination) - Dispatch::CallRecord, m_current_call_record.size());
+            m_call_record_base[to_underlying(destination) - Dispatch::CallRecord] = value;
+            return;
+        }
+
+        value_stack().unchecked_append(value);
     }
 
     ALWAYS_INLINE FLATTEN Value& source_value(u8 index, Dispatch::RegisterOrStack const* sources)
     {
         // Note: The last source in a dispatch *must* be equal to the destination for this to be valid.
         auto const source = sources[index];
-        if (source & Dispatch::RegisterOrStack::Stack) [[unlikely]]
-            return value_stack().unsafe_last();
-        return regs.data()[to_underlying(source)];
+        if (source < Dispatch::RegisterOrStack::Stack) [[likely]]
+            return regs.data()[to_underlying(source)];
+
+        if (source != Dispatch::RegisterOrStack::Stack) {
+            // dbgln("Sourcing from call record at index {} (size={})", to_underlying(source) - Dispatch::CallRecord, m_current_call_record.size());
+            return m_call_record_base[to_underlying(source) - Dispatch::CallRecord];
+        }
+
+        return value_stack().unsafe_last();
     }
 
     ALWAYS_INLINE FLATTEN Value take_source(u8 index, Dispatch::RegisterOrStack const* sources)
     {
         auto const source = sources[index];
-        if (source & Dispatch::RegisterOrStack::Stack) [[unlikely]]
-            return value_stack().unsafe_take_last();
-        return regs.data()[to_underlying(source)];
+        if (source < Dispatch::RegisterOrStack::Stack) [[likely]]
+            return regs.data()[to_underlying(source)];
+
+        if (source != Dispatch::RegisterOrStack::Stack) {
+            // dbgln("Taking from call record at index {} (size={})", to_underlying(source) - Dispatch::CallRecord, m_current_call_record.size());
+            return m_call_record_base[to_underlying(source) - Dispatch::CallRecord];
+        }
+
+        return value_stack().unsafe_take_last();
     }
 
     Array<Value, Dispatch::RegisterOrStack::CountRegisters> regs = {
@@ -130,12 +163,14 @@ private:
     Store& m_store;
     Vector<Value, 64, FastLastAccess::Yes> m_value_stack;
     Vector<Label, 64> m_label_stack;
+    Vector<Value, 8> m_current_call_record;
     DoublyLinkedList<Frame, 512> m_frame_stack;
     size_t m_depth { 0 };
     u64 m_ip { 0 };
     bool m_should_limit_instruction_count { false };
     Value* m_locals_base { nullptr };
     Value* m_arguments_base { nullptr };
+    Value* m_call_record_base { nullptr };
 };
 
 }

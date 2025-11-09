@@ -620,6 +620,8 @@ struct Dispatch {
         R7,
         CountRegisters,
         Stack = CountRegisters,
+        CallRecord,
+        LastCallRecord = 255,
     };
 
     static_assert(is_power_of_two(to_underlying(Stack)), "Stack marker must be a single bit");
@@ -631,7 +633,7 @@ struct Dispatch {
     Instruction const* instruction { nullptr };
     union {
         struct {
-            RegisterOrStack sources[3];
+            Array<RegisterOrStack, 3> sources;
             RegisterOrStack destination;
         };
         u32 sources_and_destination;
