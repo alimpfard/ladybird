@@ -484,23 +484,26 @@ namespace Instructions {
     /* Synthetic fused insns */                                      \
     ENUMERATE_SYNTHETIC_INSTRUCTION_OPCODES(M)
 
-#define ENUMERATE_SYNTHETIC_INSTRUCTION_OPCODES(M)               \
-    M(synthetic_i32_add2local, 0xfe00000000000000ull, 0, 1)      \
-    M(synthetic_i32_addconstlocal, 0xfe00000000000001ull, 0, 1)  \
-    M(synthetic_i32_andconstlocal, 0xfe00000000000002ull, 0, 1)  \
-    M(synthetic_i32_storelocal, 0xfe00000000000003ull, 1, 0)     \
-    M(synthetic_i64_storelocal, 0xfe00000000000004ull, 1, 0)     \
-    M(synthetic_local_seti32_const, 0xfe00000000000005ull, 0, 0) \
-    M(synthetic_call_00, 0xfe00000000000006ull, 0, 0)            \
-    M(synthetic_call_01, 0xfe00000000000007ull, 0, 1)            \
-    M(synthetic_call_10, 0xfe00000000000008ull, 1, 0)            \
-    M(synthetic_call_11, 0xfe00000000000009ull, 1, 1)            \
-    M(synthetic_call_20, 0xfe0000000000000aull, 2, 0)            \
-    M(synthetic_call_21, 0xfe0000000000000bull, 2, 1)            \
-    M(synthetic_call_30, 0xfe0000000000000cull, 3, 0)            \
-    M(synthetic_call_31, 0xfe0000000000000dull, 3, 1)            \
-    M(synthetic_end_expression, 0xfe0000000000000eull, 0, 0)     \
-    M(synthetic_argument_get, 0xfe0000000000000full, 0, 1)
+#define ENUMERATE_SYNTHETIC_INSTRUCTION_OPCODES(M)                 \
+    M(synthetic_i32_add2local, 0xfe00000000000000ull, 0, 1)        \
+    M(synthetic_i32_addconstlocal, 0xfe00000000000001ull, 0, 1)    \
+    M(synthetic_i32_andconstlocal, 0xfe00000000000002ull, 0, 1)    \
+    M(synthetic_i32_storelocal, 0xfe00000000000003ull, 1, 0)       \
+    M(synthetic_i64_storelocal, 0xfe00000000000004ull, 1, 0)       \
+    M(synthetic_local_seti32_const, 0xfe00000000000005ull, 0, 0)   \
+    M(synthetic_call_00, 0xfe00000000000006ull, 0, 0)              \
+    M(synthetic_call_01, 0xfe00000000000007ull, 0, 1)              \
+    M(synthetic_call_10, 0xfe00000000000008ull, 1, 0)              \
+    M(synthetic_call_11, 0xfe00000000000009ull, 1, 1)              \
+    M(synthetic_call_20, 0xfe0000000000000aull, 2, 0)              \
+    M(synthetic_call_21, 0xfe0000000000000bull, 2, 1)              \
+    M(synthetic_call_30, 0xfe0000000000000cull, 3, 0)              \
+    M(synthetic_call_31, 0xfe0000000000000dull, 3, 1)              \
+    M(synthetic_end_expression, 0xfe0000000000000eull, 0, 0)       \
+    M(synthetic_argument_get, 0xfe0000000000000full, 0, 1)         \
+    M(synthetic_allocate_call_record, 0xfe00000000000010ull, 0, 0) \
+    M(synthetic_call_with_record0, 0xfe00000000000011ull, 0, 0)    \
+    M(synthetic_call_with_record1, 0xfe00000000000012ull, 0, 1)
 
 #define ENUMERATE_WASM_OPCODES(M)         \
     ENUMERATE_SINGLE_BYTE_WASM_OPCODES(M) \
@@ -511,7 +514,7 @@ ENUMERATE_WASM_OPCODES(M)
 #undef M
 
 static constexpr inline OpCode SyntheticInstructionBase = 0xfe00000000000000ull;
-static constexpr inline size_t SyntheticInstructionCount = 16;
+static constexpr inline size_t SyntheticInstructionCount = 19;
 
 }
 

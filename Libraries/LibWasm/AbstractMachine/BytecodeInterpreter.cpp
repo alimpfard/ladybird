@@ -1533,6 +1533,32 @@ HANDLE_INSTRUCTION(call)
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
+HANDLE_INSTRUCTION(synthetic_call_with_record0)
+{
+    auto index = instruction->arguments().get<FunctionIndex>();
+    auto address = configuration.frame().module().functions()[index.value()];
+    dbgln_if(WASM_TRACE_DEBUG, "call({})", address.value());
+    if (interpreter.call_address(configuration, address, addresses, BytecodeInterpreter::CallAddressSource::DirectCall, BytecodeInterpreter::CallType::UsingCallRecord) == Outcome::Return)
+        return Outcome::Return;
+    TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
+}
+
+HANDLE_INSTRUCTION(synthetic_call_with_record1)
+{
+    auto index = instruction->arguments().get<FunctionIndex>();
+    auto address = configuration.frame().module().functions()[index.value()];
+    dbgln_if(WASM_TRACE_DEBUG, "call({})", address.value());
+    if (interpreter.call_address(configuration, address, addresses, BytecodeInterpreter::CallAddressSource::DirectCall, BytecodeInterpreter::CallType::UsingCallRecord) == Outcome::Return)
+        return Outcome::Return;
+    TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
+}
+
+HANDLE_INSTRUCTION(synthetic_allocate_call_record)
+{
+    configuration.allocate_call_record(instruction->arguments().get<i32>());
+    TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
+}
+
 HANDLE_INSTRUCTION(return_call)
 {
     LOG_INSN;
@@ -5134,6 +5160,18 @@ CompiledInstructions try_compile_instructions(Expression const& expression, Span
     Vector<Vector<ValueID>> live_at_instr;
     live_at_instr.resize(result.dispatches.size());
 
+    // Track call record constraints
+    HashMap<ValueID, u8> value_to_callrec_slot;
+
+    struct CallInfo {
+        size_t call_index;
+        size_t param_count;
+        size_t result_count;
+        size_t earliest_arg_index;
+        Vector<ValueID> arg_values;
+    };
+    Vector<CallInfo> eligible_calls;
+
     for (size_t i = 0; i < result.dispatches.size(); ++i) {
         auto& dispatch = result.dispatches[i];
         auto opcode = dispatch.instruction->opcode();
@@ -5142,6 +5180,7 @@ CompiledInstructions try_compile_instructions(Expression const& expression, Span
         Vector<ValueID> dependent_ids;
 
         bool variadic_or_unknown = false;
+        bool requires_aliased_destination = true;
 
         switch (opcode.value()) {
 #define M(name, _, ins, outs)                    \
@@ -5215,7 +5254,7 @@ CompiledInstructions try_compile_instructions(Expression const& expression, Span
         }
 
         // Alias the output with the last input, if one exists.
-        if (outputs > 0) {
+        if (outputs > 0 && requires_aliased_destination) {
             auto maybe_input_ids = instr_to_input_values.get(i);
             if (maybe_input_ids.has_value() && !maybe_input_ids->is_empty()) {
                 auto last_input_id = maybe_input_ids->last();
@@ -5236,6 +5275,124 @@ CompiledInstructions try_compile_instructions(Expression const& expression, Span
     }
 
     forced_stack_values.extend(value_stack);
+
+    // Now insert the allocate instructions for eligible calls
+    // Sort by index descending to avoid index adjustment issues
+    quick_sort(eligible_calls, [](auto const& a, auto const& b) {
+        return a.call_index > b.call_index;
+    });
+
+    for (auto& call_info : eligible_calls) {
+        // Insert allocate instruction
+        auto allocate_insn = Instruction(
+            Instructions::synthetic_allocate_call_record,
+            static_cast<i32>(call_info.param_count));
+
+        result.extra_instruction_storage.unchecked_append(allocate_insn);
+        result.dispatches.insert(call_info.earliest_arg_index, default_dispatch(result.extra_instruction_storage.unsafe_last()));
+
+        // Update the call instruction (now at index + 1 due to insertion)
+        size_t adjusted_call_index = call_info.call_index + 1;
+        auto new_call_opcode = call_info.result_count == 0
+            ? Instructions::synthetic_call_with_record0
+            : Instructions::synthetic_call_with_record1;
+
+        auto new_call_insn = Instruction(
+            new_call_opcode,
+            result.dispatches[adjusted_call_index].instruction->arguments());
+
+        result.extra_instruction_storage.unchecked_append(new_call_insn);
+        result.dispatches[adjusted_call_index].instruction = &result.extra_instruction_storage.unsafe_last();
+        result.dispatches[adjusted_call_index].instruction_opcode = new_call_opcode;
+
+        // Update all indices >= earliest_arg_index in the value tracking structures
+        HashMap<ValueID, Value> updated_values;
+        for (auto& [vid, value] : values) {
+            auto new_value = value;
+            if (value.definition_index >= call_info.earliest_arg_index)
+                new_value.definition_index = value.definition_index.value() + 1;
+
+            for (auto& use : new_value.uses) {
+                if (use >= call_info.earliest_arg_index)
+                    use = use.value() + 1;
+            }
+
+            if (new_value.last_use >= call_info.earliest_arg_index)
+                new_value.last_use = new_value.last_use.value() + 1;
+
+            updated_values.set(vid, new_value);
+        }
+        values = move(updated_values);
+
+        // Update instruction-to-value mappings
+        HashMap<IP, ValueID> new_output_map;
+        HashMap<IP, Vector<ValueID>> new_input_map;
+        HashMap<IP, Vector<ValueID>> new_dependent_map;
+
+        for (auto& [ip, vid] : instr_to_output_value) {
+            auto new_ip = ip >= call_info.earliest_arg_index ? IP(ip.value() + 1) : ip;
+            new_output_map.set(new_ip, vid);
+        }
+        instr_to_output_value = move(new_output_map);
+
+        for (auto& [ip, vids] : instr_to_input_values) {
+            auto new_ip = ip >= call_info.earliest_arg_index ? IP(ip.value() + 1) : ip;
+            new_input_map.set(new_ip, vids);
+        }
+        instr_to_input_values = move(new_input_map);
+
+        for (auto& [ip, vids] : instr_to_dependent_values) {
+            auto new_ip = ip >= call_info.earliest_arg_index ? IP(ip.value() + 1) : ip;
+            new_dependent_map.set(new_ip, vids);
+        }
+        instr_to_dependent_values = move(new_dependent_map);
+
+        // Update live_at_instr
+        Vector<Vector<ValueID>> new_live_at_instr;
+        new_live_at_instr.resize(result.dispatches.size());
+        for (size_t i = 0; i < live_at_instr.size(); ++i) {
+            size_t target_index = i;
+            if (i >= call_info.earliest_arg_index) {
+                target_index = i + 1;
+            }
+            if (target_index < new_live_at_instr.size()) {
+                new_live_at_instr[target_index] = move(live_at_instr[i]);
+            }
+        }
+        live_at_instr = move(new_live_at_instr);
+
+        // Update structured instruction arguments
+        for (size_t i = 0; i < result.dispatches.size(); ++i) {
+            auto& args = result.dispatches[i].instruction->arguments();
+            if (auto ptr = args.get_pointer<Instruction::StructuredInstructionArgs>()) {
+                bool needs_update = false;
+                auto new_end_ip = ptr->end_ip;
+                auto new_else_ip = ptr->else_ip;
+
+                if (ptr->end_ip >= call_info.earliest_arg_index) {
+                    new_end_ip = ptr->end_ip.value() + 1;
+                    needs_update = true;
+                }
+
+                if (ptr->else_ip.has_value() && *ptr->else_ip >= call_info.earliest_arg_index) {
+                    new_else_ip = ptr->else_ip->value() + 1;
+                    needs_update = true;
+                }
+
+                if (needs_update) {
+                    auto instruction = *result.dispatches[i].instruction;
+                    instruction.arguments() = Instruction::StructuredInstructionArgs {
+                        .block_type = ptr->block_type,
+                        .end_ip = new_end_ip,
+                        .else_ip = new_else_ip,
+                    };
+                    result.extra_instruction_storage.unchecked_append(move(instruction));
+                    result.dispatches[i].instruction = &result.extra_instruction_storage.unsafe_last();
+                    result.dispatches[i].instruction_opcode = result.dispatches[i].instruction->opcode();
+                }
+            }
+        }
+    }
 
     for (size_t i = 0; i < final_roots.size(); ++i)
         final_roots[i] = find_root(i);
@@ -5321,6 +5478,36 @@ CompiledInstructions try_compile_instructions(Expression const& expression, Span
     }
 
     for (auto& [key, group] : alias_groups) {
+        // Check if any value in this group needs a call record slot
+        Dispatch::RegisterOrStack forced_slot = Dispatch::RegisterOrStack::Stack;
+        bool has_callrec_constraint = false;
+
+        for (auto* interval : group) {
+            if (auto slot = value_to_callrec_slot.get(interval->value_id); slot.has_value()) {
+                forced_slot = static_cast<Dispatch::RegisterOrStack>(*slot);
+                has_callrec_constraint = true;
+                break;
+            }
+        }
+
+        if (has_callrec_constraint) {
+            // Force all values in this alias group to use the call record slot
+            for (auto* interval : group) {
+                value_alloc.set(interval->value_id, forced_slot);
+            }
+            continue;
+        }
+
+        auto has_fixed_allocation = false;
+        for (auto* interval : group) {
+            if (value_alloc.contains(interval->value_id)) {
+                has_fixed_allocation = true;
+                break;
+            }
+        }
+        if (has_fixed_allocation)
+            continue;
+
         IP group_start = NumericLimits<size_t>::max();
         IP group_end = 0;
         auto group_forced_to_stack = false;

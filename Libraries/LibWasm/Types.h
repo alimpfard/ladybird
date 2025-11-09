@@ -620,6 +620,8 @@ struct Dispatch {
         R7,
         CountRegisters,
         Stack = CountRegisters,
+        CallRecord,
+        LastCallRecord = 255,
     };
 
     static_assert(is_power_of_two(to_underlying(Stack)), "Stack marker must be a single bit");

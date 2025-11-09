@@ -77,6 +77,20 @@ public:
     ALWAYS_INLINE Value const& local(LocalIndex index) const { return m_locals_base[index.value()]; }
     ALWAYS_INLINE Value& local(LocalIndex index) { return m_locals_base[index.value()]; }
 
+    void allocate_call_record(size_t size)
+    {
+        m_current_call_record.resize_with_default_value(size, Value(0));
+        m_call_record_base = m_current_call_record.data();
+        // dbgln("allocate_call_record of size {} at {:p}", size, m_call_record_base);
+    }
+
+    auto take_call_record()
+    {
+        // dbgln("take_call_record of size {} from {:p}", m_current_call_record.size(), m_call_record_base);
+        m_call_record_base = nullptr;
+        return move(m_current_call_record);
+    }
+
     struct CallFrameHandle {
         explicit CallFrameHandle(Configuration& configuration)
             : configuration(configuration)
@@ -207,6 +221,7 @@ private:
     Store& m_store;
     Vector<Value, 64, FastLastAccess::Yes> m_value_stack;
     Vector<Label, 64> m_label_stack;
+    Vector<Value, 8> m_current_call_record;
     DoublyLinkedList<Frame, 512> m_frame_stack;
     Vector<Vector<Value, ArgumentsStaticSize>, 16, FastLastAccess::Yes> m_call_argument_freelist;
     size_t m_depth { 0 };

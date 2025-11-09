@@ -32,6 +32,8 @@
 #if !defined(AK_OS_WINDOWS)
 #    include <LibWasm/Wasi.h>
 #endif
+#include "LibWasm/Types.h"
+
 #include <math.h>
 #include <signal.h>
 
@@ -760,6 +762,8 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
                     constexpr auto reg_name = [](Wasm::Dispatch::RegisterOrStack reg) -> ByteString {
                         if (reg == Wasm::Dispatch::RegisterOrStack::Stack)
                             return "stack"sv;
+                        if (reg >= Wasm::Dispatch::RegisterOrStack::CallRecord)
+                            return ByteString::formatted("callrec{}", to_underlying(reg) - to_underlying(Wasm::Dispatch::RegisterOrStack::CallRecord));
                         return ByteString::formatted("reg{}", to_underlying(reg));
                     };
                     if (in_count > -1) {
