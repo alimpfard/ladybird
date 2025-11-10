@@ -20,6 +20,7 @@
 #include <AK/TypedTransfer.h>
 #include <AK/kmalloc.h>
 #include <initializer_list>
+#include <string.h>
 
 namespace AK {
 
@@ -839,7 +840,7 @@ public:
 
         TRY(try_ensure_capacity(new_size));
 
-        if constexpr (Traits<StorageType>::is_trivial()) {
+        if constexpr (IsTrivial<T>) {
             // For trivial types, we can just zero the new memory.
             size_t old_size = size();
             memset(slot(old_size), 0, (new_size - old_size) * sizeof(StorageType));
