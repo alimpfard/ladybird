@@ -631,19 +631,19 @@ struct Dispatch {
         FlatPtr handler_ptr;
     };
     Instruction const* instruction { nullptr };
-    union {
-        struct {
-            Array<RegisterOrStack, 3> sources;
-            RegisterOrStack destination;
-        };
-        u32 sources_and_destination;
-    };
+};
 
-    u8 _pad[8] {}; // Pay the cache tax and avoid silly multiply-by-24 addressing; FIXME: See if it's possible to reduce to 16 bytes instead?
+union SourcesAndDestination {
+    struct {
+        Dispatch::RegisterOrStack sources[3];
+        Dispatch::RegisterOrStack destination;
+    };
+    u32 sources_and_destination;
 };
 
 struct CompiledInstructions {
     Vector<Dispatch> dispatches;
+    Vector<SourcesAndDestination> src_dst_mappings;
     Vector<Instruction, 0, FastLastAccess::Yes> extra_instruction_storage;
     bool direct = false; // true if all dispatches contain handler_ptr, otherwise false and all contain instruction_opcode.
 };

@@ -13,10 +13,15 @@ namespace Wasm {
 
 void Configuration::unwind_impl()
 {
-    m_frame_stack.take_last();
+    m_frame_stack.last().arguments().clear_with_capacity(); // Drop these to avoid copying them to this frame.
+    m_frame_stack.last().locals().clear();
+
+    auto last_frame = m_frame_stack.take_last();
     m_depth--;
     m_locals_base = m_frame_stack.is_empty() ? nullptr : m_frame_stack.unchecked_last().locals().data();
     m_arguments_base = m_frame_stack.is_empty() ? nullptr : m_frame_stack.unchecked_last().arguments().data();
+    // Reuse the args allocation
+    return_call_record(move(last_frame.arguments()));
 }
 
 Result Configuration::call(Interpreter& interpreter, FunctionAddress address, Vector<Value, 8> arguments)
@@ -43,14 +48,13 @@ ErrorOr<Optional<HostFunction&>, Trap> Configuration::prepare_call(FunctionAddre
                 locals.unchecked_append(Value(local.type()));
         }
 
-        set_frame(Frame {
-                      wasm_function->module(),
-                      move(arguments),
-                      move(locals),
-                      wasm_function->code().func().body(),
-                      wasm_function->type().results().size(),
-                  },
-            is_tailcall);
+        set_frame(
+            is_tailcall,
+            wasm_function->module(),
+            move(arguments),
+            move(locals),
+            wasm_function->code().func().body(),
+            wasm_function->type().results().size());
         return OptionalNone {};
     }
 

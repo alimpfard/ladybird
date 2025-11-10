@@ -25,8 +25,15 @@ public:
     {
     }
 
-    void set_frame(Frame frame, bool is_tailcall = false)
+    template<typename... Args>
+    void set_frame(bool is_tailcall, Args&&... frame_init)
     {
+        m_frame_stack.append(forward<Args>(frame_init)...);
+
+        auto& frame = m_frame_stack.unchecked_last();
+        m_locals_base = frame.locals().data();
+        m_arguments_base = frame.arguments().data();
+
         auto continuation = frame.expression().instructions().size() - 1;
         if (auto size = frame.expression().compiled_instructions.dispatches.size(); size > 0)
             continuation = size - 1;
@@ -38,10 +45,7 @@ public:
             if (auto hint = frame.expression().frame_usage_hint(); hint.has_value())
                 m_label_stack.ensure_capacity(*hint + m_label_stack.size());
         }
-        m_frame_stack.append(move(frame));
         m_label_stack.append(label);
-        m_locals_base = m_frame_stack.unchecked_last().locals().data();
-        m_arguments_base = m_frame_stack.unchecked_last().arguments().data();
     }
     ALWAYS_INLINE auto& frame() const { return m_frame_stack.unchecked_last(); }
     ALWAYS_INLINE auto& frame() { return m_frame_stack.unchecked_last(); }
@@ -75,11 +79,21 @@ public:
         // dbgln("allocate_call_record of size {} at {:p}", size, m_call_record_base);
     }
 
-    auto take_call_record()
+    Vector<Value, 8> take_call_record()
     {
         // dbgln("take_call_record of size {} from {:p}", m_current_call_record.size(), m_call_record_base);
         m_call_record_base = nullptr;
-        return move(m_current_call_record);
+        return exchange(m_current_call_record, {});
+    }
+
+    void return_call_record(Vector<Value, 8>&& call_record)
+    {
+        call_record.clear_with_capacity();
+
+        if (m_call_record_base || call_record.capacity() <= 8) // No actual allocation, or we have an existing allocation already.
+            return; // Drop the old one :shrug:
+
+        m_current_call_record = move(call_record);
     }
 
     struct CallFrameHandle {
