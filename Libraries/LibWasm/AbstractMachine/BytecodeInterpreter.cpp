@@ -5169,6 +5169,7 @@ CompiledInstructions try_compile_instructions(Expression const& expression, Span
         size_t result_count;
         size_t earliest_arg_index;
         Vector<ValueID> arg_values;
+        Vector<ValueID> result_values;
     };
     Vector<CallInfo> eligible_calls;
 
@@ -5282,8 +5283,8 @@ CompiledInstructions try_compile_instructions(Expression const& expression, Span
         return a.call_index > b.call_index;
     });
 
+    HashTable<ValueID> call_values;
     for (auto& call_info : eligible_calls) {
-        // Insert allocate instruction
         auto allocate_insn = Instruction(
             Instructions::synthetic_allocate_call_record,
             static_cast<i32>(call_info.param_count));
@@ -5307,6 +5308,7 @@ CompiledInstructions try_compile_instructions(Expression const& expression, Span
 
         // Update all indices >= earliest_arg_index in the value tracking structures
         HashMap<ValueID, Value> updated_values;
+        updated_values.ensure_capacity(values.size());
         for (auto& [vid, value] : values) {
             auto new_value = value;
             if (value.definition_index >= call_info.earliest_arg_index)
@@ -5392,6 +5394,9 @@ CompiledInstructions try_compile_instructions(Expression const& expression, Span
                 }
             }
         }
+
+        for (auto val : call_info.result_values)
+            call_values.set(val);
     }
 
     for (size_t i = 0; i < final_roots.size(); ++i)
@@ -5497,16 +5502,6 @@ CompiledInstructions try_compile_instructions(Expression const& expression, Span
             }
             continue;
         }
-
-        auto has_fixed_allocation = false;
-        for (auto* interval : group) {
-            if (value_alloc.contains(interval->value_id)) {
-                has_fixed_allocation = true;
-                break;
-            }
-        }
-        if (has_fixed_allocation)
-            continue;
 
         IP group_start = NumericLimits<size_t>::max();
         IP group_end = 0;

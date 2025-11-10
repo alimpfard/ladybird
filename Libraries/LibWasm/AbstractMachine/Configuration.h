@@ -84,7 +84,7 @@ public:
         // dbgln("allocate_call_record of size {} at {:p}", size, m_call_record_base);
     }
 
-    auto take_call_record()
+    Vector<Value, 8> take_call_record()
     {
         // dbgln("take_call_record of size {} from {:p}", m_current_call_record.size(), m_call_record_base);
         m_call_record_base = nullptr;
