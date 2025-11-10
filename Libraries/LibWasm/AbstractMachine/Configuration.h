@@ -12,6 +12,12 @@
 
 namespace Wasm {
 
+enum class SourceAddressMix {
+    AllRegisters,
+    AllCallRecord,
+    Any,
+};
+
 class Configuration {
 public:
     explicit Configuration(Store& store)
@@ -64,7 +70,7 @@ public:
 
     void allocate_call_record(size_t size)
     {
-        m_current_call_record.resize_with_default_value(size, Value(0));
+        m_current_call_record.resize(size);
         m_call_record_base = m_current_call_record.data();
         // dbgln("allocate_call_record of size {} at {:p}", size, m_call_record_base);
     }
@@ -101,49 +107,80 @@ public:
 
     void dump_stack();
 
+    template<SourceAddressMix mix>
     ALWAYS_INLINE FLATTEN void push_to_destination(Value value, Dispatch::RegisterOrStack destination)
     {
-        if (destination < Dispatch::Stack) [[likely]] {
+        if constexpr (mix == SourceAddressMix::AllRegisters) {
             regs.data()[to_underlying(destination)] = value;
             return;
+        } else if constexpr (mix == SourceAddressMix::Any) {
+            if (!(destination & ~(Dispatch::Stack - 1))) [[likely]] {
+                regs.data()[to_underlying(destination)] = value;
+                return;
+            }
         }
 
-        if (destination != Dispatch::RegisterOrStack::Stack) {
-            // dbgln("Pushing to call record at index {} (size={})", to_underlying(destination) - Dispatch::CallRecord, m_current_call_record.size());
+        if constexpr (mix == SourceAddressMix::Any) {
+            if (destination == Dispatch::RegisterOrStack::Stack) [[unlikely]] {
+                value_stack().unchecked_append(value);
+                return;
+            }
+        }
+
+        if constexpr (mix == SourceAddressMix::AllCallRecord || mix == SourceAddressMix::Any) {
             m_call_record_base[to_underlying(destination) - Dispatch::CallRecord] = value;
             return;
         }
 
-        value_stack().unchecked_append(value);
+        VERIFY_NOT_REACHED();
     }
 
+    template<SourceAddressMix mix>
     ALWAYS_INLINE FLATTEN Value& source_value(u8 index, Dispatch::RegisterOrStack const* sources)
     {
         // Note: The last source in a dispatch *must* be equal to the destination for this to be valid.
         auto const source = sources[index];
-        if (source < Dispatch::RegisterOrStack::Stack) [[likely]]
-            return regs.data()[to_underlying(source)];
 
-        if (source != Dispatch::RegisterOrStack::Stack) {
-            // dbgln("Sourcing from call record at index {} (size={})", to_underlying(source) - Dispatch::CallRecord, m_current_call_record.size());
+        if constexpr (mix == SourceAddressMix::AllRegisters) {
+            return regs.data()[to_underlying(source)];
+        } else if constexpr (mix == SourceAddressMix::Any) {
+            if (!(source & ~(Dispatch::Stack - 1))) [[likely]]
+                return regs.data()[to_underlying(source)];
+        }
+
+        if constexpr (mix == SourceAddressMix::Any) {
+            if (source == Dispatch::RegisterOrStack::Stack) [[unlikely]]
+                return value_stack().unsafe_last();
+        }
+
+        if constexpr (mix == SourceAddressMix::AllCallRecord || mix == SourceAddressMix::Any) {
             return m_call_record_base[to_underlying(source) - Dispatch::CallRecord];
         }
 
-        return value_stack().unsafe_last();
+        VERIFY_NOT_REACHED();
     }
 
+    template<SourceAddressMix mix>
     ALWAYS_INLINE FLATTEN Value take_source(u8 index, Dispatch::RegisterOrStack const* sources)
     {
         auto const source = sources[index];
-        if (source < Dispatch::RegisterOrStack::Stack) [[likely]]
+        if constexpr (mix == SourceAddressMix::AllRegisters) {
             return regs.data()[to_underlying(source)];
+        } else if constexpr (mix == SourceAddressMix::Any) {
+            if (!(source & ~(Dispatch::Stack - 1))) [[likely]]
+                return regs.data()[to_underlying(source)];
+        }
 
-        if (source != Dispatch::RegisterOrStack::Stack) {
-            // dbgln("Taking from call record at index {} (size={})", to_underlying(source) - Dispatch::CallRecord, m_current_call_record.size());
+        if constexpr (mix == SourceAddressMix::Any) {
+            if (source == Dispatch::RegisterOrStack::Stack) [[unlikely]]
+                return value_stack().unsafe_take_last();
+        }
+
+        if constexpr (mix == SourceAddressMix::AllCallRecord || mix == SourceAddressMix::Any) {
             return m_call_record_base[to_underlying(source) - Dispatch::CallRecord];
         }
 
-        return value_stack().unsafe_take_last();
+        VERIFY_NOT_REACHED();
     }
 
     Array<Value, Dispatch::RegisterOrStack::CountRegisters> regs = {

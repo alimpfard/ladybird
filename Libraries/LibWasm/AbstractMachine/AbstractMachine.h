@@ -77,6 +77,8 @@ private:
 
 class Value {
 public:
+    Value() = default;
+
     explicit Value(ValueType type)
         : m_value(u128())
     {
@@ -216,6 +218,7 @@ private:
     u128 m_value;
 };
 static_assert(IsTriviallyDestructible<Value>);
+static_assert(IsTriviallyConstructible<Value>);
 
 struct ExternallyManagedTrap {
     Array<u8, 64> data;
@@ -805,4 +808,9 @@ struct AK::Traits<Wasm::Linker::Name> : public AK::DefaultTraits<Wasm::Linker::N
     static constexpr bool is_trivial() { return false; }
     static unsigned hash(Wasm::Linker::Name const& entry) { return pair_int_hash(entry.module.hash(), entry.name.hash()); }
     static bool equals(Wasm::Linker::Name const& a, Wasm::Linker::Name const& b) { return a.name == b.name && a.module == b.module; }
+};
+
+template<>
+struct AK::Traits<Wasm::Value> : public AK::DefaultTraits<Wasm::Value> {
+    static constexpr bool is_trivial() { return true; }
 };
