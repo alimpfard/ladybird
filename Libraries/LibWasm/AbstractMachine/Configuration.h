@@ -79,7 +79,7 @@ public:
 
     void allocate_call_record(size_t size)
     {
-        m_current_call_record.resize_with_default_value(size, Value(0));
+        m_current_call_record.resize(size);
         m_call_record_base = m_current_call_record.data();
         // dbgln("allocate_call_record of size {} at {:p}", size, m_call_record_base);
     }
@@ -125,6 +125,11 @@ public:
         if (auto index = m_call_argument_freelist.find_first_index_if([&](auto& entry) { return entry.capacity() >= max_size; }); index.has_value()) {
             arguments = m_call_argument_freelist.take(*index);
             return;
+        } else if constexpr (mix == SourceAddressMix::Any) {
+            if (!(destination & ~(Dispatch::Stack - 1))) [[likely]] {
+                regs.data()[to_underlying(destination)] = value;
+                return;
+            }
         }
 
         arguments.ensure_capacity(max_size);

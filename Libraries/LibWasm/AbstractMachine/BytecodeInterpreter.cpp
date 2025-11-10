@@ -186,8 +186,6 @@ struct Continue {
     {
         current_ip_value++;
         auto const instruction = cc[current_ip_value].instruction;
-        __builtin_prefetch(cc + current_ip_value + 1, /* read only */ 0, /* into l1 */ 3);
-        __builtin_prefetch(instruction + 1, /* read only */ 0, /* into l3 */ 1);
         auto const handler = bit_cast<Outcome (*)(HANDLER_PARAMS(DECOMPOSE_PARAMS_TYPE_ONLY))>(cc[current_ip_value].handler_ptr);
         addresses = addresses_ptr[current_ip_value];
         TAILCALL return handler(interpreter, configuration, instruction, addresses, current_ip_value, cc, addresses_ptr);
@@ -1535,6 +1533,7 @@ HANDLE_INSTRUCTION(call)
 
 HANDLE_INSTRUCTION(synthetic_call_with_record0)
 {
+    LOG_INSN;
     auto index = instruction->arguments().get<FunctionIndex>();
     auto address = configuration.frame().module().functions()[index.value()];
     dbgln_if(WASM_TRACE_DEBUG, "call({})", address.value());
@@ -1545,6 +1544,7 @@ HANDLE_INSTRUCTION(synthetic_call_with_record0)
 
 HANDLE_INSTRUCTION(synthetic_call_with_record1)
 {
+    LOG_INSN;
     auto index = instruction->arguments().get<FunctionIndex>();
     auto address = configuration.frame().module().functions()[index.value()];
     dbgln_if(WASM_TRACE_DEBUG, "call({})", address.value());
@@ -1555,6 +1555,7 @@ HANDLE_INSTRUCTION(synthetic_call_with_record1)
 
 HANDLE_INSTRUCTION(synthetic_allocate_call_record)
 {
+    LOG_INSN;
     configuration.allocate_call_record(instruction->arguments().get<i32>());
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
