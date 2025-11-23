@@ -743,6 +743,7 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
                 Wasm::Printer printer { *g_stdout, 1 };
                 for (size_t ip = 0; ip < expression.compiled_instructions.dispatches.size(); ++ip) {
                     auto& dispatch = expression.compiled_instructions.dispatches[ip];
+                    auto& addresses = expression.compiled_instructions.src_dst_mappings[ip];
                     ByteString regs;
                     auto first = true;
                     ssize_t in_count = 0;
@@ -759,21 +760,23 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
                     constexpr auto reg_name = [](Wasm::Dispatch::RegisterOrStack reg) -> ByteString {
                         if (reg == Wasm::Dispatch::RegisterOrStack::Stack)
                             return "stack"sv;
+                        if (reg >= Wasm::Dispatch::RegisterOrStack::CallRecord)
+                            return ByteString::formatted("callrec{}", to_underlying(reg) - to_underlying(Wasm::Dispatch::RegisterOrStack::CallRecord));
                         return ByteString::formatted("reg{}", to_underlying(reg));
                     };
                     if (in_count > -1) {
                         for (ssize_t index = 0; index < in_count; ++index) {
                             if (first)
-                                regs = ByteString::formatted("{} ({}", regs, reg_name(dispatch.sources[index]));
+                                regs = ByteString::formatted("{} ({}", regs, reg_name(addresses.sources[index]));
                             else
-                                regs = ByteString::formatted("{}, {}", regs, reg_name(dispatch.sources[index]));
+                                regs = ByteString::formatted("{}, {}", regs, reg_name(addresses.sources[index]));
                             first = false;
                         }
                         if (has_out) {
                             if (first)
-                                regs = ByteString::formatted(" () -> {}", reg_name(dispatch.destination));
+                                regs = ByteString::formatted(" () -> {}", reg_name(addresses.destination));
                             else
-                                regs = ByteString::formatted("{}) -> {}", regs, reg_name(dispatch.destination));
+                                regs = ByteString::formatted("{}) -> {}", regs, reg_name(addresses.destination));
                         } else {
                             if (first)
                                 regs = ByteString::formatted(" () -x");

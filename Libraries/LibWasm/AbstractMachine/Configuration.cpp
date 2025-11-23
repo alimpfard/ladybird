@@ -5,6 +5,7 @@
  */
 
 #include <AK/MemoryStream.h>
+#include <AK/TemporaryChange.h>
 #include <LibWasm/AbstractMachine/Configuration.h>
 #include <LibWasm/AbstractMachine/Interpreter.h>
 #include <LibWasm/Printer/Printer.h>
@@ -13,21 +14,25 @@ namespace Wasm {
 
 void Configuration::unwind_impl()
 {
-    m_frame_stack.take_last();
+    m_frame_stack.last().arguments().clear_with_capacity(); // Drop these to avoid copying them to this frame.
+    m_frame_stack.last().locals().clear();
+
+    auto last_frame = m_frame_stack.take_last();
     m_depth--;
     m_locals_base = m_frame_stack.is_empty() ? nullptr : m_frame_stack.unchecked_last().locals().data();
     m_arguments_base = m_frame_stack.is_empty() ? nullptr : m_frame_stack.unchecked_last().arguments().data();
 }
 
-Result Configuration::call(Interpreter& interpreter, FunctionAddress address, Vector<Value, 8> arguments)
+Result Configuration::call(Interpreter& interpreter, FunctionAddress address, Vector<Value, ArgumentsStaticSize>& arguments)
 {
+    TemporaryChange x { m_currently_running_function, address };
     if (auto fn = TRY(prepare_call(address, arguments)); fn.has_value())
         return fn->function()(*this, arguments.span());
     m_ip = 0;
     return execute(interpreter);
 }
 
-ErrorOr<Optional<HostFunction&>, Trap> Configuration::prepare_call(FunctionAddress address, Vector<Value, 8>& arguments, bool is_tailcall)
+ErrorOr<Optional<HostFunction&>, Trap> Configuration::prepare_call(FunctionAddress address, Vector<Value, ArgumentsStaticSize>& arguments, bool is_tailcall)
 {
     auto* function = m_store.get(address);
     if (!function)
@@ -43,14 +48,13 @@ ErrorOr<Optional<HostFunction&>, Trap> Configuration::prepare_call(FunctionAddre
                 locals.unchecked_append(Value(local.type()));
         }
 
-        set_frame(Frame {
-                      wasm_function->module(),
-                      move(arguments),
-                      move(locals),
-                      wasm_function->code().func().body(),
-                      wasm_function->type().results().size(),
-                  },
-            is_tailcall);
+        set_frame(
+            is_tailcall,
+            wasm_function->module(),
+            move(arguments),
+            move(locals),
+            wasm_function->code().func().body(),
+            wasm_function->type().results().size());
         return OptionalNone {};
     }
 
