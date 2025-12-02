@@ -48,11 +48,8 @@ public:
         }
         m_label_stack.append(label);
         if (auto max_count = frame.expression().compiled_instructions.max_call_arg_count; max_count > ArgumentsStaticSize) {
-            if (!any_of(m_call_argument_freelist, [&](auto const& entry) { return entry.capacity() >= frame.expression().compiled_instructions.max_call_arg_count; })) {
-                if (m_call_argument_freelist.is_empty())
-                    m_call_argument_freelist.empend();
+            if (!m_call_argument_freelist.is_empty() && !any_of(m_call_argument_freelist, [&](auto const& entry) { return entry.capacity() >= frame.expression().compiled_instructions.max_call_arg_count; }))
                 m_call_argument_freelist.last().ensure_capacity(max_count);
-            }
         }
     }
     ALWAYS_INLINE auto& frame() const { return m_frame_stack.unchecked_last(); }
