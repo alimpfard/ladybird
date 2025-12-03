@@ -10,12 +10,17 @@ from typing import Literal
 from typing import Union
 from typing import Optional
 
-TEST_MODULES_TO_SKIP: set[str]
+TEST_MODULES_TO_SKIP: set[str] = set()
+TESTS_TO_SKIP: set[str] = set()
 
 
 with open(Path(__file__).parent / "wasm_unimplemented_tests.txt", "r") as f:
-    TEST_MODULES_TO_SKIP = set(x.strip() + ".wasm" for x in f.readlines())
-
+    all_skipped_tests = (x.strip() for x in f.readlines() if not x.startswith('#'))
+    for test in all_skipped_tests:
+        if test.startswith('module '):
+            TEST_MODULES_TO_SKIP.add(test[len('module '):] + ".wasm")
+        elif test.startswith('test '):
+            TESTS_TO_SKIP.add(test[len('test '):])
 
 
 class ParseException(Exception):
@@ -352,6 +357,16 @@ def gen_args(args: list[WasmValue]) -> str:
     return ",".join(gen_value_arg(arg) for arg in args)
 
 
+def gen_test_command_for_module(file_name):
+    if str(file_name) in TEST_MODULES_TO_SKIP:
+        return "_test.skip"
+    return "_test"
+
+def gen_test_command_for_invoke(module_name):
+    if module_name in TESTS_TO_SKIP:
+        return "_test.skip"
+    return "_test"
+
 def gen_module_command(command: ModuleCommand, ctx: Context):
     if ctx.has_unclosed:
         print("});")
@@ -363,7 +378,7 @@ try {{
 content = readBinaryWasmFile("Fixtures/SpecTests/{command.file_name}");
 module = parseWebAssemblyModule(content, globalImportObject);
 }} catch (e) {{
-_test("parse", () => expect().fail(e));
+{gen_test_command_for_module(command.file_name)}("parse (line {command.line})", () => expect().fail(e));
 _test = test.skip;
 _test.skip = test.skip;
 }}
@@ -389,7 +404,7 @@ def gen_invalid(invalid: AssertInvalid, ctx: Context):
         f"""
 describe("{stem}", () => {{
 let _test = test;
-_test("parse of {stem} (line {invalid.line})", () => {{
+{gen_test_command_for_module(invalid.filename)}("parse of {stem} (line {invalid.line})", () => {{
 content = readBinaryWasmFile("Fixtures/SpecTests/{invalid.filename}");
 expect(() => parseWebAssemblyModule(content, globalImportObject)).toThrow(Error, "{invalid.message}");
 }});
@@ -465,7 +480,7 @@ def gen_invoke(
         module = f'namedModules["{invoke.module}"]'
     utf8 = str(invoke.field.encode("utf8"))[2:-1].replace("\\'", "'").replace("`", "${'`'}")
     print(
-        f"""_test(`execution of {ctx.current_module_name}: {utf8} (line {line})`, () => {{
+        f"""{gen_test_command_for_invoke(ctx.current_module_name)}(`execution of {ctx.current_module_name}: {utf8} (line {line})`, () => {{
 let _field = {module}.getExport(decodeURIComponent(escape(`{utf8}`)));
 expect(_field).not.toBeUndefined();"""
     )
@@ -486,7 +501,7 @@ def gen_get(line: int, get: Get, result: WasmValue | None, ctx: Context):
     if get.module is not None:
         module = f'namedModules["{get.module}"]'
     print(
-        f"""_test("execution of {ctx.current_module_name}: get-{get.field} (line {line})", () => {{
+        f"""{gen_test_command_for_invoke(ctx.current_module_name)}("execution of {ctx.current_module_name}: get-{get.field} (line {line})", () => {{
 let _field = {module}.getExport("{get.field}");"""
     )
     if result is not None:
