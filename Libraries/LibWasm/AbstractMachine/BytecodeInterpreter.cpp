@@ -108,12 +108,18 @@ constexpr static u32 default_sources_and_destination = (to_underlying(Dispatch::
 template<u64 opcode>
 struct InstructionHandler { };
 
+struct __attribute__((packed)) ShortenedIPAndAddresses {
+    u32 current_ip_value;
+    SourcesAndDestination addresses;
+};
+
+static_assert(sizeof(ShortenedIPAndAddresses) == sizeof(u64));
+
 #define HANDLER_PARAMS(S)                    \
     S(BytecodeInterpreter&, interpreter),    \
         S(Configuration&, configuration),    \
         S(Instruction const*, instruction),  \
-        S(SourcesAndDestination, addresses), \
-        S(u64, current_ip_value),            \
+        S(ShortenedIPAndAddresses, ip_and_addresses), \
         S(Dispatch const*, cc),              \
         S(SourcesAndDestination const*, addresses_ptr)
 
@@ -147,7 +153,7 @@ struct InstructionHandler { };
 
 #define LOG_INSN_UNGUARDED                                                                                 \
     do {                                                                                                   \
-        warnln("[{:04} ", current_ip_value);                                                               \
+        warnln("[{:04} ", ip_and_addresses.current_ip_value);                                                               \
         ssize_t in_count = 0;                                                                              \
         ssize_t out_count = 0;                                                                             \
         switch (instruction->opcode().value()) {                                                           \
@@ -155,15 +161,15 @@ struct InstructionHandler { };
         }                                                                                                  \
         ScopedValueRollback stack { configuration.value_stack() };                                         \
         for (ssize_t i = 0; i < in_count; ++i) {                                                           \
-            auto value = configuration.take_source<source_address_mix>(i, addresses.sources);              \
-            if (addresses.sources[i] < Dispatch::Stack) {                                                  \
-                warnln("       arg{} [reg{}]: {}", i, to_underlying(addresses.sources[i]), value.value()); \
+            auto value = configuration.take_source<source_address_mix>(i, ip_and_addresses.addresses.sources);              \
+            if (ip_and_addresses.addresses.sources[i] < Dispatch::Stack) {                                                  \
+                warnln("       arg{} [reg{}]: {}", i, to_underlying(ip_and_addresses.addresses.sources[i]), value.value()); \
             } else {                                                                                       \
                 warnln("       arg{} [stack]: {}", i, value.value());                                      \
             }                                                                                              \
         }                                                                                                  \
         if (out_count == 1) {                                                                              \
-            auto dest = addresses.destination;                                                             \
+            auto dest = ip_and_addresses.addresses.destination;                                                             \
             if (dest < Dispatch::Stack) {                                                                  \
                 warnln("       dest [reg{}]", to_underlying(dest));                                        \
             } else {                                                                                       \
@@ -182,20 +188,20 @@ struct InstructionHandler { };
     } while (0)
 
 struct Continue {
-    static Outcome operator()(BytecodeInterpreter& interpreter, Configuration& configuration, Instruction const*, SourcesAndDestination addresses, u64 current_ip_value, Dispatch const* cc, SourcesAndDestination const* addresses_ptr)
+    ALWAYS_INLINE FLATTEN static Outcome operator()(BytecodeInterpreter& interpreter, Configuration& configuration, Instruction const*, ShortenedIPAndAddresses ip_and_addresses, Dispatch const* cc, SourcesAndDestination const* addresses_ptr)
     {
-        current_ip_value++;
-        auto const instruction = cc[current_ip_value].instruction;
-        auto const handler = bit_cast<Outcome (*)(HANDLER_PARAMS(DECOMPOSE_PARAMS_TYPE_ONLY))>(cc[current_ip_value].handler_ptr);
-        addresses = addresses_ptr[current_ip_value];
-        TAILCALL return handler(interpreter, configuration, instruction, addresses, current_ip_value, cc, addresses_ptr);
+        ip_and_addresses.current_ip_value++;
+        auto const instruction = cc[ip_and_addresses.current_ip_value].instruction;
+        auto const handler = bit_cast<Outcome (*)(HANDLER_PARAMS(DECOMPOSE_PARAMS_TYPE_ONLY))>(cc[ip_and_addresses.current_ip_value].handler_ptr);
+        ip_and_addresses.addresses = addresses_ptr[ip_and_addresses.current_ip_value];
+        TAILCALL return handler(interpreter, configuration, instruction, ip_and_addresses, cc, addresses_ptr);
     }
 };
 
 struct Skip {
-    static Outcome operator()(BytecodeInterpreter&, Configuration&, Instruction const*, SourcesAndDestination, u64 ip, Dispatch const*, SourcesAndDestination const*)
+    static Outcome operator()(BytecodeInterpreter&, Configuration&, Instruction const*, ShortenedIPAndAddresses ip_and_addresses, Dispatch const*, SourcesAndDestination const*)
     {
-        return bit_cast<Outcome>(ip);
+        return static_cast<Outcome>(ip_and_addresses.current_ip_value);
     }
 };
 
@@ -210,7 +216,7 @@ HANDLE_INSTRUCTION(synthetic_end_expression)
 HANDLE_INSTRUCTION(f64_reinterpret_i64)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<i64, double, Operators::Reinterpret<double>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<i64, double, Operators::Reinterpret<double>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -218,7 +224,7 @@ HANDLE_INSTRUCTION(f64_reinterpret_i64)
 HANDLE_INSTRUCTION(i32_extend8_s)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<i32, i32, Operators::SignExtend<i8>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<i32, i32, Operators::SignExtend<i8>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -226,7 +232,7 @@ HANDLE_INSTRUCTION(i32_extend8_s)
 HANDLE_INSTRUCTION(i32_extend16_s)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<i32, i32, Operators::SignExtend<i16>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<i32, i32, Operators::SignExtend<i16>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -234,7 +240,7 @@ HANDLE_INSTRUCTION(i32_extend16_s)
 HANDLE_INSTRUCTION(i64_extend8_s)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<i64, i64, Operators::SignExtend<i8>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<i64, i64, Operators::SignExtend<i8>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -242,7 +248,7 @@ HANDLE_INSTRUCTION(i64_extend8_s)
 HANDLE_INSTRUCTION(i64_extend16_s)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<i64, i64, Operators::SignExtend<i16>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<i64, i64, Operators::SignExtend<i16>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -250,7 +256,7 @@ HANDLE_INSTRUCTION(i64_extend16_s)
 HANDLE_INSTRUCTION(i64_extend32_s)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<i64, i64, Operators::SignExtend<i32>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<i64, i64, Operators::SignExtend<i32>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -258,7 +264,7 @@ HANDLE_INSTRUCTION(i64_extend32_s)
 HANDLE_INSTRUCTION(i32_trunc_sat_f32_s)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<float, i32, Operators::SaturatingTruncate<i32>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<float, i32, Operators::SaturatingTruncate<i32>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -266,7 +272,7 @@ HANDLE_INSTRUCTION(i32_trunc_sat_f32_s)
 HANDLE_INSTRUCTION(i32_trunc_sat_f32_u)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<float, i32, Operators::SaturatingTruncate<u32>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<float, i32, Operators::SaturatingTruncate<u32>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -274,7 +280,7 @@ HANDLE_INSTRUCTION(i32_trunc_sat_f32_u)
 HANDLE_INSTRUCTION(i32_trunc_sat_f64_s)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<double, i32, Operators::SaturatingTruncate<i32>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<double, i32, Operators::SaturatingTruncate<i32>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -282,7 +288,7 @@ HANDLE_INSTRUCTION(i32_trunc_sat_f64_s)
 HANDLE_INSTRUCTION(i32_trunc_sat_f64_u)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<double, i32, Operators::SaturatingTruncate<u32>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<double, i32, Operators::SaturatingTruncate<u32>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -290,7 +296,7 @@ HANDLE_INSTRUCTION(i32_trunc_sat_f64_u)
 HANDLE_INSTRUCTION(i64_trunc_sat_f32_s)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<float, i64, Operators::SaturatingTruncate<i64>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<float, i64, Operators::SaturatingTruncate<i64>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -298,7 +304,7 @@ HANDLE_INSTRUCTION(i64_trunc_sat_f32_s)
 HANDLE_INSTRUCTION(i64_trunc_sat_f32_u)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<float, i64, Operators::SaturatingTruncate<u64>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<float, i64, Operators::SaturatingTruncate<u64>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -306,7 +312,7 @@ HANDLE_INSTRUCTION(i64_trunc_sat_f32_u)
 HANDLE_INSTRUCTION(i64_trunc_sat_f64_s)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<double, i64, Operators::SaturatingTruncate<i64>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<double, i64, Operators::SaturatingTruncate<i64>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -314,7 +320,7 @@ HANDLE_INSTRUCTION(i64_trunc_sat_f64_s)
 HANDLE_INSTRUCTION(i64_trunc_sat_f64_u)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<double, i64, Operators::SaturatingTruncate<u64>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<double, i64, Operators::SaturatingTruncate<u64>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -322,14 +328,14 @@ HANDLE_INSTRUCTION(i64_trunc_sat_f64_u)
 HANDLE_INSTRUCTION(v128_const)
 {
     LOG_INSN;
-    configuration.push_to_destination<source_address_mix>(Value(instruction->arguments().get<u128>()), addresses.destination);
+    configuration.push_to_destination<source_address_mix>(Value(instruction->arguments().get<u128>()), ip_and_addresses.addresses.destination);
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
 HANDLE_INSTRUCTION(v128_load)
 {
     LOG_INSN;
-    if (interpreter.load_and_push<u128, u128>(configuration, *instruction, addresses))
+    if (interpreter.load_and_push<u128, u128>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -337,7 +343,7 @@ HANDLE_INSTRUCTION(v128_load)
 HANDLE_INSTRUCTION(v128_load8x8_s)
 {
     LOG_INSN;
-    if (interpreter.load_and_push_mxn<8, 8, MakeSigned>(configuration, *instruction, addresses))
+    if (interpreter.load_and_push_mxn<8, 8, MakeSigned>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -345,7 +351,7 @@ HANDLE_INSTRUCTION(v128_load8x8_s)
 HANDLE_INSTRUCTION(v128_load8x8_u)
 {
     LOG_INSN;
-    if (interpreter.load_and_push_mxn<8, 8, MakeUnsigned>(configuration, *instruction, addresses))
+    if (interpreter.load_and_push_mxn<8, 8, MakeUnsigned>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -353,7 +359,7 @@ HANDLE_INSTRUCTION(v128_load8x8_u)
 HANDLE_INSTRUCTION(v128_load16x4_s)
 {
     LOG_INSN;
-    if (interpreter.load_and_push_mxn<16, 4, MakeSigned>(configuration, *instruction, addresses))
+    if (interpreter.load_and_push_mxn<16, 4, MakeSigned>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -361,7 +367,7 @@ HANDLE_INSTRUCTION(v128_load16x4_s)
 HANDLE_INSTRUCTION(v128_load16x4_u)
 {
     LOG_INSN;
-    if (interpreter.load_and_push_mxn<16, 4, MakeUnsigned>(configuration, *instruction, addresses))
+    if (interpreter.load_and_push_mxn<16, 4, MakeUnsigned>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -369,7 +375,7 @@ HANDLE_INSTRUCTION(v128_load16x4_u)
 HANDLE_INSTRUCTION(v128_load32x2_s)
 {
     LOG_INSN;
-    if (interpreter.load_and_push_mxn<32, 2, MakeSigned>(configuration, *instruction, addresses))
+    if (interpreter.load_and_push_mxn<32, 2, MakeSigned>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -377,7 +383,7 @@ HANDLE_INSTRUCTION(v128_load32x2_s)
 HANDLE_INSTRUCTION(v128_load32x2_u)
 {
     LOG_INSN;
-    if (interpreter.load_and_push_mxn<32, 2, MakeUnsigned>(configuration, *instruction, addresses))
+    if (interpreter.load_and_push_mxn<32, 2, MakeUnsigned>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -385,7 +391,7 @@ HANDLE_INSTRUCTION(v128_load32x2_u)
 HANDLE_INSTRUCTION(v128_load8_splat)
 {
     LOG_INSN;
-    if (interpreter.load_and_push_m_splat<8>(configuration, *instruction, addresses))
+    if (interpreter.load_and_push_m_splat<8>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -393,7 +399,7 @@ HANDLE_INSTRUCTION(v128_load8_splat)
 HANDLE_INSTRUCTION(v128_load16_splat)
 {
     LOG_INSN;
-    if (interpreter.load_and_push_m_splat<16>(configuration, *instruction, addresses))
+    if (interpreter.load_and_push_m_splat<16>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -401,7 +407,7 @@ HANDLE_INSTRUCTION(v128_load16_splat)
 HANDLE_INSTRUCTION(v128_load32_splat)
 {
     LOG_INSN;
-    if (interpreter.load_and_push_m_splat<32>(configuration, *instruction, addresses))
+    if (interpreter.load_and_push_m_splat<32>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -409,7 +415,7 @@ HANDLE_INSTRUCTION(v128_load32_splat)
 HANDLE_INSTRUCTION(v128_load64_splat)
 {
     LOG_INSN;
-    if (interpreter.load_and_push_m_splat<64>(configuration, *instruction, addresses))
+    if (interpreter.load_and_push_m_splat<64>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -417,42 +423,42 @@ HANDLE_INSTRUCTION(v128_load64_splat)
 HANDLE_INSTRUCTION(i8x16_splat)
 {
     LOG_INSN;
-    interpreter.pop_and_push_m_splat<8, NativeIntegralType>(configuration, *instruction, addresses);
+    interpreter.pop_and_push_m_splat<8, NativeIntegralType>(configuration, *instruction, ip_and_addresses.addresses);
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
 HANDLE_INSTRUCTION(i16x8_splat)
 {
     LOG_INSN;
-    interpreter.pop_and_push_m_splat<16, NativeIntegralType>(configuration, *instruction, addresses);
+    interpreter.pop_and_push_m_splat<16, NativeIntegralType>(configuration, *instruction, ip_and_addresses.addresses);
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
 HANDLE_INSTRUCTION(i32x4_splat)
 {
     LOG_INSN;
-    interpreter.pop_and_push_m_splat<32, NativeIntegralType>(configuration, *instruction, addresses);
+    interpreter.pop_and_push_m_splat<32, NativeIntegralType>(configuration, *instruction, ip_and_addresses.addresses);
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
 HANDLE_INSTRUCTION(i64x2_splat)
 {
     LOG_INSN;
-    interpreter.pop_and_push_m_splat<64, NativeIntegralType>(configuration, *instruction, addresses);
+    interpreter.pop_and_push_m_splat<64, NativeIntegralType>(configuration, *instruction, ip_and_addresses.addresses);
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
 HANDLE_INSTRUCTION(f32x4_splat)
 {
     LOG_INSN;
-    interpreter.pop_and_push_m_splat<32, NativeFloatingType>(configuration, *instruction, addresses);
+    interpreter.pop_and_push_m_splat<32, NativeFloatingType>(configuration, *instruction, ip_and_addresses.addresses);
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
 HANDLE_INSTRUCTION(f64x2_splat)
 {
     LOG_INSN;
-    interpreter.pop_and_push_m_splat<64, NativeFloatingType>(configuration, *instruction, addresses);
+    interpreter.pop_and_push_m_splat<64, NativeFloatingType>(configuration, *instruction, ip_and_addresses.addresses);
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
@@ -460,8 +466,8 @@ HANDLE_INSTRUCTION(i8x16_shuffle)
 {
     LOG_INSN;
     auto& arg = instruction->arguments().get<Instruction::ShuffleArgument>();
-    auto b = interpreter.pop_vector<u8, MakeUnsigned>(configuration, 0, addresses);
-    auto a = interpreter.pop_vector<u8, MakeUnsigned>(configuration, 1, addresses);
+    auto b = interpreter.pop_vector<u8, MakeUnsigned>(configuration, 0, ip_and_addresses.addresses);
+    auto a = interpreter.pop_vector<u8, MakeUnsigned>(configuration, 1, ip_and_addresses.addresses);
     using VectorType = Native128ByteVectorOf<u8, MakeUnsigned>;
     VectorType result;
     for (size_t i = 0; i < 16; ++i)
@@ -469,14 +475,14 @@ HANDLE_INSTRUCTION(i8x16_shuffle)
             result[i] = a[arg.lanes[i]];
         else
             result[i] = b[arg.lanes[i] - 16];
-    configuration.push_to_destination<source_address_mix>(Value(bit_cast<u128>(result)), addresses.destination);
+    configuration.push_to_destination<source_address_mix>(Value(bit_cast<u128>(result)), ip_and_addresses.addresses.destination);
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
 HANDLE_INSTRUCTION(v128_store)
 {
     LOG_INSN;
-    if (interpreter.pop_and_store<u128, u128>(configuration, *instruction, addresses))
+    if (interpreter.pop_and_store<u128, u128>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -484,7 +490,7 @@ HANDLE_INSTRUCTION(v128_store)
 HANDLE_INSTRUCTION(f64_ge)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<double, i32, Operators::GreaterThanOrEquals, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<double, i32, Operators::GreaterThanOrEquals, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -492,7 +498,7 @@ HANDLE_INSTRUCTION(f64_ge)
 HANDLE_INSTRUCTION(i32_clz)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<i32, i32, Operators::CountLeadingZeros, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<i32, i32, Operators::CountLeadingZeros, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -500,7 +506,7 @@ HANDLE_INSTRUCTION(i32_clz)
 HANDLE_INSTRUCTION(i32_ctz)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<i32, i32, Operators::CountTrailingZeros, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<i32, i32, Operators::CountTrailingZeros, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -508,7 +514,7 @@ HANDLE_INSTRUCTION(i32_ctz)
 HANDLE_INSTRUCTION(i32_popcnt)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<i32, i32, Operators::PopCount, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<i32, i32, Operators::PopCount, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -516,7 +522,7 @@ HANDLE_INSTRUCTION(i32_popcnt)
 HANDLE_INSTRUCTION(i32_add)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u32, i32, Operators::Add, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u32, i32, Operators::Add, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -524,7 +530,7 @@ HANDLE_INSTRUCTION(i32_add)
 HANDLE_INSTRUCTION(i32_sub)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u32, i32, Operators::Subtract, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u32, i32, Operators::Subtract, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -532,7 +538,7 @@ HANDLE_INSTRUCTION(i32_sub)
 HANDLE_INSTRUCTION(i32_mul)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u32, i32, Operators::Multiply, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u32, i32, Operators::Multiply, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -540,7 +546,7 @@ HANDLE_INSTRUCTION(i32_mul)
 HANDLE_INSTRUCTION(i32_divs)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<i32, i32, Operators::Divide, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<i32, i32, Operators::Divide, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -548,7 +554,7 @@ HANDLE_INSTRUCTION(i32_divs)
 HANDLE_INSTRUCTION(i32_divu)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u32, i32, Operators::Divide, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u32, i32, Operators::Divide, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -556,7 +562,7 @@ HANDLE_INSTRUCTION(i32_divu)
 HANDLE_INSTRUCTION(i32_rems)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<i32, i32, Operators::Modulo, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<i32, i32, Operators::Modulo, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -564,7 +570,7 @@ HANDLE_INSTRUCTION(i32_rems)
 HANDLE_INSTRUCTION(i32_remu)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u32, i32, Operators::Modulo, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u32, i32, Operators::Modulo, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -572,7 +578,7 @@ HANDLE_INSTRUCTION(i32_remu)
 HANDLE_INSTRUCTION(i32_and)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<i32, i32, Operators::BitAnd, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<i32, i32, Operators::BitAnd, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -580,7 +586,7 @@ HANDLE_INSTRUCTION(i32_and)
 HANDLE_INSTRUCTION(i32_or)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<i32, i32, Operators::BitOr, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<i32, i32, Operators::BitOr, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -588,7 +594,7 @@ HANDLE_INSTRUCTION(i32_or)
 HANDLE_INSTRUCTION(i32_xor)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<i32, i32, Operators::BitXor, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<i32, i32, Operators::BitXor, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -596,7 +602,7 @@ HANDLE_INSTRUCTION(i32_xor)
 HANDLE_INSTRUCTION(i32_shl)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u32, i32, Operators::BitShiftLeft, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u32, i32, Operators::BitShiftLeft, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -604,7 +610,7 @@ HANDLE_INSTRUCTION(i32_shl)
 HANDLE_INSTRUCTION(i32_shrs)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<i32, i32, Operators::BitShiftRight, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<i32, i32, Operators::BitShiftRight, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -612,7 +618,7 @@ HANDLE_INSTRUCTION(i32_shrs)
 HANDLE_INSTRUCTION(i32_shru)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u32, i32, Operators::BitShiftRight, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u32, i32, Operators::BitShiftRight, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -620,7 +626,7 @@ HANDLE_INSTRUCTION(i32_shru)
 HANDLE_INSTRUCTION(i32_rotl)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u32, i32, Operators::BitRotateLeft, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u32, i32, Operators::BitRotateLeft, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -628,7 +634,7 @@ HANDLE_INSTRUCTION(i32_rotl)
 HANDLE_INSTRUCTION(i32_rotr)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u32, i32, Operators::BitRotateRight, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u32, i32, Operators::BitRotateRight, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -636,7 +642,7 @@ HANDLE_INSTRUCTION(i32_rotr)
 HANDLE_INSTRUCTION(i64_clz)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<i64, i64, Operators::CountLeadingZeros, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<i64, i64, Operators::CountLeadingZeros, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -644,7 +650,7 @@ HANDLE_INSTRUCTION(i64_clz)
 HANDLE_INSTRUCTION(i64_ctz)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<i64, i64, Operators::CountTrailingZeros, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<i64, i64, Operators::CountTrailingZeros, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -652,7 +658,7 @@ HANDLE_INSTRUCTION(i64_ctz)
 HANDLE_INSTRUCTION(i64_popcnt)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<i64, i64, Operators::PopCount, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<i64, i64, Operators::PopCount, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -660,7 +666,7 @@ HANDLE_INSTRUCTION(i64_popcnt)
 HANDLE_INSTRUCTION(i64_add)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u64, i64, Operators::Add, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u64, i64, Operators::Add, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -668,7 +674,7 @@ HANDLE_INSTRUCTION(i64_add)
 HANDLE_INSTRUCTION(i64_sub)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u64, i64, Operators::Subtract, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u64, i64, Operators::Subtract, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -676,7 +682,7 @@ HANDLE_INSTRUCTION(i64_sub)
 HANDLE_INSTRUCTION(i64_mul)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u64, i64, Operators::Multiply, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u64, i64, Operators::Multiply, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -684,7 +690,7 @@ HANDLE_INSTRUCTION(i64_mul)
 HANDLE_INSTRUCTION(i64_divs)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<i64, i64, Operators::Divide, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<i64, i64, Operators::Divide, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -692,7 +698,7 @@ HANDLE_INSTRUCTION(i64_divs)
 HANDLE_INSTRUCTION(i64_divu)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u64, i64, Operators::Divide, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u64, i64, Operators::Divide, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -700,7 +706,7 @@ HANDLE_INSTRUCTION(i64_divu)
 HANDLE_INSTRUCTION(i64_rems)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<i64, i64, Operators::Modulo, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<i64, i64, Operators::Modulo, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -708,7 +714,7 @@ HANDLE_INSTRUCTION(i64_rems)
 HANDLE_INSTRUCTION(i64_remu)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u64, i64, Operators::Modulo, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u64, i64, Operators::Modulo, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -716,7 +722,7 @@ HANDLE_INSTRUCTION(i64_remu)
 HANDLE_INSTRUCTION(i64_and)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<i64, i64, Operators::BitAnd, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<i64, i64, Operators::BitAnd, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -724,7 +730,7 @@ HANDLE_INSTRUCTION(i64_and)
 HANDLE_INSTRUCTION(i64_or)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<i64, i64, Operators::BitOr, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<i64, i64, Operators::BitOr, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -732,7 +738,7 @@ HANDLE_INSTRUCTION(i64_or)
 HANDLE_INSTRUCTION(i64_xor)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<i64, i64, Operators::BitXor, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<i64, i64, Operators::BitXor, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -740,7 +746,7 @@ HANDLE_INSTRUCTION(i64_xor)
 HANDLE_INSTRUCTION(i64_shl)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u64, i64, Operators::BitShiftLeft, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u64, i64, Operators::BitShiftLeft, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -748,7 +754,7 @@ HANDLE_INSTRUCTION(i64_shl)
 HANDLE_INSTRUCTION(i64_shrs)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<i64, i64, Operators::BitShiftRight, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<i64, i64, Operators::BitShiftRight, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -756,7 +762,7 @@ HANDLE_INSTRUCTION(i64_shrs)
 HANDLE_INSTRUCTION(i64_shru)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u64, i64, Operators::BitShiftRight, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u64, i64, Operators::BitShiftRight, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -764,7 +770,7 @@ HANDLE_INSTRUCTION(i64_shru)
 HANDLE_INSTRUCTION(i64_rotl)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u64, i64, Operators::BitRotateLeft, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u64, i64, Operators::BitRotateLeft, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -772,7 +778,7 @@ HANDLE_INSTRUCTION(i64_rotl)
 HANDLE_INSTRUCTION(i64_rotr)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u64, i64, Operators::BitRotateRight, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u64, i64, Operators::BitRotateRight, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -780,7 +786,7 @@ HANDLE_INSTRUCTION(i64_rotr)
 HANDLE_INSTRUCTION(f32_abs)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<float, float, Operators::Absolute, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<float, float, Operators::Absolute, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -788,7 +794,7 @@ HANDLE_INSTRUCTION(f32_abs)
 HANDLE_INSTRUCTION(f32_neg)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<float, float, Operators::Negate, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<float, float, Operators::Negate, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -796,7 +802,7 @@ HANDLE_INSTRUCTION(f32_neg)
 HANDLE_INSTRUCTION(f32_ceil)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<float, float, Operators::Ceil, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<float, float, Operators::Ceil, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -804,7 +810,7 @@ HANDLE_INSTRUCTION(f32_ceil)
 HANDLE_INSTRUCTION(f32_floor)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<float, float, Operators::Floor, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<float, float, Operators::Floor, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -812,7 +818,7 @@ HANDLE_INSTRUCTION(f32_floor)
 HANDLE_INSTRUCTION(f32_trunc)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<float, float, Operators::Truncate, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<float, float, Operators::Truncate, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -820,7 +826,7 @@ HANDLE_INSTRUCTION(f32_trunc)
 HANDLE_INSTRUCTION(f32_nearest)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<float, float, Operators::NearbyIntegral, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<float, float, Operators::NearbyIntegral, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -828,7 +834,7 @@ HANDLE_INSTRUCTION(f32_nearest)
 HANDLE_INSTRUCTION(f32_sqrt)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<float, float, Operators::SquareRoot, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<float, float, Operators::SquareRoot, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -836,7 +842,7 @@ HANDLE_INSTRUCTION(f32_sqrt)
 HANDLE_INSTRUCTION(f32_add)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<float, float, Operators::Add, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<float, float, Operators::Add, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -844,7 +850,7 @@ HANDLE_INSTRUCTION(f32_add)
 HANDLE_INSTRUCTION(f32_sub)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<float, float, Operators::Subtract, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<float, float, Operators::Subtract, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -852,7 +858,7 @@ HANDLE_INSTRUCTION(f32_sub)
 HANDLE_INSTRUCTION(f32_mul)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<float, float, Operators::Multiply, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<float, float, Operators::Multiply, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -860,7 +866,7 @@ HANDLE_INSTRUCTION(f32_mul)
 HANDLE_INSTRUCTION(f32_div)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<float, float, Operators::Divide, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<float, float, Operators::Divide, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -868,7 +874,7 @@ HANDLE_INSTRUCTION(f32_div)
 HANDLE_INSTRUCTION(f32_min)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<float, float, Operators::Minimum, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<float, float, Operators::Minimum, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -876,7 +882,7 @@ HANDLE_INSTRUCTION(f32_min)
 HANDLE_INSTRUCTION(f32_max)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<float, float, Operators::Maximum, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<float, float, Operators::Maximum, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -884,7 +890,7 @@ HANDLE_INSTRUCTION(f32_max)
 HANDLE_INSTRUCTION(f32_copysign)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<float, float, Operators::CopySign, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<float, float, Operators::CopySign, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -892,7 +898,7 @@ HANDLE_INSTRUCTION(f32_copysign)
 HANDLE_INSTRUCTION(f64_abs)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<double, double, Operators::Absolute, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<double, double, Operators::Absolute, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -900,7 +906,7 @@ HANDLE_INSTRUCTION(f64_abs)
 HANDLE_INSTRUCTION(f64_neg)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<double, double, Operators::Negate, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<double, double, Operators::Negate, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -908,7 +914,7 @@ HANDLE_INSTRUCTION(f64_neg)
 HANDLE_INSTRUCTION(f64_ceil)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<double, double, Operators::Ceil, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<double, double, Operators::Ceil, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -916,7 +922,7 @@ HANDLE_INSTRUCTION(f64_ceil)
 HANDLE_INSTRUCTION(f64_floor)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<double, double, Operators::Floor, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<double, double, Operators::Floor, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -924,7 +930,7 @@ HANDLE_INSTRUCTION(f64_floor)
 HANDLE_INSTRUCTION(f64_trunc)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<double, double, Operators::Truncate, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<double, double, Operators::Truncate, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -932,7 +938,7 @@ HANDLE_INSTRUCTION(f64_trunc)
 HANDLE_INSTRUCTION(f64_nearest)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<double, double, Operators::NearbyIntegral, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<double, double, Operators::NearbyIntegral, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -940,7 +946,7 @@ HANDLE_INSTRUCTION(f64_nearest)
 HANDLE_INSTRUCTION(f64_sqrt)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<double, double, Operators::SquareRoot, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<double, double, Operators::SquareRoot, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -948,7 +954,7 @@ HANDLE_INSTRUCTION(f64_sqrt)
 HANDLE_INSTRUCTION(f64_add)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<double, double, Operators::Add, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<double, double, Operators::Add, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -956,7 +962,7 @@ HANDLE_INSTRUCTION(f64_add)
 HANDLE_INSTRUCTION(f64_sub)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<double, double, Operators::Subtract, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<double, double, Operators::Subtract, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -964,7 +970,7 @@ HANDLE_INSTRUCTION(f64_sub)
 HANDLE_INSTRUCTION(f64_mul)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<double, double, Operators::Multiply, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<double, double, Operators::Multiply, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -972,7 +978,7 @@ HANDLE_INSTRUCTION(f64_mul)
 HANDLE_INSTRUCTION(f64_div)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<double, double, Operators::Divide, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<double, double, Operators::Divide, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -980,7 +986,7 @@ HANDLE_INSTRUCTION(f64_div)
 HANDLE_INSTRUCTION(f64_min)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<double, double, Operators::Minimum, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<double, double, Operators::Minimum, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -988,7 +994,7 @@ HANDLE_INSTRUCTION(f64_min)
 HANDLE_INSTRUCTION(f64_max)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<double, double, Operators::Maximum, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<double, double, Operators::Maximum, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -996,7 +1002,7 @@ HANDLE_INSTRUCTION(f64_max)
 HANDLE_INSTRUCTION(f64_copysign)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<double, double, Operators::CopySign, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<double, double, Operators::CopySign, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1004,7 +1010,7 @@ HANDLE_INSTRUCTION(f64_copysign)
 HANDLE_INSTRUCTION(i32_wrap_i64)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<i64, i32, Operators::Wrap<i32>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<i64, i32, Operators::Wrap<i32>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1012,7 +1018,7 @@ HANDLE_INSTRUCTION(i32_wrap_i64)
 HANDLE_INSTRUCTION(i32_trunc_sf32)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<float, i32, Operators::CheckedTruncate<i32>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<float, i32, Operators::CheckedTruncate<i32>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1020,7 +1026,7 @@ HANDLE_INSTRUCTION(i32_trunc_sf32)
 HANDLE_INSTRUCTION(i32_trunc_uf32)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<float, i32, Operators::CheckedTruncate<u32>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<float, i32, Operators::CheckedTruncate<u32>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1028,7 +1034,7 @@ HANDLE_INSTRUCTION(i32_trunc_uf32)
 HANDLE_INSTRUCTION(i32_trunc_sf64)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<double, i32, Operators::CheckedTruncate<i32>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<double, i32, Operators::CheckedTruncate<i32>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1036,7 +1042,7 @@ HANDLE_INSTRUCTION(i32_trunc_sf64)
 HANDLE_INSTRUCTION(i32_trunc_uf64)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<double, i32, Operators::CheckedTruncate<u32>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<double, i32, Operators::CheckedTruncate<u32>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1044,7 +1050,7 @@ HANDLE_INSTRUCTION(i32_trunc_uf64)
 HANDLE_INSTRUCTION(i64_trunc_sf32)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<float, i64, Operators::CheckedTruncate<i64>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<float, i64, Operators::CheckedTruncate<i64>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1052,7 +1058,7 @@ HANDLE_INSTRUCTION(i64_trunc_sf32)
 HANDLE_INSTRUCTION(i64_trunc_uf32)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<float, i64, Operators::CheckedTruncate<u64>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<float, i64, Operators::CheckedTruncate<u64>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1060,7 +1066,7 @@ HANDLE_INSTRUCTION(i64_trunc_uf32)
 HANDLE_INSTRUCTION(i64_trunc_sf64)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<double, i64, Operators::CheckedTruncate<i64>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<double, i64, Operators::CheckedTruncate<i64>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1068,7 +1074,7 @@ HANDLE_INSTRUCTION(i64_trunc_sf64)
 HANDLE_INSTRUCTION(i64_trunc_uf64)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<double, i64, Operators::CheckedTruncate<u64>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<double, i64, Operators::CheckedTruncate<u64>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1076,7 +1082,7 @@ HANDLE_INSTRUCTION(i64_trunc_uf64)
 HANDLE_INSTRUCTION(i64_extend_si32)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<i32, i64, Operators::Extend<i64>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<i32, i64, Operators::Extend<i64>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1084,7 +1090,7 @@ HANDLE_INSTRUCTION(i64_extend_si32)
 HANDLE_INSTRUCTION(i64_extend_ui32)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u32, i64, Operators::Extend<i64>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u32, i64, Operators::Extend<i64>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1092,7 +1098,7 @@ HANDLE_INSTRUCTION(i64_extend_ui32)
 HANDLE_INSTRUCTION(f32_convert_si32)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<i32, float, Operators::Convert<float>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<i32, float, Operators::Convert<float>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1100,7 +1106,7 @@ HANDLE_INSTRUCTION(f32_convert_si32)
 HANDLE_INSTRUCTION(f32_convert_ui32)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u32, float, Operators::Convert<float>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u32, float, Operators::Convert<float>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1108,7 +1114,7 @@ HANDLE_INSTRUCTION(f32_convert_ui32)
 HANDLE_INSTRUCTION(f32_convert_si64)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<i64, float, Operators::Convert<float>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<i64, float, Operators::Convert<float>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1116,7 +1122,7 @@ HANDLE_INSTRUCTION(f32_convert_si64)
 HANDLE_INSTRUCTION(f32_convert_ui64)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u64, float, Operators::Convert<float>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u64, float, Operators::Convert<float>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1124,7 +1130,7 @@ HANDLE_INSTRUCTION(f32_convert_ui64)
 HANDLE_INSTRUCTION(f32_demote_f64)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<double, float, Operators::Demote, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<double, float, Operators::Demote, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1132,7 +1138,7 @@ HANDLE_INSTRUCTION(f32_demote_f64)
 HANDLE_INSTRUCTION(f64_convert_si32)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<i32, double, Operators::Convert<double>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<i32, double, Operators::Convert<double>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1140,7 +1146,7 @@ HANDLE_INSTRUCTION(f64_convert_si32)
 HANDLE_INSTRUCTION(f64_convert_ui32)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u32, double, Operators::Convert<double>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u32, double, Operators::Convert<double>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1148,7 +1154,7 @@ HANDLE_INSTRUCTION(f64_convert_ui32)
 HANDLE_INSTRUCTION(f64_convert_si64)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<i64, double, Operators::Convert<double>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<i64, double, Operators::Convert<double>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1156,7 +1162,7 @@ HANDLE_INSTRUCTION(f64_convert_si64)
 HANDLE_INSTRUCTION(f64_convert_ui64)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u64, double, Operators::Convert<double>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u64, double, Operators::Convert<double>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1164,7 +1170,7 @@ HANDLE_INSTRUCTION(f64_convert_ui64)
 HANDLE_INSTRUCTION(f64_promote_f32)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<float, double, Operators::Promote, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<float, double, Operators::Promote, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1172,7 +1178,7 @@ HANDLE_INSTRUCTION(f64_promote_f32)
 HANDLE_INSTRUCTION(i32_reinterpret_f32)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<float, i32, Operators::Reinterpret<i32>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<float, i32, Operators::Reinterpret<i32>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1180,7 +1186,7 @@ HANDLE_INSTRUCTION(i32_reinterpret_f32)
 HANDLE_INSTRUCTION(i64_reinterpret_f64)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<double, i64, Operators::Reinterpret<i64>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<double, i64, Operators::Reinterpret<i64>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1188,7 +1194,7 @@ HANDLE_INSTRUCTION(i64_reinterpret_f64)
 HANDLE_INSTRUCTION(f32_reinterpret_i32)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<i32, float, Operators::Reinterpret<float>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<i32, float, Operators::Reinterpret<float>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1196,21 +1202,21 @@ HANDLE_INSTRUCTION(f32_reinterpret_i32)
 HANDLE_INSTRUCTION(local_get)
 {
     LOG_INSN;
-    configuration.push_to_destination<source_address_mix>(configuration.local(instruction->local_index()), addresses.destination);
+    configuration.push_to_destination<source_address_mix>(configuration.local(instruction->local_index()), ip_and_addresses.addresses.destination);
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
 HANDLE_INSTRUCTION(synthetic_argument_get)
 {
     LOG_INSN;
-    configuration.push_to_destination<source_address_mix>(configuration.argument(instruction->local_index()), addresses.destination);
+    configuration.push_to_destination<source_address_mix>(configuration.argument(instruction->local_index()), ip_and_addresses.addresses.destination);
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
 HANDLE_INSTRUCTION(i32_const)
 {
     LOG_INSN;
-    configuration.push_to_destination<source_address_mix>(Value(instruction->arguments().unsafe_get<i32>()), addresses.destination);
+    configuration.push_to_destination<source_address_mix>(Value(instruction->arguments().unsafe_get<i32>()), ip_and_addresses.addresses.destination);
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
@@ -1221,28 +1227,28 @@ HANDLE_INSTRUCTION(synthetic_i32_add2local)
         Value(static_cast<i32>(Operators::Add {}(
             configuration.local_or_argument(instruction->local_index()).to<u32>(),
             configuration.local_or_argument(instruction->arguments().get<LocalIndex>()).template to<u32>()))),
-        addresses.destination);
+        ip_and_addresses.addresses.destination);
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
 HANDLE_INSTRUCTION(synthetic_i32_addconstlocal)
 {
     LOG_INSN;
-    configuration.push_to_destination<source_address_mix>(Value(static_cast<i32>(Operators::Add {}(configuration.local_or_argument(instruction->local_index()).template to<u32>(), instruction->arguments().unsafe_get<i32>()))), addresses.destination);
+    configuration.push_to_destination<source_address_mix>(Value(static_cast<i32>(Operators::Add {}(configuration.local_or_argument(instruction->local_index()).template to<u32>(), instruction->arguments().unsafe_get<i32>()))), ip_and_addresses.addresses.destination);
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
 HANDLE_INSTRUCTION(synthetic_i32_andconstlocal)
 {
     LOG_INSN;
-    configuration.push_to_destination<source_address_mix>(Value(Operators::BitAnd {}(configuration.local_or_argument(instruction->local_index()).template to<i32>(), instruction->arguments().unsafe_get<i32>())), addresses.destination);
+    configuration.push_to_destination<source_address_mix>(Value(Operators::BitAnd {}(configuration.local_or_argument(instruction->local_index()).template to<i32>(), instruction->arguments().unsafe_get<i32>())), ip_and_addresses.addresses.destination);
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
 HANDLE_INSTRUCTION(synthetic_i32_storelocal)
 {
     LOG_INSN;
-    if (interpreter.store_value(configuration, *instruction, ConvertToRaw<i32> {}(configuration.local_or_argument(instruction->local_index()).to<i32>()), 0, addresses))
+    if (interpreter.store_value(configuration, *instruction, ConvertToRaw<i32> {}(configuration.local_or_argument(instruction->local_index()).to<i32>()), 0, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1250,7 +1256,7 @@ HANDLE_INSTRUCTION(synthetic_i32_storelocal)
 HANDLE_INSTRUCTION(synthetic_i64_storelocal)
 {
     LOG_INSN;
-    if (interpreter.store_value(configuration, *instruction, ConvertToRaw<i64> {}(configuration.local_or_argument(instruction->local_index()).to<i64>()), 0, addresses))
+    if (interpreter.store_value(configuration, *instruction, ConvertToRaw<i64> {}(configuration.local_or_argument(instruction->local_index()).to<i64>()), 0, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1267,8 +1273,8 @@ HANDLE_INSTRUCTION(synthetic_call_00)
     LOG_INSN;
     auto index = instruction->arguments().get<FunctionIndex>();
     auto address = configuration.frame().module().functions()[index.value()];
-    dbgln_if(WASM_TRACE_DEBUG, "[{}] call(#{} -> {})", current_ip_value, index.value(), address.value());
-    if (interpreter.call_address(configuration, address, addresses, BytecodeInterpreter::CallAddressSource::DirectCall, BytecodeInterpreter::CallType::UsingRegisters) == Outcome::Return)
+    dbgln_if(WASM_TRACE_DEBUG, "[{}] call(#{} -> {})", ip_and_addresses.current_ip_value, index.value(), address.value());
+    if (interpreter.call_address(configuration, address, ip_and_addresses.addresses, BytecodeInterpreter::CallAddressSource::DirectCall, BytecodeInterpreter::CallType::UsingRegisters) == Outcome::Return)
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1278,8 +1284,8 @@ HANDLE_INSTRUCTION(synthetic_call_01)
     LOG_INSN;
     auto index = instruction->arguments().get<FunctionIndex>();
     auto address = configuration.frame().module().functions()[index.value()];
-    dbgln_if(WASM_TRACE_DEBUG, "[{}] call(#{} -> {})", current_ip_value, index.value(), address.value());
-    if (interpreter.call_address(configuration, address, addresses, BytecodeInterpreter::CallAddressSource::DirectCall, BytecodeInterpreter::CallType::UsingRegisters) == Outcome::Return)
+    dbgln_if(WASM_TRACE_DEBUG, "[{}] call(#{} -> {})", ip_and_addresses.current_ip_value, index.value(), address.value());
+    if (interpreter.call_address(configuration, address, ip_and_addresses.addresses, BytecodeInterpreter::CallAddressSource::DirectCall, BytecodeInterpreter::CallType::UsingRegisters) == Outcome::Return)
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1289,8 +1295,8 @@ HANDLE_INSTRUCTION(synthetic_call_10)
     LOG_INSN;
     auto index = instruction->arguments().get<FunctionIndex>();
     auto address = configuration.frame().module().functions()[index.value()];
-    dbgln_if(WASM_TRACE_DEBUG, "[{}] call(#{} -> {})", current_ip_value, index.value(), address.value());
-    if (interpreter.call_address(configuration, address, addresses, BytecodeInterpreter::CallAddressSource::DirectCall, BytecodeInterpreter::CallType::UsingRegisters) == Outcome::Return)
+    dbgln_if(WASM_TRACE_DEBUG, "[{}] call(#{} -> {})", ip_and_addresses.current_ip_value, index.value(), address.value());
+    if (interpreter.call_address(configuration, address, ip_and_addresses.addresses, BytecodeInterpreter::CallAddressSource::DirectCall, BytecodeInterpreter::CallType::UsingRegisters) == Outcome::Return)
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1300,8 +1306,8 @@ HANDLE_INSTRUCTION(synthetic_call_11)
     LOG_INSN;
     auto index = instruction->arguments().get<FunctionIndex>();
     auto address = configuration.frame().module().functions()[index.value()];
-    dbgln_if(WASM_TRACE_DEBUG, "[{}] call(#{} -> {})", current_ip_value, index.value(), address.value());
-    if (interpreter.call_address(configuration, address, addresses, BytecodeInterpreter::CallAddressSource::DirectCall, BytecodeInterpreter::CallType::UsingRegisters) == Outcome::Return)
+    dbgln_if(WASM_TRACE_DEBUG, "[{}] call(#{} -> {})", ip_and_addresses.current_ip_value, index.value(), address.value());
+    if (interpreter.call_address(configuration, address, ip_and_addresses.addresses, BytecodeInterpreter::CallAddressSource::DirectCall, BytecodeInterpreter::CallType::UsingRegisters) == Outcome::Return)
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1311,8 +1317,8 @@ HANDLE_INSTRUCTION(synthetic_call_20)
     LOG_INSN;
     auto index = instruction->arguments().get<FunctionIndex>();
     auto address = configuration.frame().module().functions()[index.value()];
-    dbgln_if(WASM_TRACE_DEBUG, "[{}] call(#{} -> {})", current_ip_value, index.value(), address.value());
-    if (interpreter.call_address(configuration, address, addresses, BytecodeInterpreter::CallAddressSource::DirectCall, BytecodeInterpreter::CallType::UsingRegisters) == Outcome::Return)
+    dbgln_if(WASM_TRACE_DEBUG, "[{}] call(#{} -> {})", ip_and_addresses.current_ip_value, index.value(), address.value());
+    if (interpreter.call_address(configuration, address, ip_and_addresses.addresses, BytecodeInterpreter::CallAddressSource::DirectCall, BytecodeInterpreter::CallType::UsingRegisters) == Outcome::Return)
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1322,8 +1328,8 @@ HANDLE_INSTRUCTION(synthetic_call_21)
     LOG_INSN;
     auto index = instruction->arguments().get<FunctionIndex>();
     auto address = configuration.frame().module().functions()[index.value()];
-    dbgln_if(WASM_TRACE_DEBUG, "[{}] call(#{} -> {})", current_ip_value, index.value(), address.value());
-    if (interpreter.call_address(configuration, address, addresses, BytecodeInterpreter::CallAddressSource::DirectCall, BytecodeInterpreter::CallType::UsingRegisters) == Outcome::Return)
+    dbgln_if(WASM_TRACE_DEBUG, "[{}] call(#{} -> {})", ip_and_addresses.current_ip_value, index.value(), address.value());
+    if (interpreter.call_address(configuration, address, ip_and_addresses.addresses, BytecodeInterpreter::CallAddressSource::DirectCall, BytecodeInterpreter::CallType::UsingRegisters) == Outcome::Return)
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1333,8 +1339,8 @@ HANDLE_INSTRUCTION(synthetic_call_30)
     LOG_INSN;
     auto index = instruction->arguments().get<FunctionIndex>();
     auto address = configuration.frame().module().functions()[index.value()];
-    dbgln_if(WASM_TRACE_DEBUG, "[{}] call(#{} -> {})", current_ip_value, index.value(), address.value());
-    if (interpreter.call_address(configuration, address, addresses, BytecodeInterpreter::CallAddressSource::DirectCall, BytecodeInterpreter::CallType::UsingRegisters) == Outcome::Return)
+    dbgln_if(WASM_TRACE_DEBUG, "[{}] call(#{} -> {})", ip_and_addresses.current_ip_value, index.value(), address.value());
+    if (interpreter.call_address(configuration, address, ip_and_addresses.addresses, BytecodeInterpreter::CallAddressSource::DirectCall, BytecodeInterpreter::CallType::UsingRegisters) == Outcome::Return)
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1344,8 +1350,8 @@ HANDLE_INSTRUCTION(synthetic_call_31)
     LOG_INSN;
     auto index = instruction->arguments().get<FunctionIndex>();
     auto address = configuration.frame().module().functions()[index.value()];
-    dbgln_if(WASM_TRACE_DEBUG, "[{}] call(#{} -> {})", current_ip_value, index.value(), address.value());
-    if (interpreter.call_address(configuration, address, addresses, BytecodeInterpreter::CallAddressSource::DirectCall, BytecodeInterpreter::CallType::UsingRegisters) == Outcome::Return)
+    dbgln_if(WASM_TRACE_DEBUG, "[{}] call(#{} -> {})", ip_and_addresses.current_ip_value, index.value(), address.value());
+    if (interpreter.call_address(configuration, address, ip_and_addresses.addresses, BytecodeInterpreter::CallAddressSource::DirectCall, BytecodeInterpreter::CallType::UsingRegisters) == Outcome::Return)
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1367,28 +1373,28 @@ HANDLE_INSTRUCTION(local_set)
 {
     LOG_INSN;
     // bounds checked by verifier.
-    configuration.local_or_argument(instruction->local_index()) = configuration.take_source<source_address_mix>(0, addresses.sources);
+    configuration.local_or_argument(instruction->local_index()) = configuration.take_source<source_address_mix>(0, ip_and_addresses.addresses.sources);
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
 HANDLE_INSTRUCTION(i64_const)
 {
     LOG_INSN;
-    configuration.push_to_destination<source_address_mix>(Value(instruction->arguments().unsafe_get<i64>()), addresses.destination);
+    configuration.push_to_destination<source_address_mix>(Value(instruction->arguments().unsafe_get<i64>()), ip_and_addresses.addresses.destination);
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
 HANDLE_INSTRUCTION(f32_const)
 {
     LOG_INSN;
-    configuration.push_to_destination<source_address_mix>(Value(instruction->arguments().unsafe_get<float>()), addresses.destination);
+    configuration.push_to_destination<source_address_mix>(Value(instruction->arguments().unsafe_get<float>()), ip_and_addresses.addresses.destination);
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
 HANDLE_INSTRUCTION(f64_const)
 {
     LOG_INSN;
-    configuration.push_to_destination<source_address_mix>(Value(instruction->arguments().unsafe_get<double>()), addresses.destination);
+    configuration.push_to_destination<source_address_mix>(Value(instruction->arguments().unsafe_get<double>()), ip_and_addresses.addresses.destination);
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
@@ -1427,7 +1433,7 @@ HANDLE_INSTRUCTION(loop)
         auto& type = configuration.frame().module().types()[args.block_type.type_index().value()];
         arity = type.parameters().size();
     }
-    configuration.label_stack().append(Label(arity, current_ip_value + 1, configuration.value_stack().size() - arity));
+    configuration.label_stack().append(Label(arity, ip_and_addresses.current_ip_value + 1, configuration.value_stack().size() - arity));
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
@@ -1450,14 +1456,14 @@ HANDLE_INSTRUCTION(if_)
     }
     }
 
-    auto value = configuration.take_source<source_address_mix>(0, addresses.sources).template to<i32>();
+    auto value = configuration.take_source<source_address_mix>(0, ip_and_addresses.addresses.sources).template to<i32>();
     auto end_label = Label(arity, args.end_ip.value(), configuration.value_stack().size() - param_arity);
     if (value == 0) {
         if (args.else_ip.has_value()) {
-            current_ip_value = args.else_ip->value() - 1;
+            ip_and_addresses.current_ip_value = args.else_ip->value() - 1;
             configuration.label_stack().append(end_label);
         } else {
-            current_ip_value = args.end_ip.value();
+            ip_and_addresses.current_ip_value = args.end_ip.value();
         }
     } else {
         configuration.label_stack().append(end_label);
@@ -1477,7 +1483,7 @@ HANDLE_INSTRUCTION(structured_else)
     LOG_INSN;
     auto label = configuration.label_stack().take_last();
     // Jump to the end label
-    current_ip_value = label.continuation().value() - 1;
+    ip_and_addresses.current_ip_value = label.continuation().value() - 1;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
@@ -1491,7 +1497,7 @@ HANDLE_INSTRUCTION(return_)
 HANDLE_INSTRUCTION(br)
 {
     LOG_INSN;
-    current_ip_value = interpreter.branch_to_label(configuration, instruction->arguments().get<LabelIndex>()).value();
+    ip_and_addresses.current_ip_value = interpreter.branch_to_label(configuration, instruction->arguments().get<LabelIndex>()).value();
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
@@ -1499,10 +1505,10 @@ HANDLE_INSTRUCTION(br_if)
 {
     LOG_INSN;
     // bounds checked by verifier.
-    auto cond = configuration.take_source<source_address_mix>(0, addresses.sources).template to<i32>();
+    auto cond = configuration.take_source<source_address_mix>(0, ip_and_addresses.addresses.sources).template to<i32>();
     if (cond == 0)
         TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
-    current_ip_value = interpreter.branch_to_label(configuration, instruction->arguments().get<LabelIndex>()).value();
+    ip_and_addresses.current_ip_value = interpreter.branch_to_label(configuration, instruction->arguments().get<LabelIndex>()).value();
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
@@ -1510,13 +1516,13 @@ HANDLE_INSTRUCTION(br_table)
 {
     LOG_INSN;
     auto& args = instruction->arguments().get<Instruction::TableBranchArgs>();
-    auto i = configuration.take_source<source_address_mix>(0, addresses.sources).template to<u32>();
+    auto i = configuration.take_source<source_address_mix>(0, ip_and_addresses.addresses.sources).template to<u32>();
 
     if (i >= args.labels.size()) {
-        current_ip_value = interpreter.branch_to_label(configuration, args.default_).value();
+        ip_and_addresses.current_ip_value = interpreter.branch_to_label(configuration, args.default_).value();
         TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
     }
-    current_ip_value = interpreter.branch_to_label(configuration, args.labels[i]).value();
+    ip_and_addresses.current_ip_value = interpreter.branch_to_label(configuration, args.labels[i]).value();
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
@@ -1526,37 +1532,8 @@ HANDLE_INSTRUCTION(call)
     auto index = instruction->arguments().get<FunctionIndex>();
     auto address = configuration.frame().module().functions()[index.value()];
     dbgln_if(WASM_TRACE_DEBUG, "call({})", address.value());
-    if (interpreter.call_address(configuration, address, addresses) == Outcome::Return)
+    if (interpreter.call_address(configuration, address, ip_and_addresses.addresses) == Outcome::Return)
         return Outcome::Return;
-    TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
-}
-
-HANDLE_INSTRUCTION(synthetic_call_with_record0)
-{
-    LOG_INSN;
-    auto index = instruction->arguments().get<FunctionIndex>();
-    auto address = configuration.frame().module().functions()[index.value()];
-    dbgln_if(WASM_TRACE_DEBUG, "call({})", address.value());
-    if (interpreter.call_address(configuration, address, addresses, BytecodeInterpreter::CallAddressSource::DirectCall, BytecodeInterpreter::CallType::UsingCallRecord) == Outcome::Return)
-        return Outcome::Return;
-    TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
-}
-
-HANDLE_INSTRUCTION(synthetic_call_with_record1)
-{
-    LOG_INSN;
-    auto index = instruction->arguments().get<FunctionIndex>();
-    auto address = configuration.frame().module().functions()[index.value()];
-    dbgln_if(WASM_TRACE_DEBUG, "call({})", address.value());
-    if (interpreter.call_address(configuration, address, addresses, BytecodeInterpreter::CallAddressSource::DirectCall, BytecodeInterpreter::CallType::UsingCallRecord) == Outcome::Return)
-        return Outcome::Return;
-    TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
-}
-
-HANDLE_INSTRUCTION(synthetic_allocate_call_record)
-{
-    LOG_INSN;
-    configuration.allocate_call_record(instruction->arguments().get<i32>());
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
@@ -1567,11 +1544,11 @@ HANDLE_INSTRUCTION(return_call)
     auto address = configuration.frame().module().functions()[index.value()];
     configuration.label_stack().shrink(configuration.frame().label_index() + 1, true);
     dbgln_if(WASM_TRACE_DEBUG, "tail call({})", address.value());
-    switch (auto const outcome = interpreter.call_address(configuration, address, addresses, BytecodeInterpreter::CallAddressSource::DirectTailCall)) {
+    switch (auto const outcome = interpreter.call_address(configuration, address, ip_and_addresses.addresses, BytecodeInterpreter::CallAddressSource::DirectTailCall)) {
     default:
         // Some IP we have to continue from.
-        current_ip_value = to_underlying(outcome) - 1;
-        addresses = { .sources_and_destination = default_sources_and_destination };
+        ip_and_addresses.current_ip_value = to_underlying(outcome) - 1;
+        ip_and_addresses.addresses = { .sources_and_destination = default_sources_and_destination };
         cc = configuration.frame().expression().compiled_instructions.dispatches.data();
         addresses_ptr = configuration.frame().expression().compiled_instructions.src_dst_mappings.data();
         [[fallthrough]];
@@ -1589,7 +1566,7 @@ HANDLE_INSTRUCTION(call_indirect)
     auto table_address = configuration.frame().module().tables()[args.table.value()];
     auto table_instance = configuration.store().get(table_address);
     // bounds checked by verifier.
-    auto index = configuration.take_source<source_address_mix>(0, addresses.sources).template to<i32>();
+    auto index = configuration.take_source<source_address_mix>(0, ip_and_addresses.addresses.sources).template to<i32>();
     TRAP_IN_LOOP_IF_NOT(index >= 0);
     TRAP_IN_LOOP_IF_NOT(static_cast<size_t>(index) < table_instance->elements().size());
     auto& element = table_instance->elements()[index];
@@ -1603,7 +1580,7 @@ HANDLE_INSTRUCTION(call_indirect)
     TRAP_IN_LOOP_IF_NOT(type_actual.results() == type_expected.results());
 
     dbgln_if(WASM_TRACE_DEBUG, "call_indirect({} -> {})", index, address.value());
-    if (interpreter.call_address(configuration, address, addresses, BytecodeInterpreter::CallAddressSource::IndirectCall) == Outcome::Return)
+    if (interpreter.call_address(configuration, address, ip_and_addresses.addresses, BytecodeInterpreter::CallAddressSource::IndirectCall) == Outcome::Return)
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1615,7 +1592,7 @@ HANDLE_INSTRUCTION(return_call_indirect)
     auto table_address = configuration.frame().module().tables()[args.table.value()];
     auto table_instance = configuration.store().get(table_address);
     // bounds checked by verifier.
-    auto index = configuration.take_source<source_address_mix>(0, addresses.sources).template to<i32>();
+    auto index = configuration.take_source<source_address_mix>(0, ip_and_addresses.addresses.sources).template to<i32>();
     TRAP_IN_LOOP_IF_NOT(index >= 0);
     TRAP_IN_LOOP_IF_NOT(static_cast<size_t>(index) < table_instance->elements().size());
     auto& element = table_instance->elements()[index];
@@ -1629,11 +1606,11 @@ HANDLE_INSTRUCTION(return_call_indirect)
     TRAP_IN_LOOP_IF_NOT(type_actual.results() == type_expected.results());
 
     dbgln_if(WASM_TRACE_DEBUG, "tail call_indirect({} -> {})", index, address.value());
-    switch (auto const outcome = interpreter.call_address(configuration, address, addresses, BytecodeInterpreter::CallAddressSource::IndirectTailCall)) {
+    switch (auto const outcome = interpreter.call_address(configuration, address, ip_and_addresses.addresses, BytecodeInterpreter::CallAddressSource::IndirectTailCall)) {
     default:
         // Some IP we have to continue from.
-        current_ip_value = to_underlying(outcome) - 1;
-        addresses = { .sources_and_destination = default_sources_and_destination };
+        ip_and_addresses.current_ip_value = to_underlying(outcome) - 1;
+        ip_and_addresses.addresses = { .sources_and_destination = default_sources_and_destination };
         cc = configuration.frame().expression().compiled_instructions.dispatches.data();
         addresses_ptr = configuration.frame().expression().compiled_instructions.src_dst_mappings.data();
         [[fallthrough]];
@@ -1647,7 +1624,7 @@ HANDLE_INSTRUCTION(return_call_indirect)
 HANDLE_INSTRUCTION(i32_load)
 {
     LOG_INSN;
-    if (interpreter.load_and_push<i32, i32>(configuration, *instruction, addresses))
+    if (interpreter.load_and_push<i32, i32>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1655,7 +1632,7 @@ HANDLE_INSTRUCTION(i32_load)
 HANDLE_INSTRUCTION(i64_load)
 {
     LOG_INSN;
-    if (interpreter.load_and_push<i64, i64>(configuration, *instruction, addresses))
+    if (interpreter.load_and_push<i64, i64>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1663,7 +1640,7 @@ HANDLE_INSTRUCTION(i64_load)
 HANDLE_INSTRUCTION(f32_load)
 {
     LOG_INSN;
-    if (interpreter.load_and_push<float, float>(configuration, *instruction, addresses))
+    if (interpreter.load_and_push<float, float>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1671,7 +1648,7 @@ HANDLE_INSTRUCTION(f32_load)
 HANDLE_INSTRUCTION(f64_load)
 {
     LOG_INSN;
-    if (interpreter.load_and_push<double, double>(configuration, *instruction, addresses))
+    if (interpreter.load_and_push<double, double>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1679,7 +1656,7 @@ HANDLE_INSTRUCTION(f64_load)
 HANDLE_INSTRUCTION(i32_load8_s)
 {
     LOG_INSN;
-    if (interpreter.load_and_push<i8, i32>(configuration, *instruction, addresses))
+    if (interpreter.load_and_push<i8, i32>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1687,7 +1664,7 @@ HANDLE_INSTRUCTION(i32_load8_s)
 HANDLE_INSTRUCTION(i32_load8_u)
 {
     LOG_INSN;
-    if (interpreter.load_and_push<u8, i32>(configuration, *instruction, addresses))
+    if (interpreter.load_and_push<u8, i32>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1695,7 +1672,7 @@ HANDLE_INSTRUCTION(i32_load8_u)
 HANDLE_INSTRUCTION(i32_load16_s)
 {
     LOG_INSN;
-    if (interpreter.load_and_push<i16, i32>(configuration, *instruction, addresses))
+    if (interpreter.load_and_push<i16, i32>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1703,7 +1680,7 @@ HANDLE_INSTRUCTION(i32_load16_s)
 HANDLE_INSTRUCTION(i32_load16_u)
 {
     LOG_INSN;
-    if (interpreter.load_and_push<u16, i32>(configuration, *instruction, addresses))
+    if (interpreter.load_and_push<u16, i32>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1711,7 +1688,7 @@ HANDLE_INSTRUCTION(i32_load16_u)
 HANDLE_INSTRUCTION(i64_load8_s)
 {
     LOG_INSN;
-    if (interpreter.load_and_push<i8, i64>(configuration, *instruction, addresses))
+    if (interpreter.load_and_push<i8, i64>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1719,7 +1696,7 @@ HANDLE_INSTRUCTION(i64_load8_s)
 HANDLE_INSTRUCTION(i64_load8_u)
 {
     LOG_INSN;
-    if (interpreter.load_and_push<u8, i64>(configuration, *instruction, addresses))
+    if (interpreter.load_and_push<u8, i64>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1727,7 +1704,7 @@ HANDLE_INSTRUCTION(i64_load8_u)
 HANDLE_INSTRUCTION(i64_load16_s)
 {
     LOG_INSN;
-    if (interpreter.load_and_push<i16, i64>(configuration, *instruction, addresses))
+    if (interpreter.load_and_push<i16, i64>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1735,7 +1712,7 @@ HANDLE_INSTRUCTION(i64_load16_s)
 HANDLE_INSTRUCTION(i64_load16_u)
 {
     LOG_INSN;
-    if (interpreter.load_and_push<u16, i64>(configuration, *instruction, addresses))
+    if (interpreter.load_and_push<u16, i64>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1743,7 +1720,7 @@ HANDLE_INSTRUCTION(i64_load16_u)
 HANDLE_INSTRUCTION(i64_load32_s)
 {
     LOG_INSN;
-    if (interpreter.load_and_push<i32, i64>(configuration, *instruction, addresses))
+    if (interpreter.load_and_push<i32, i64>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1751,7 +1728,7 @@ HANDLE_INSTRUCTION(i64_load32_s)
 HANDLE_INSTRUCTION(i64_load32_u)
 {
     LOG_INSN;
-    if (interpreter.load_and_push<u32, i64>(configuration, *instruction, addresses))
+    if (interpreter.load_and_push<u32, i64>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1759,7 +1736,7 @@ HANDLE_INSTRUCTION(i64_load32_u)
 HANDLE_INSTRUCTION(i32_store)
 {
     LOG_INSN;
-    if (interpreter.pop_and_store<i32, i32>(configuration, *instruction, addresses))
+    if (interpreter.pop_and_store<i32, i32>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1767,7 +1744,7 @@ HANDLE_INSTRUCTION(i32_store)
 HANDLE_INSTRUCTION(i64_store)
 {
     LOG_INSN;
-    if (interpreter.pop_and_store<i64, i64>(configuration, *instruction, addresses))
+    if (interpreter.pop_and_store<i64, i64>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1775,7 +1752,7 @@ HANDLE_INSTRUCTION(i64_store)
 HANDLE_INSTRUCTION(f32_store)
 {
     LOG_INSN;
-    if (interpreter.pop_and_store<float, float>(configuration, *instruction, addresses))
+    if (interpreter.pop_and_store<float, float>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1783,7 +1760,7 @@ HANDLE_INSTRUCTION(f32_store)
 HANDLE_INSTRUCTION(f64_store)
 {
     LOG_INSN;
-    if (interpreter.pop_and_store<double, double>(configuration, *instruction, addresses))
+    if (interpreter.pop_and_store<double, double>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1791,7 +1768,7 @@ HANDLE_INSTRUCTION(f64_store)
 HANDLE_INSTRUCTION(i32_store8)
 {
     LOG_INSN;
-    if (interpreter.pop_and_store<i32, i8>(configuration, *instruction, addresses))
+    if (interpreter.pop_and_store<i32, i8>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1799,7 +1776,7 @@ HANDLE_INSTRUCTION(i32_store8)
 HANDLE_INSTRUCTION(i32_store16)
 {
     LOG_INSN;
-    if (interpreter.pop_and_store<i32, i16>(configuration, *instruction, addresses))
+    if (interpreter.pop_and_store<i32, i16>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1807,7 +1784,7 @@ HANDLE_INSTRUCTION(i32_store16)
 HANDLE_INSTRUCTION(i64_store8)
 {
     LOG_INSN;
-    if (interpreter.pop_and_store<i64, i8>(configuration, *instruction, addresses))
+    if (interpreter.pop_and_store<i64, i8>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1815,7 +1792,7 @@ HANDLE_INSTRUCTION(i64_store8)
 HANDLE_INSTRUCTION(i64_store16)
 {
     LOG_INSN;
-    if (interpreter.pop_and_store<i64, i16>(configuration, *instruction, addresses))
+    if (interpreter.pop_and_store<i64, i16>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1823,7 +1800,7 @@ HANDLE_INSTRUCTION(i64_store16)
 HANDLE_INSTRUCTION(i64_store32)
 {
     LOG_INSN;
-    if (interpreter.pop_and_store<i64, i32>(configuration, *instruction, addresses))
+    if (interpreter.pop_and_store<i64, i32>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -1831,7 +1808,7 @@ HANDLE_INSTRUCTION(i64_store32)
 HANDLE_INSTRUCTION(local_tee)
 {
     LOG_INSN;
-    auto value = configuration.source_value<source_address_mix>(0, addresses.sources); // bounds checked by verifier.
+    auto value = configuration.source_value<source_address_mix>(0, ip_and_addresses.addresses.sources); // bounds checked by verifier.
     auto local_index = instruction->local_index();
     dbgln_if(WASM_TRACE_DEBUG, "stack:peek -> locals({})", local_index.value());
     configuration.frame().local_or_argument(local_index) = value;
@@ -1848,7 +1825,7 @@ HANDLE_INSTRUCTION(global_get)
     auto address = configuration.frame().module().globals()[global_index.value()];
     dbgln_if(WASM_TRACE_DEBUG, "global({}) -> stack", address.value());
     auto global = configuration.store().get(address);
-    configuration.push_to_destination<source_address_mix>(global->value(), addresses.destination);
+    configuration.push_to_destination<source_address_mix>(global->value(), ip_and_addresses.addresses.destination);
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
@@ -1858,7 +1835,7 @@ HANDLE_INSTRUCTION(global_set)
     auto global_index = instruction->arguments().get<GlobalIndex>();
     auto address = configuration.frame().module().globals()[global_index.value()];
     // bounds checked by verifier.
-    auto value = configuration.take_source<source_address_mix>(0, addresses.sources);
+    auto value = configuration.take_source<source_address_mix>(0, ip_and_addresses.addresses.sources);
     dbgln_if(WASM_TRACE_DEBUG, "stack -> global({})", address.value());
     auto global = configuration.store().get(address);
     global->set_value(value);
@@ -1873,7 +1850,7 @@ HANDLE_INSTRUCTION(memory_size)
     auto instance = configuration.store().get(address);
     auto pages = instance->size() / Constants::page_size;
     dbgln_if(WASM_TRACE_DEBUG, "memory.size -> stack({})", pages);
-    configuration.push_to_destination<source_address_mix>(Value(static_cast<i32>(pages)), addresses.destination);
+    configuration.push_to_destination<source_address_mix>(Value(static_cast<i32>(pages)), ip_and_addresses.addresses.destination);
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
@@ -1884,7 +1861,7 @@ HANDLE_INSTRUCTION(memory_grow)
     auto address = configuration.frame().module().memories().data()[args.memory_index.value()];
     auto instance = configuration.store().get(address);
     i32 old_pages = instance->size() / Constants::page_size;
-    auto& entry = configuration.source_value<source_address_mix>(0, addresses.sources); // bounds checked by verifier.
+    auto& entry = configuration.source_value<source_address_mix>(0, ip_and_addresses.addresses.sources); // bounds checked by verifier.
     auto new_pages = entry.template to<i32>();
     dbgln_if(WASM_TRACE_DEBUG, "memory.grow({}), previously {} pages...", new_pages, old_pages);
     if (instance->grow(new_pages * Constants::page_size))
@@ -1902,9 +1879,9 @@ HANDLE_INSTRUCTION(memory_fill)
         auto address = configuration.frame().module().memories().data()[args.memory_index.value()];
         auto instance = configuration.store().get(address);
         // bounds checked by verifier.
-        auto const count = configuration.take_source<source_address_mix>(0, addresses.sources).template to<u32>();
-        auto const value = static_cast<u8>(configuration.take_source<source_address_mix>(1, addresses.sources).template to<u32>());
-        auto const destination_offset = configuration.take_source<source_address_mix>(2, addresses.sources).template to<u32>();
+        auto const count = configuration.take_source<source_address_mix>(0, ip_and_addresses.addresses.sources).template to<u32>();
+        auto const value = static_cast<u8>(configuration.take_source<source_address_mix>(1, ip_and_addresses.addresses.sources).template to<u32>());
+        auto const destination_offset = configuration.take_source<source_address_mix>(2, ip_and_addresses.addresses.sources).template to<u32>();
 
         Checked<u64> checked_end = destination_offset;
         checked_end += count;
@@ -1932,9 +1909,9 @@ HANDLE_INSTRUCTION(memory_copy)
     auto destination_instance = configuration.store().get(destination_address);
 
     // bounds checked by verifier.
-    auto count = configuration.take_source<source_address_mix>(0, addresses.sources).template to<i32>();
-    auto source_offset = configuration.take_source<source_address_mix>(1, addresses.sources).template to<i32>();
-    auto destination_offset = configuration.take_source<source_address_mix>(2, addresses.sources).template to<i32>();
+    auto count = configuration.take_source<source_address_mix>(0, ip_and_addresses.addresses.sources).template to<i32>();
+    auto source_offset = configuration.take_source<source_address_mix>(1, ip_and_addresses.addresses.sources).template to<i32>();
+    auto destination_offset = configuration.take_source<source_address_mix>(2, ip_and_addresses.addresses.sources).template to<i32>();
 
     Checked<size_t> source_position = source_offset;
     source_position.saturating_add(count);
@@ -1972,9 +1949,9 @@ HANDLE_INSTRUCTION(memory_init)
     auto memory_address = configuration.frame().module().memories().data()[args.memory_index.value()];
     auto memory = configuration.store().unsafe_get(memory_address);
     // bounds checked by verifier.
-    auto count = configuration.take_source<source_address_mix>(0, addresses.sources).template to<u32>();
-    auto source_offset = configuration.take_source<source_address_mix>(1, addresses.sources).template to<u32>();
-    auto destination_offset = configuration.take_source<source_address_mix>(2, addresses.sources).template to<u32>();
+    auto count = configuration.take_source<source_address_mix>(0, ip_and_addresses.addresses.sources).template to<u32>();
+    auto source_offset = configuration.take_source<source_address_mix>(1, ip_and_addresses.addresses.sources).template to<u32>();
+    auto destination_offset = configuration.take_source<source_address_mix>(2, ip_and_addresses.addresses.sources).template to<u32>();
 
     Checked<size_t> source_position = source_offset;
     source_position.saturating_add(count);
@@ -2022,9 +1999,9 @@ HANDLE_INSTRUCTION(table_init)
     auto element_address = configuration.frame().module().elements()[args.element_index.value()];
     auto element = configuration.store().get(element_address);
     // bounds checked by verifier.
-    auto count = configuration.take_source<source_address_mix>(0, addresses.sources).template to<u32>();
-    auto source_offset = configuration.take_source<source_address_mix>(1, addresses.sources).template to<u32>();
-    auto destination_offset = configuration.take_source<source_address_mix>(2, addresses.sources).template to<u32>();
+    auto count = configuration.take_source<source_address_mix>(0, ip_and_addresses.addresses.sources).template to<u32>();
+    auto source_offset = configuration.take_source<source_address_mix>(1, ip_and_addresses.addresses.sources).template to<u32>();
+    auto destination_offset = configuration.take_source<source_address_mix>(2, ip_and_addresses.addresses.sources).template to<u32>();
 
     Checked<u32> checked_source_offset = source_offset;
     Checked<u32> checked_destination_offset = destination_offset;
@@ -2048,9 +2025,9 @@ HANDLE_INSTRUCTION(table_copy)
     auto destination_instance = configuration.store().get(destination_address);
 
     // bounds checked by verifier.
-    auto count = configuration.take_source<source_address_mix>(0, addresses.sources).template to<u32>();
-    auto source_offset = configuration.take_source<source_address_mix>(1, addresses.sources).template to<u32>();
-    auto destination_offset = configuration.take_source<source_address_mix>(2, addresses.sources).template to<u32>();
+    auto count = configuration.take_source<source_address_mix>(0, ip_and_addresses.addresses.sources).template to<u32>();
+    auto source_offset = configuration.take_source<source_address_mix>(1, ip_and_addresses.addresses.sources).template to<u32>();
+    auto destination_offset = configuration.take_source<source_address_mix>(2, ip_and_addresses.addresses.sources).template to<u32>();
 
     Checked<size_t> source_position = source_offset;
     source_position.saturating_add(count);
@@ -2084,9 +2061,9 @@ HANDLE_INSTRUCTION(table_fill)
     auto address = configuration.frame().module().tables()[table_index.value()];
     auto table = configuration.store().get(address);
     // bounds checked by verifier.
-    auto count = configuration.take_source<source_address_mix>(0, addresses.sources).template to<u32>();
-    auto value = configuration.take_source<source_address_mix>(1, addresses.sources);
-    auto start = configuration.take_source<source_address_mix>(2, addresses.sources).template to<u32>();
+    auto count = configuration.take_source<source_address_mix>(0, ip_and_addresses.addresses.sources).template to<u32>();
+    auto value = configuration.take_source<source_address_mix>(1, ip_and_addresses.addresses.sources);
+    auto start = configuration.take_source<source_address_mix>(2, ip_and_addresses.addresses.sources).template to<u32>();
 
     Checked<u32> checked_offset = start;
     checked_offset += count;
@@ -2101,8 +2078,8 @@ HANDLE_INSTRUCTION(table_set)
 {
     LOG_INSN;
     // bounds checked by verifier.
-    auto ref = configuration.take_source<source_address_mix>(0, addresses.sources);
-    auto index = (size_t)(configuration.take_source<source_address_mix>(1, addresses.sources).template to<i32>());
+    auto ref = configuration.take_source<source_address_mix>(0, ip_and_addresses.addresses.sources);
+    auto index = (size_t)(configuration.take_source<source_address_mix>(1, ip_and_addresses.addresses.sources).template to<i32>());
     auto table_index = instruction->arguments().get<TableIndex>();
     auto address = configuration.frame().module().tables()[table_index.value()];
     auto table = configuration.store().get(address);
@@ -2115,7 +2092,7 @@ HANDLE_INSTRUCTION(table_get)
 {
     LOG_INSN;
     // bounds checked by verifier.
-    auto& index_value = configuration.source_value<source_address_mix>(0, addresses.sources);
+    auto& index_value = configuration.source_value<source_address_mix>(0, ip_and_addresses.addresses.sources);
     auto index = static_cast<size_t>(index_value.template to<i32>());
     auto table_index = instruction->arguments().get<TableIndex>();
     auto address = configuration.frame().module().tables()[table_index.value()];
@@ -2129,17 +2106,17 @@ HANDLE_INSTRUCTION(table_grow)
 {
     LOG_INSN;
     // bounds checked by verifier.
-    auto size = configuration.take_source<source_address_mix>(0, addresses.sources).template to<u32>();
-    auto fill_value = configuration.take_source<source_address_mix>(1, addresses.sources);
+    auto size = configuration.take_source<source_address_mix>(0, ip_and_addresses.addresses.sources).template to<u32>();
+    auto fill_value = configuration.take_source<source_address_mix>(1, ip_and_addresses.addresses.sources);
     auto table_index = instruction->arguments().get<TableIndex>();
     auto address = configuration.frame().module().tables()[table_index.value()];
     auto table = configuration.store().get(address);
     auto previous_size = table->elements().size();
     auto did_grow = table->grow(size, fill_value.template to<Reference>());
     if (!did_grow) {
-        configuration.push_to_destination<source_address_mix>(Value(-1), addresses.destination);
+        configuration.push_to_destination<source_address_mix>(Value(-1), ip_and_addresses.addresses.destination);
     } else {
-        configuration.push_to_destination<source_address_mix>(Value(static_cast<i32>(previous_size)), addresses.destination);
+        configuration.push_to_destination<source_address_mix>(Value(static_cast<i32>(previous_size)), ip_and_addresses.addresses.destination);
     }
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2150,7 +2127,7 @@ HANDLE_INSTRUCTION(table_size)
     auto table_index = instruction->arguments().get<TableIndex>();
     auto address = configuration.frame().module().tables()[table_index.value()];
     auto table = configuration.store().get(address);
-    configuration.push_to_destination<source_address_mix>(Value(static_cast<i32>(table->elements().size())), addresses.destination);
+    configuration.push_to_destination<source_address_mix>(Value(static_cast<i32>(table->elements().size())), ip_and_addresses.addresses.destination);
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
@@ -2158,7 +2135,7 @@ HANDLE_INSTRUCTION(ref_null)
 {
     LOG_INSN;
     auto type = instruction->arguments().get<ValueType>();
-    configuration.push_to_destination<source_address_mix>(Value(Reference(Reference::Null { type })), addresses.destination);
+    configuration.push_to_destination<source_address_mix>(Value(Reference(Reference::Null { type })), ip_and_addresses.addresses.destination);
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
@@ -2168,7 +2145,7 @@ HANDLE_INSTRUCTION(ref_func)
     auto index = instruction->arguments().get<FunctionIndex>().value();
     auto& functions = configuration.frame().module().functions();
     auto address = functions[index];
-    configuration.push_to_destination<source_address_mix>(Value(Reference { Reference::Func { address, configuration.store().get_module_for(address) } }), addresses.destination);
+    configuration.push_to_destination<source_address_mix>(Value(Reference { Reference::Func { address, configuration.store().get_module_for(address) } }), ip_and_addresses.addresses.destination);
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
@@ -2176,10 +2153,10 @@ HANDLE_INSTRUCTION(ref_is_null)
 {
     LOG_INSN;
     // bounds checked by verifier.
-    auto ref = configuration.take_source<source_address_mix>(0, addresses.sources);
+    auto ref = configuration.take_source<source_address_mix>(0, ip_and_addresses.addresses.sources);
     configuration.push_to_destination<source_address_mix>(
         Value(static_cast<i32>(ref.template to<Reference>().ref().template has<Reference::Null>() ? 1 : 0)),
-        addresses.destination);
+        ip_and_addresses.addresses.destination);
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
@@ -2187,7 +2164,7 @@ HANDLE_INSTRUCTION(drop)
 {
     LOG_INSN;
     // bounds checked by verifier.
-    configuration.take_source<source_address_mix>(0, addresses.sources);
+    configuration.take_source<source_address_mix>(0, ip_and_addresses.addresses.sources);
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
@@ -2195,10 +2172,10 @@ HANDLE_INSTRUCTION(select)
 {
     LOG_INSN;
     // Note: The type seems to only be used for validation.
-    auto value = configuration.take_source<source_address_mix>(0, addresses.sources).template to<i32>(); // bounds checked by verifier.
+    auto value = configuration.take_source<source_address_mix>(0, ip_and_addresses.addresses.sources).template to<i32>(); // bounds checked by verifier.
     dbgln_if(WASM_TRACE_DEBUG, "select({})", value);
-    auto rhs = configuration.take_source<source_address_mix>(1, addresses.sources);
-    auto& lhs = configuration.source_value<source_address_mix>(2, addresses.sources); // bounds checked by verifier.
+    auto rhs = configuration.take_source<source_address_mix>(1, ip_and_addresses.addresses.sources);
+    auto& lhs = configuration.source_value<source_address_mix>(2, ip_and_addresses.addresses.sources); // bounds checked by verifier.
     lhs = value != 0 ? lhs : rhs;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2207,10 +2184,10 @@ HANDLE_INSTRUCTION(select_typed)
 {
     LOG_INSN;
     // Note: The type seems to only be used for validation.
-    auto value = configuration.take_source<source_address_mix>(0, addresses.sources).template to<i32>(); // bounds checked by verifier.
+    auto value = configuration.take_source<source_address_mix>(0, ip_and_addresses.addresses.sources).template to<i32>(); // bounds checked by verifier.
     dbgln_if(WASM_TRACE_DEBUG, "select({})", value);
-    auto rhs = configuration.take_source<source_address_mix>(1, addresses.sources);
-    auto& lhs = configuration.source_value<source_address_mix>(2, addresses.sources); // bounds checked by verifier.
+    auto rhs = configuration.take_source<source_address_mix>(1, ip_and_addresses.addresses.sources);
+    auto& lhs = configuration.source_value<source_address_mix>(2, ip_and_addresses.addresses.sources); // bounds checked by verifier.
     lhs = value != 0 ? lhs : rhs;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2218,7 +2195,7 @@ HANDLE_INSTRUCTION(select_typed)
 HANDLE_INSTRUCTION(i32_eqz)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<i32, i32, Operators::EqualsZero, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<i32, i32, Operators::EqualsZero, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2226,7 +2203,7 @@ HANDLE_INSTRUCTION(i32_eqz)
 HANDLE_INSTRUCTION(i32_eq)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<i32, i32, Operators::Equals, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<i32, i32, Operators::Equals, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2234,7 +2211,7 @@ HANDLE_INSTRUCTION(i32_eq)
 HANDLE_INSTRUCTION(i32_ne)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<i32, i32, Operators::NotEquals, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<i32, i32, Operators::NotEquals, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2242,7 +2219,7 @@ HANDLE_INSTRUCTION(i32_ne)
 HANDLE_INSTRUCTION(i32_lts)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<i32, i32, Operators::LessThan, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<i32, i32, Operators::LessThan, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2250,7 +2227,7 @@ HANDLE_INSTRUCTION(i32_lts)
 HANDLE_INSTRUCTION(i32_ltu)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u32, i32, Operators::LessThan, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u32, i32, Operators::LessThan, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2258,7 +2235,7 @@ HANDLE_INSTRUCTION(i32_ltu)
 HANDLE_INSTRUCTION(i32_gts)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<i32, i32, Operators::GreaterThan, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<i32, i32, Operators::GreaterThan, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2266,7 +2243,7 @@ HANDLE_INSTRUCTION(i32_gts)
 HANDLE_INSTRUCTION(i32_gtu)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u32, i32, Operators::GreaterThan, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u32, i32, Operators::GreaterThan, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2274,7 +2251,7 @@ HANDLE_INSTRUCTION(i32_gtu)
 HANDLE_INSTRUCTION(i32_les)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<i32, i32, Operators::LessThanOrEquals, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<i32, i32, Operators::LessThanOrEquals, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2282,7 +2259,7 @@ HANDLE_INSTRUCTION(i32_les)
 HANDLE_INSTRUCTION(i32_leu)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u32, i32, Operators::LessThanOrEquals, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u32, i32, Operators::LessThanOrEquals, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2290,7 +2267,7 @@ HANDLE_INSTRUCTION(i32_leu)
 HANDLE_INSTRUCTION(i32_ges)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<i32, i32, Operators::GreaterThanOrEquals, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<i32, i32, Operators::GreaterThanOrEquals, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2298,7 +2275,7 @@ HANDLE_INSTRUCTION(i32_ges)
 HANDLE_INSTRUCTION(i32_geu)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u32, i32, Operators::GreaterThanOrEquals, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u32, i32, Operators::GreaterThanOrEquals, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2306,7 +2283,7 @@ HANDLE_INSTRUCTION(i32_geu)
 HANDLE_INSTRUCTION(i64_eqz)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<i64, i32, Operators::EqualsZero, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<i64, i32, Operators::EqualsZero, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2314,7 +2291,7 @@ HANDLE_INSTRUCTION(i64_eqz)
 HANDLE_INSTRUCTION(i64_eq)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<i64, i32, Operators::Equals, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<i64, i32, Operators::Equals, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2322,7 +2299,7 @@ HANDLE_INSTRUCTION(i64_eq)
 HANDLE_INSTRUCTION(i64_ne)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<i64, i32, Operators::NotEquals, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<i64, i32, Operators::NotEquals, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2330,7 +2307,7 @@ HANDLE_INSTRUCTION(i64_ne)
 HANDLE_INSTRUCTION(i64_lts)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<i64, i32, Operators::LessThan, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<i64, i32, Operators::LessThan, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2338,7 +2315,7 @@ HANDLE_INSTRUCTION(i64_lts)
 HANDLE_INSTRUCTION(i64_ltu)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u64, i32, Operators::LessThan, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u64, i32, Operators::LessThan, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2346,7 +2323,7 @@ HANDLE_INSTRUCTION(i64_ltu)
 HANDLE_INSTRUCTION(i64_gts)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<i64, i32, Operators::GreaterThan, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<i64, i32, Operators::GreaterThan, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2354,7 +2331,7 @@ HANDLE_INSTRUCTION(i64_gts)
 HANDLE_INSTRUCTION(i64_gtu)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u64, i32, Operators::GreaterThan, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u64, i32, Operators::GreaterThan, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2362,7 +2339,7 @@ HANDLE_INSTRUCTION(i64_gtu)
 HANDLE_INSTRUCTION(i64_les)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<i64, i32, Operators::LessThanOrEquals, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<i64, i32, Operators::LessThanOrEquals, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2370,7 +2347,7 @@ HANDLE_INSTRUCTION(i64_les)
 HANDLE_INSTRUCTION(i64_leu)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u64, i32, Operators::LessThanOrEquals, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u64, i32, Operators::LessThanOrEquals, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2378,7 +2355,7 @@ HANDLE_INSTRUCTION(i64_leu)
 HANDLE_INSTRUCTION(i64_ges)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<i64, i32, Operators::GreaterThanOrEquals, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<i64, i32, Operators::GreaterThanOrEquals, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2386,7 +2363,7 @@ HANDLE_INSTRUCTION(i64_ges)
 HANDLE_INSTRUCTION(i64_geu)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u64, i32, Operators::GreaterThanOrEquals, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u64, i32, Operators::GreaterThanOrEquals, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2394,7 +2371,7 @@ HANDLE_INSTRUCTION(i64_geu)
 HANDLE_INSTRUCTION(f32_eq)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<float, i32, Operators::Equals, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<float, i32, Operators::Equals, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2402,7 +2379,7 @@ HANDLE_INSTRUCTION(f32_eq)
 HANDLE_INSTRUCTION(f32_ne)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<float, i32, Operators::NotEquals, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<float, i32, Operators::NotEquals, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2410,7 +2387,7 @@ HANDLE_INSTRUCTION(f32_ne)
 HANDLE_INSTRUCTION(f32_lt)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<float, i32, Operators::LessThan, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<float, i32, Operators::LessThan, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2418,7 +2395,7 @@ HANDLE_INSTRUCTION(f32_lt)
 HANDLE_INSTRUCTION(f32_gt)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<float, i32, Operators::GreaterThan, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<float, i32, Operators::GreaterThan, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2426,7 +2403,7 @@ HANDLE_INSTRUCTION(f32_gt)
 HANDLE_INSTRUCTION(f32_le)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<float, i32, Operators::LessThanOrEquals, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<float, i32, Operators::LessThanOrEquals, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2434,7 +2411,7 @@ HANDLE_INSTRUCTION(f32_le)
 HANDLE_INSTRUCTION(f32_ge)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<float, i32, Operators::GreaterThanOrEquals, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<float, i32, Operators::GreaterThanOrEquals, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2442,7 +2419,7 @@ HANDLE_INSTRUCTION(f32_ge)
 HANDLE_INSTRUCTION(f64_eq)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<double, i32, Operators::Equals, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<double, i32, Operators::Equals, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2450,7 +2427,7 @@ HANDLE_INSTRUCTION(f64_eq)
 HANDLE_INSTRUCTION(f64_ne)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<double, i32, Operators::NotEquals, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<double, i32, Operators::NotEquals, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2458,7 +2435,7 @@ HANDLE_INSTRUCTION(f64_ne)
 HANDLE_INSTRUCTION(f64_lt)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<double, i32, Operators::LessThan, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<double, i32, Operators::LessThan, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2466,7 +2443,7 @@ HANDLE_INSTRUCTION(f64_lt)
 HANDLE_INSTRUCTION(f64_gt)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<double, i32, Operators::GreaterThan, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<double, i32, Operators::GreaterThan, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2474,7 +2451,7 @@ HANDLE_INSTRUCTION(f64_gt)
 HANDLE_INSTRUCTION(f64_le)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<double, i32, Operators::LessThanOrEquals, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<double, i32, Operators::LessThanOrEquals, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2482,7 +2459,7 @@ HANDLE_INSTRUCTION(f64_le)
 HANDLE_INSTRUCTION(i32x4_extmul_high_i16x8_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerExtOp<4, Operators::Multiply, Operators::VectorExt::High, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerExtOp<4, Operators::Multiply, Operators::VectorExt::High, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2490,7 +2467,7 @@ HANDLE_INSTRUCTION(i32x4_extmul_high_i16x8_u)
 HANDLE_INSTRUCTION(i32x4_extmul_low_i16x8_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerExtOp<4, Operators::Multiply, Operators::VectorExt::Low, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerExtOp<4, Operators::Multiply, Operators::VectorExt::Low, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2498,7 +2475,7 @@ HANDLE_INSTRUCTION(i32x4_extmul_low_i16x8_u)
 HANDLE_INSTRUCTION(i64x2_eq)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<2, Operators::Equals>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<2, Operators::Equals>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2506,7 +2483,7 @@ HANDLE_INSTRUCTION(i64x2_eq)
 HANDLE_INSTRUCTION(i64x2_ne)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<2, Operators::NotEquals>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<2, Operators::NotEquals>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2514,7 +2491,7 @@ HANDLE_INSTRUCTION(i64x2_ne)
 HANDLE_INSTRUCTION(i64x2_lt_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<2, Operators::LessThan, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<2, Operators::LessThan, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2522,7 +2499,7 @@ HANDLE_INSTRUCTION(i64x2_lt_s)
 HANDLE_INSTRUCTION(i64x2_gt_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<2, Operators::GreaterThan, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<2, Operators::GreaterThan, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2530,7 +2507,7 @@ HANDLE_INSTRUCTION(i64x2_gt_s)
 HANDLE_INSTRUCTION(i64x2_le_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<2, Operators::LessThanOrEquals, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<2, Operators::LessThanOrEquals, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2538,7 +2515,7 @@ HANDLE_INSTRUCTION(i64x2_le_s)
 HANDLE_INSTRUCTION(i64x2_ge_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<2, Operators::GreaterThanOrEquals, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<2, Operators::GreaterThanOrEquals, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2546,7 +2523,7 @@ HANDLE_INSTRUCTION(i64x2_ge_s)
 HANDLE_INSTRUCTION(i64x2_abs)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerUnaryOp<2, Operators::Absolute>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerUnaryOp<2, Operators::Absolute>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2554,7 +2531,7 @@ HANDLE_INSTRUCTION(i64x2_abs)
 HANDLE_INSTRUCTION(i64x2_neg)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerUnaryOp<2, Operators::Negate, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerUnaryOp<2, Operators::Negate, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2562,7 +2539,7 @@ HANDLE_INSTRUCTION(i64x2_neg)
 HANDLE_INSTRUCTION(i64x2_all_true)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, i32, Operators::VectorAllTrue<2>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, i32, Operators::VectorAllTrue<2>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2570,7 +2547,7 @@ HANDLE_INSTRUCTION(i64x2_all_true)
 HANDLE_INSTRUCTION(i64x2_add)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<2, Operators::Add, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<2, Operators::Add, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2578,7 +2555,7 @@ HANDLE_INSTRUCTION(i64x2_add)
 HANDLE_INSTRUCTION(i64x2_sub)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<2, Operators::Subtract, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<2, Operators::Subtract, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2586,7 +2563,7 @@ HANDLE_INSTRUCTION(i64x2_sub)
 HANDLE_INSTRUCTION(i64x2_mul)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<2, Operators::Multiply, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<2, Operators::Multiply, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2594,7 +2571,7 @@ HANDLE_INSTRUCTION(i64x2_mul)
 HANDLE_INSTRUCTION(i64x2_extend_low_i32x4_s)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerExt<2, Operators::VectorExt::Low, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerExt<2, Operators::VectorExt::Low, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2602,7 +2579,7 @@ HANDLE_INSTRUCTION(i64x2_extend_low_i32x4_s)
 HANDLE_INSTRUCTION(i64x2_extend_high_i32x4_s)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerExt<2, Operators::VectorExt::High, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerExt<2, Operators::VectorExt::High, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2610,7 +2587,7 @@ HANDLE_INSTRUCTION(i64x2_extend_high_i32x4_s)
 HANDLE_INSTRUCTION(i64x2_extend_low_i32x4_u)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerExt<2, Operators::VectorExt::Low, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerExt<2, Operators::VectorExt::Low, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2618,7 +2595,7 @@ HANDLE_INSTRUCTION(i64x2_extend_low_i32x4_u)
 HANDLE_INSTRUCTION(i64x2_extend_high_i32x4_u)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerExt<2, Operators::VectorExt::High, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerExt<2, Operators::VectorExt::High, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2626,7 +2603,7 @@ HANDLE_INSTRUCTION(i64x2_extend_high_i32x4_u)
 HANDLE_INSTRUCTION(i64x2_extmul_low_i32x4_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerExtOp<2, Operators::Multiply, Operators::VectorExt::Low, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerExtOp<2, Operators::Multiply, Operators::VectorExt::Low, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2634,7 +2611,7 @@ HANDLE_INSTRUCTION(i64x2_extmul_low_i32x4_s)
 HANDLE_INSTRUCTION(i64x2_extmul_high_i32x4_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerExtOp<2, Operators::Multiply, Operators::VectorExt::High, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerExtOp<2, Operators::Multiply, Operators::VectorExt::High, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2642,7 +2619,7 @@ HANDLE_INSTRUCTION(i64x2_extmul_high_i32x4_s)
 HANDLE_INSTRUCTION(i64x2_extmul_low_i32x4_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerExtOp<2, Operators::Multiply, Operators::VectorExt::Low, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerExtOp<2, Operators::Multiply, Operators::VectorExt::Low, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2650,7 +2627,7 @@ HANDLE_INSTRUCTION(i64x2_extmul_low_i32x4_u)
 HANDLE_INSTRUCTION(i64x2_extmul_high_i32x4_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerExtOp<2, Operators::Multiply, Operators::VectorExt::High, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerExtOp<2, Operators::Multiply, Operators::VectorExt::High, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2658,7 +2635,7 @@ HANDLE_INSTRUCTION(i64x2_extmul_high_i32x4_u)
 HANDLE_INSTRUCTION(f32x4_eq)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatCmpOp<4, Operators::Equals>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatCmpOp<4, Operators::Equals>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2666,7 +2643,7 @@ HANDLE_INSTRUCTION(f32x4_eq)
 HANDLE_INSTRUCTION(f32x4_ne)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatCmpOp<4, Operators::NotEquals>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatCmpOp<4, Operators::NotEquals>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2674,7 +2651,7 @@ HANDLE_INSTRUCTION(f32x4_ne)
 HANDLE_INSTRUCTION(f32x4_lt)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatCmpOp<4, Operators::LessThan>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatCmpOp<4, Operators::LessThan>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2682,7 +2659,7 @@ HANDLE_INSTRUCTION(f32x4_lt)
 HANDLE_INSTRUCTION(f32x4_gt)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatCmpOp<4, Operators::GreaterThan>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatCmpOp<4, Operators::GreaterThan>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2690,7 +2667,7 @@ HANDLE_INSTRUCTION(f32x4_gt)
 HANDLE_INSTRUCTION(f32x4_le)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatCmpOp<4, Operators::LessThanOrEquals>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatCmpOp<4, Operators::LessThanOrEquals>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2698,7 +2675,7 @@ HANDLE_INSTRUCTION(f32x4_le)
 HANDLE_INSTRUCTION(f32x4_ge)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatCmpOp<4, Operators::GreaterThanOrEquals>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatCmpOp<4, Operators::GreaterThanOrEquals>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2706,7 +2683,7 @@ HANDLE_INSTRUCTION(f32x4_ge)
 HANDLE_INSTRUCTION(f32x4_min)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatBinaryOp<4, Operators::Minimum>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatBinaryOp<4, Operators::Minimum>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2714,7 +2691,7 @@ HANDLE_INSTRUCTION(f32x4_min)
 HANDLE_INSTRUCTION(f32x4_max)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatBinaryOp<4, Operators::Maximum>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatBinaryOp<4, Operators::Maximum>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2722,7 +2699,7 @@ HANDLE_INSTRUCTION(f32x4_max)
 HANDLE_INSTRUCTION(f64x2_eq)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatCmpOp<2, Operators::Equals>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatCmpOp<2, Operators::Equals>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2730,7 +2707,7 @@ HANDLE_INSTRUCTION(f64x2_eq)
 HANDLE_INSTRUCTION(f64x2_ne)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatCmpOp<2, Operators::NotEquals>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatCmpOp<2, Operators::NotEquals>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2738,7 +2715,7 @@ HANDLE_INSTRUCTION(f64x2_ne)
 HANDLE_INSTRUCTION(f64x2_lt)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatCmpOp<2, Operators::LessThan>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatCmpOp<2, Operators::LessThan>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2746,7 +2723,7 @@ HANDLE_INSTRUCTION(f64x2_lt)
 HANDLE_INSTRUCTION(f64x2_gt)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatCmpOp<2, Operators::GreaterThan>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatCmpOp<2, Operators::GreaterThan>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2754,7 +2731,7 @@ HANDLE_INSTRUCTION(f64x2_gt)
 HANDLE_INSTRUCTION(f64x2_le)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatCmpOp<2, Operators::LessThanOrEquals>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatCmpOp<2, Operators::LessThanOrEquals>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2762,7 +2739,7 @@ HANDLE_INSTRUCTION(f64x2_le)
 HANDLE_INSTRUCTION(f64x2_ge)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatCmpOp<2, Operators::GreaterThanOrEquals>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatCmpOp<2, Operators::GreaterThanOrEquals>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2770,7 +2747,7 @@ HANDLE_INSTRUCTION(f64x2_ge)
 HANDLE_INSTRUCTION(f64x2_min)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatBinaryOp<2, Operators::Minimum>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatBinaryOp<2, Operators::Minimum>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2778,7 +2755,7 @@ HANDLE_INSTRUCTION(f64x2_min)
 HANDLE_INSTRUCTION(f64x2_max)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatBinaryOp<2, Operators::Maximum>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatBinaryOp<2, Operators::Maximum>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2786,7 +2763,7 @@ HANDLE_INSTRUCTION(f64x2_max)
 HANDLE_INSTRUCTION(f32x4_div)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatBinaryOp<4, Operators::Divide>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatBinaryOp<4, Operators::Divide>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2794,7 +2771,7 @@ HANDLE_INSTRUCTION(f32x4_div)
 HANDLE_INSTRUCTION(f32x4_mul)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatBinaryOp<4, Operators::Multiply>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatBinaryOp<4, Operators::Multiply>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2802,7 +2779,7 @@ HANDLE_INSTRUCTION(f32x4_mul)
 HANDLE_INSTRUCTION(f32x4_sub)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatBinaryOp<4, Operators::Subtract>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatBinaryOp<4, Operators::Subtract>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2810,7 +2787,7 @@ HANDLE_INSTRUCTION(f32x4_sub)
 HANDLE_INSTRUCTION(f32x4_add)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatBinaryOp<4, Operators::Add>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatBinaryOp<4, Operators::Add>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2818,7 +2795,7 @@ HANDLE_INSTRUCTION(f32x4_add)
 HANDLE_INSTRUCTION(f32x4_pmin)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatBinaryOp<4, Operators::PseudoMinimum>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatBinaryOp<4, Operators::PseudoMinimum>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2826,7 +2803,7 @@ HANDLE_INSTRUCTION(f32x4_pmin)
 HANDLE_INSTRUCTION(f32x4_pmax)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatBinaryOp<4, Operators::PseudoMaximum>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatBinaryOp<4, Operators::PseudoMaximum>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2834,7 +2811,7 @@ HANDLE_INSTRUCTION(f32x4_pmax)
 HANDLE_INSTRUCTION(f64x2_div)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatBinaryOp<2, Operators::Divide>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatBinaryOp<2, Operators::Divide>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2842,7 +2819,7 @@ HANDLE_INSTRUCTION(f64x2_div)
 HANDLE_INSTRUCTION(f64x2_mul)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatBinaryOp<2, Operators::Multiply>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatBinaryOp<2, Operators::Multiply>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2850,7 +2827,7 @@ HANDLE_INSTRUCTION(f64x2_mul)
 HANDLE_INSTRUCTION(f64x2_sub)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatBinaryOp<2, Operators::Subtract>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatBinaryOp<2, Operators::Subtract>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2858,7 +2835,7 @@ HANDLE_INSTRUCTION(f64x2_sub)
 HANDLE_INSTRUCTION(f64x2_add)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatBinaryOp<2, Operators::Add>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatBinaryOp<2, Operators::Add>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2866,7 +2843,7 @@ HANDLE_INSTRUCTION(f64x2_add)
 HANDLE_INSTRUCTION(f64x2_pmin)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatBinaryOp<2, Operators::PseudoMinimum>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatBinaryOp<2, Operators::PseudoMinimum>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2874,7 +2851,7 @@ HANDLE_INSTRUCTION(f64x2_pmin)
 HANDLE_INSTRUCTION(f64x2_pmax)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatBinaryOp<2, Operators::PseudoMaximum>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorFloatBinaryOp<2, Operators::PseudoMaximum>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2882,7 +2859,7 @@ HANDLE_INSTRUCTION(f64x2_pmax)
 HANDLE_INSTRUCTION(f32x4_ceil)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorFloatUnaryOp<4, Operators::Ceil>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorFloatUnaryOp<4, Operators::Ceil>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2890,7 +2867,7 @@ HANDLE_INSTRUCTION(f32x4_ceil)
 HANDLE_INSTRUCTION(f32x4_floor)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorFloatUnaryOp<4, Operators::Floor>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorFloatUnaryOp<4, Operators::Floor>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2898,7 +2875,7 @@ HANDLE_INSTRUCTION(f32x4_floor)
 HANDLE_INSTRUCTION(f32x4_trunc)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorFloatUnaryOp<4, Operators::Truncate>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorFloatUnaryOp<4, Operators::Truncate>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2906,7 +2883,7 @@ HANDLE_INSTRUCTION(f32x4_trunc)
 HANDLE_INSTRUCTION(f32x4_nearest)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorFloatUnaryOp<4, Operators::NearbyIntegral>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorFloatUnaryOp<4, Operators::NearbyIntegral>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2914,7 +2891,7 @@ HANDLE_INSTRUCTION(f32x4_nearest)
 HANDLE_INSTRUCTION(f32x4_sqrt)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorFloatUnaryOp<4, Operators::SquareRoot>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorFloatUnaryOp<4, Operators::SquareRoot>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2922,7 +2899,7 @@ HANDLE_INSTRUCTION(f32x4_sqrt)
 HANDLE_INSTRUCTION(f32x4_neg)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorFloatUnaryOp<4, Operators::Negate>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorFloatUnaryOp<4, Operators::Negate>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2930,7 +2907,7 @@ HANDLE_INSTRUCTION(f32x4_neg)
 HANDLE_INSTRUCTION(f32x4_abs)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorFloatUnaryOp<4, Operators::Absolute>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorFloatUnaryOp<4, Operators::Absolute>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2938,7 +2915,7 @@ HANDLE_INSTRUCTION(f32x4_abs)
 HANDLE_INSTRUCTION(f64x2_ceil)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorFloatUnaryOp<2, Operators::Ceil>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorFloatUnaryOp<2, Operators::Ceil>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2946,7 +2923,7 @@ HANDLE_INSTRUCTION(f64x2_ceil)
 HANDLE_INSTRUCTION(f64x2_floor)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorFloatUnaryOp<2, Operators::Floor>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorFloatUnaryOp<2, Operators::Floor>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2954,7 +2931,7 @@ HANDLE_INSTRUCTION(f64x2_floor)
 HANDLE_INSTRUCTION(f64x2_trunc)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorFloatUnaryOp<2, Operators::Truncate>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorFloatUnaryOp<2, Operators::Truncate>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2962,7 +2939,7 @@ HANDLE_INSTRUCTION(f64x2_trunc)
 HANDLE_INSTRUCTION(f64x2_nearest)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorFloatUnaryOp<2, Operators::NearbyIntegral>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorFloatUnaryOp<2, Operators::NearbyIntegral>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2970,7 +2947,7 @@ HANDLE_INSTRUCTION(f64x2_nearest)
 HANDLE_INSTRUCTION(f64x2_sqrt)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorFloatUnaryOp<2, Operators::SquareRoot>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorFloatUnaryOp<2, Operators::SquareRoot>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2978,7 +2955,7 @@ HANDLE_INSTRUCTION(f64x2_sqrt)
 HANDLE_INSTRUCTION(f64x2_neg)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorFloatUnaryOp<2, Operators::Negate>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorFloatUnaryOp<2, Operators::Negate>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2986,7 +2963,7 @@ HANDLE_INSTRUCTION(f64x2_neg)
 HANDLE_INSTRUCTION(f64x2_abs)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorFloatUnaryOp<2, Operators::Absolute>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorFloatUnaryOp<2, Operators::Absolute>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -2994,7 +2971,7 @@ HANDLE_INSTRUCTION(f64x2_abs)
 HANDLE_INSTRUCTION(v128_and)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::BitAnd, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::BitAnd, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3002,7 +2979,7 @@ HANDLE_INSTRUCTION(v128_and)
 HANDLE_INSTRUCTION(v128_or)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::BitOr, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::BitOr, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3010,7 +2987,7 @@ HANDLE_INSTRUCTION(v128_or)
 HANDLE_INSTRUCTION(v128_xor)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::BitXor, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::BitXor, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3018,7 +2995,7 @@ HANDLE_INSTRUCTION(v128_xor)
 HANDLE_INSTRUCTION(v128_not)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::BitNot, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::BitNot, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3026,7 +3003,7 @@ HANDLE_INSTRUCTION(v128_not)
 HANDLE_INSTRUCTION(v128_andnot)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::BitAndNot, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::BitAndNot, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3035,26 +3012,26 @@ HANDLE_INSTRUCTION(v128_bitselect)
 {
     LOG_INSN;
     // bounds checked by verifier.
-    auto mask = configuration.take_source<source_address_mix>(0, addresses.sources).template to<u128>();
-    auto false_vector = configuration.take_source<source_address_mix>(1, addresses.sources).template to<u128>();
-    auto true_vector = configuration.take_source<source_address_mix>(2, addresses.sources).template to<u128>();
+    auto mask = configuration.take_source<source_address_mix>(0, ip_and_addresses.addresses.sources).template to<u128>();
+    auto false_vector = configuration.take_source<source_address_mix>(1, ip_and_addresses.addresses.sources).template to<u128>();
+    auto true_vector = configuration.take_source<source_address_mix>(2, ip_and_addresses.addresses.sources).template to<u128>();
     u128 result = (true_vector & mask) | (false_vector & ~mask);
-    configuration.push_to_destination<source_address_mix>(Value(result), addresses.destination);
+    configuration.push_to_destination<source_address_mix>(Value(result), ip_and_addresses.addresses.destination);
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
 HANDLE_INSTRUCTION(v128_any_true)
 {
     LOG_INSN;
-    auto vector = configuration.take_source<source_address_mix>(0, addresses.sources).template to<u128>(); // bounds checked by verifier.
-    configuration.push_to_destination<source_address_mix>(Value(static_cast<i32>(vector != 0)), addresses.destination);
+    auto vector = configuration.take_source<source_address_mix>(0, ip_and_addresses.addresses.sources).template to<u128>(); // bounds checked by verifier.
+    configuration.push_to_destination<source_address_mix>(Value(static_cast<i32>(vector != 0)), ip_and_addresses.addresses.destination);
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
 HANDLE_INSTRUCTION(v128_load8_lane)
 {
     LOG_INSN;
-    if (interpreter.load_and_push_lane_n<8>(configuration, *instruction, addresses))
+    if (interpreter.load_and_push_lane_n<8>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3062,7 +3039,7 @@ HANDLE_INSTRUCTION(v128_load8_lane)
 HANDLE_INSTRUCTION(v128_load16_lane)
 {
     LOG_INSN;
-    if (interpreter.load_and_push_lane_n<16>(configuration, *instruction, addresses))
+    if (interpreter.load_and_push_lane_n<16>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3070,7 +3047,7 @@ HANDLE_INSTRUCTION(v128_load16_lane)
 HANDLE_INSTRUCTION(v128_load32_lane)
 {
     LOG_INSN;
-    if (interpreter.load_and_push_lane_n<32>(configuration, *instruction, addresses))
+    if (interpreter.load_and_push_lane_n<32>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3078,7 +3055,7 @@ HANDLE_INSTRUCTION(v128_load32_lane)
 HANDLE_INSTRUCTION(v128_load64_lane)
 {
     LOG_INSN;
-    if (interpreter.load_and_push_lane_n<64>(configuration, *instruction, addresses))
+    if (interpreter.load_and_push_lane_n<64>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3086,7 +3063,7 @@ HANDLE_INSTRUCTION(v128_load64_lane)
 HANDLE_INSTRUCTION(v128_load32_zero)
 {
     LOG_INSN;
-    if (interpreter.load_and_push_zero_n<32>(configuration, *instruction, addresses))
+    if (interpreter.load_and_push_zero_n<32>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3094,7 +3071,7 @@ HANDLE_INSTRUCTION(v128_load32_zero)
 HANDLE_INSTRUCTION(v128_load64_zero)
 {
     LOG_INSN;
-    if (interpreter.load_and_push_zero_n<64>(configuration, *instruction, addresses))
+    if (interpreter.load_and_push_zero_n<64>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3102,7 +3079,7 @@ HANDLE_INSTRUCTION(v128_load64_zero)
 HANDLE_INSTRUCTION(v128_store8_lane)
 {
     LOG_INSN;
-    if (interpreter.pop_and_store_lane_n<8>(configuration, *instruction, addresses))
+    if (interpreter.pop_and_store_lane_n<8>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3110,7 +3087,7 @@ HANDLE_INSTRUCTION(v128_store8_lane)
 HANDLE_INSTRUCTION(v128_store16_lane)
 {
     LOG_INSN;
-    if (interpreter.pop_and_store_lane_n<16>(configuration, *instruction, addresses))
+    if (interpreter.pop_and_store_lane_n<16>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3118,7 +3095,7 @@ HANDLE_INSTRUCTION(v128_store16_lane)
 HANDLE_INSTRUCTION(v128_store32_lane)
 {
     LOG_INSN;
-    if (interpreter.pop_and_store_lane_n<32>(configuration, *instruction, addresses))
+    if (interpreter.pop_and_store_lane_n<32>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3126,7 +3103,7 @@ HANDLE_INSTRUCTION(v128_store32_lane)
 HANDLE_INSTRUCTION(v128_store64_lane)
 {
     LOG_INSN;
-    if (interpreter.pop_and_store_lane_n<64>(configuration, *instruction, addresses))
+    if (interpreter.pop_and_store_lane_n<64>(configuration, *instruction, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3134,7 +3111,7 @@ HANDLE_INSTRUCTION(v128_store64_lane)
 HANDLE_INSTRUCTION(i32x4_trunc_sat_f32x4_s)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorConvertOp<4, 4, u32, f32, Operators::SaturatingTruncate<i32>>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorConvertOp<4, 4, u32, f32, Operators::SaturatingTruncate<i32>>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3142,7 +3119,7 @@ HANDLE_INSTRUCTION(i32x4_trunc_sat_f32x4_s)
 HANDLE_INSTRUCTION(i32x4_trunc_sat_f32x4_u)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorConvertOp<4, 4, u32, f32, Operators::SaturatingTruncate<u32>>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorConvertOp<4, 4, u32, f32, Operators::SaturatingTruncate<u32>>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3150,7 +3127,7 @@ HANDLE_INSTRUCTION(i32x4_trunc_sat_f32x4_u)
 HANDLE_INSTRUCTION(i8x16_bitmask)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, i32, Operators::VectorBitmask<16>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, i32, Operators::VectorBitmask<16>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3158,7 +3135,7 @@ HANDLE_INSTRUCTION(i8x16_bitmask)
 HANDLE_INSTRUCTION(i16x8_bitmask)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, i32, Operators::VectorBitmask<8>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, i32, Operators::VectorBitmask<8>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3166,7 +3143,7 @@ HANDLE_INSTRUCTION(i16x8_bitmask)
 HANDLE_INSTRUCTION(i32x4_bitmask)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, i32, Operators::VectorBitmask<4>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, i32, Operators::VectorBitmask<4>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3174,7 +3151,7 @@ HANDLE_INSTRUCTION(i32x4_bitmask)
 HANDLE_INSTRUCTION(i64x2_bitmask)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, i32, Operators::VectorBitmask<2>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, i32, Operators::VectorBitmask<2>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3182,7 +3159,7 @@ HANDLE_INSTRUCTION(i64x2_bitmask)
 HANDLE_INSTRUCTION(i32x4_dot_i16x8_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorDotProduct<4>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorDotProduct<4>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3190,7 +3167,7 @@ HANDLE_INSTRUCTION(i32x4_dot_i16x8_s)
 HANDLE_INSTRUCTION(i8x16_narrow_i16x8_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorNarrow<16, i8>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorNarrow<16, i8>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3198,7 +3175,7 @@ HANDLE_INSTRUCTION(i8x16_narrow_i16x8_s)
 HANDLE_INSTRUCTION(i8x16_narrow_i16x8_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorNarrow<16, u8>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorNarrow<16, u8>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3206,7 +3183,7 @@ HANDLE_INSTRUCTION(i8x16_narrow_i16x8_u)
 HANDLE_INSTRUCTION(i16x8_narrow_i32x4_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorNarrow<8, i16>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorNarrow<8, i16>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3214,7 +3191,7 @@ HANDLE_INSTRUCTION(i16x8_narrow_i32x4_s)
 HANDLE_INSTRUCTION(i16x8_narrow_i32x4_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorNarrow<8, u16>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorNarrow<8, u16>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3222,7 +3199,7 @@ HANDLE_INSTRUCTION(i16x8_narrow_i32x4_u)
 HANDLE_INSTRUCTION(i16x8_q15mulr_sat_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<8, Operators::SaturatingOp<i16, Operators::Q15Mul>, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<8, Operators::SaturatingOp<i16, Operators::Q15Mul>, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3230,7 +3207,7 @@ HANDLE_INSTRUCTION(i16x8_q15mulr_sat_s)
 HANDLE_INSTRUCTION(f32x4_convert_i32x4_s)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorConvertOp<4, 4, u32, i32, Operators::Convert<f32>>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorConvertOp<4, 4, u32, i32, Operators::Convert<f32>>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3238,7 +3215,7 @@ HANDLE_INSTRUCTION(f32x4_convert_i32x4_s)
 HANDLE_INSTRUCTION(f32x4_convert_i32x4_u)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorConvertOp<4, 4, u32, u32, Operators::Convert<f32>>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorConvertOp<4, 4, u32, u32, Operators::Convert<f32>>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3246,7 +3223,7 @@ HANDLE_INSTRUCTION(f32x4_convert_i32x4_u)
 HANDLE_INSTRUCTION(f64x2_convert_low_i32x4_s)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorConvertOp<2, 4, u64, i32, Operators::Convert<f64>>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorConvertOp<2, 4, u64, i32, Operators::Convert<f64>>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3254,7 +3231,7 @@ HANDLE_INSTRUCTION(f64x2_convert_low_i32x4_s)
 HANDLE_INSTRUCTION(f64x2_convert_low_i32x4_u)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorConvertOp<2, 4, u64, u32, Operators::Convert<f64>>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorConvertOp<2, 4, u64, u32, Operators::Convert<f64>>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3262,7 +3239,7 @@ HANDLE_INSTRUCTION(f64x2_convert_low_i32x4_u)
 HANDLE_INSTRUCTION(f32x4_demote_f64x2_zero)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorConvertOp<4, 2, u32, f64, Operators::Convert<f32>>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorConvertOp<4, 2, u32, f64, Operators::Convert<f32>>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3270,7 +3247,7 @@ HANDLE_INSTRUCTION(f32x4_demote_f64x2_zero)
 HANDLE_INSTRUCTION(f64x2_promote_low_f32x4)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorConvertOp<2, 4, u64, f32, Operators::Convert<f64>>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorConvertOp<2, 4, u64, f32, Operators::Convert<f64>>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3278,7 +3255,7 @@ HANDLE_INSTRUCTION(f64x2_promote_low_f32x4)
 HANDLE_INSTRUCTION(i32x4_trunc_sat_f64x2_s_zero)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorConvertOp<4, 2, u32, f64, Operators::SaturatingTruncate<i32>>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorConvertOp<4, 2, u32, f64, Operators::SaturatingTruncate<i32>>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3286,14 +3263,14 @@ HANDLE_INSTRUCTION(i32x4_trunc_sat_f64x2_s_zero)
 HANDLE_INSTRUCTION(i32x4_trunc_sat_f64x2_u_zero)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorConvertOp<4, 2, u32, f64, Operators::SaturatingTruncate<u32>>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorConvertOp<4, 2, u32, f64, Operators::SaturatingTruncate<u32>>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 HANDLE_INSTRUCTION(i8x16_shl)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorShiftLeft<16>, source_address_mix, i32>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorShiftLeft<16>, source_address_mix, i32>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3301,7 +3278,7 @@ HANDLE_INSTRUCTION(i8x16_shl)
 HANDLE_INSTRUCTION(i8x16_shr_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorShiftRight<16, MakeUnsigned>, source_address_mix, i32>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorShiftRight<16, MakeUnsigned>, source_address_mix, i32>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3309,7 +3286,7 @@ HANDLE_INSTRUCTION(i8x16_shr_u)
 HANDLE_INSTRUCTION(i8x16_shr_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorShiftRight<16, MakeSigned>, source_address_mix, i32>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorShiftRight<16, MakeSigned>, source_address_mix, i32>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3317,7 +3294,7 @@ HANDLE_INSTRUCTION(i8x16_shr_s)
 HANDLE_INSTRUCTION(i16x8_shl)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorShiftLeft<8>, source_address_mix, i32>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorShiftLeft<8>, source_address_mix, i32>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3325,7 +3302,7 @@ HANDLE_INSTRUCTION(i16x8_shl)
 HANDLE_INSTRUCTION(i16x8_shr_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorShiftRight<8, MakeUnsigned>, source_address_mix, i32>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorShiftRight<8, MakeUnsigned>, source_address_mix, i32>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3333,7 +3310,7 @@ HANDLE_INSTRUCTION(i16x8_shr_u)
 HANDLE_INSTRUCTION(i16x8_shr_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorShiftRight<8, MakeSigned>, source_address_mix, i32>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorShiftRight<8, MakeSigned>, source_address_mix, i32>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3341,7 +3318,7 @@ HANDLE_INSTRUCTION(i16x8_shr_s)
 HANDLE_INSTRUCTION(i32x4_shl)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorShiftLeft<4>, source_address_mix, i32>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorShiftLeft<4>, source_address_mix, i32>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3349,7 +3326,7 @@ HANDLE_INSTRUCTION(i32x4_shl)
 HANDLE_INSTRUCTION(i32x4_shr_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorShiftRight<4, MakeUnsigned>, source_address_mix, i32>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorShiftRight<4, MakeUnsigned>, source_address_mix, i32>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3357,7 +3334,7 @@ HANDLE_INSTRUCTION(i32x4_shr_u)
 HANDLE_INSTRUCTION(i32x4_shr_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorShiftRight<4, MakeSigned>, source_address_mix, i32>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorShiftRight<4, MakeSigned>, source_address_mix, i32>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3365,7 +3342,7 @@ HANDLE_INSTRUCTION(i32x4_shr_s)
 HANDLE_INSTRUCTION(i64x2_shl)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorShiftLeft<2>, source_address_mix, i32>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorShiftLeft<2>, source_address_mix, i32>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3373,7 +3350,7 @@ HANDLE_INSTRUCTION(i64x2_shl)
 HANDLE_INSTRUCTION(i64x2_shr_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorShiftRight<2, MakeUnsigned>, source_address_mix, i32>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorShiftRight<2, MakeUnsigned>, source_address_mix, i32>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3381,7 +3358,7 @@ HANDLE_INSTRUCTION(i64x2_shr_u)
 HANDLE_INSTRUCTION(i64x2_shr_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorShiftRight<2, MakeSigned>, source_address_mix, i32>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorShiftRight<2, MakeSigned>, source_address_mix, i32>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3389,7 +3366,7 @@ HANDLE_INSTRUCTION(i64x2_shr_s)
 HANDLE_INSTRUCTION(i8x16_swizzle)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorSwizzle, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorSwizzle, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3397,7 +3374,7 @@ HANDLE_INSTRUCTION(i8x16_swizzle)
 HANDLE_INSTRUCTION(i8x16_extract_lane_s)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, i8, Operators::VectorExtractLane<16, MakeSigned>, source_address_mix>(configuration, addresses, instruction->arguments().get<Instruction::LaneIndex>().lane))
+    if (interpreter.unary_operation<u128, i8, Operators::VectorExtractLane<16, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses, instruction->arguments().get<Instruction::LaneIndex>().lane))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3405,7 +3382,7 @@ HANDLE_INSTRUCTION(i8x16_extract_lane_s)
 HANDLE_INSTRUCTION(i8x16_extract_lane_u)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u8, Operators::VectorExtractLane<16, MakeUnsigned>, source_address_mix>(configuration, addresses, instruction->arguments().get<Instruction::LaneIndex>().lane))
+    if (interpreter.unary_operation<u128, u8, Operators::VectorExtractLane<16, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses, instruction->arguments().get<Instruction::LaneIndex>().lane))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3413,7 +3390,7 @@ HANDLE_INSTRUCTION(i8x16_extract_lane_u)
 HANDLE_INSTRUCTION(i16x8_extract_lane_s)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, i16, Operators::VectorExtractLane<8, MakeSigned>, source_address_mix>(configuration, addresses, instruction->arguments().get<Instruction::LaneIndex>().lane))
+    if (interpreter.unary_operation<u128, i16, Operators::VectorExtractLane<8, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses, instruction->arguments().get<Instruction::LaneIndex>().lane))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3421,7 +3398,7 @@ HANDLE_INSTRUCTION(i16x8_extract_lane_s)
 HANDLE_INSTRUCTION(i16x8_extract_lane_u)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u16, Operators::VectorExtractLane<8, MakeUnsigned>, source_address_mix>(configuration, addresses, instruction->arguments().get<Instruction::LaneIndex>().lane))
+    if (interpreter.unary_operation<u128, u16, Operators::VectorExtractLane<8, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses, instruction->arguments().get<Instruction::LaneIndex>().lane))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3429,7 +3406,7 @@ HANDLE_INSTRUCTION(i16x8_extract_lane_u)
 HANDLE_INSTRUCTION(i32x4_extract_lane)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, i32, Operators::VectorExtractLane<4, MakeSigned>, source_address_mix>(configuration, addresses, instruction->arguments().get<Instruction::LaneIndex>().lane))
+    if (interpreter.unary_operation<u128, i32, Operators::VectorExtractLane<4, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses, instruction->arguments().get<Instruction::LaneIndex>().lane))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3437,7 +3414,7 @@ HANDLE_INSTRUCTION(i32x4_extract_lane)
 HANDLE_INSTRUCTION(i64x2_extract_lane)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, i64, Operators::VectorExtractLane<2, MakeSigned>, source_address_mix>(configuration, addresses, instruction->arguments().get<Instruction::LaneIndex>().lane))
+    if (interpreter.unary_operation<u128, i64, Operators::VectorExtractLane<2, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses, instruction->arguments().get<Instruction::LaneIndex>().lane))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3445,7 +3422,7 @@ HANDLE_INSTRUCTION(i64x2_extract_lane)
 HANDLE_INSTRUCTION(f32x4_extract_lane)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, float, Operators::VectorExtractLaneFloat<4>, source_address_mix>(configuration, addresses, instruction->arguments().get<Instruction::LaneIndex>().lane))
+    if (interpreter.unary_operation<u128, float, Operators::VectorExtractLaneFloat<4>, source_address_mix>(configuration, ip_and_addresses.addresses, instruction->arguments().get<Instruction::LaneIndex>().lane))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3453,7 +3430,7 @@ HANDLE_INSTRUCTION(f32x4_extract_lane)
 HANDLE_INSTRUCTION(f64x2_extract_lane)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, double, Operators::VectorExtractLaneFloat<2>, source_address_mix>(configuration, addresses, instruction->arguments().get<Instruction::LaneIndex>().lane))
+    if (interpreter.unary_operation<u128, double, Operators::VectorExtractLaneFloat<2>, source_address_mix>(configuration, ip_and_addresses.addresses, instruction->arguments().get<Instruction::LaneIndex>().lane))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3461,7 +3438,7 @@ HANDLE_INSTRUCTION(f64x2_extract_lane)
 HANDLE_INSTRUCTION(i8x16_replace_lane)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorReplaceLane<16, i32>, source_address_mix, i32>(configuration, addresses, instruction->arguments().get<Instruction::LaneIndex>().lane))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorReplaceLane<16, i32>, source_address_mix, i32>(configuration, ip_and_addresses.addresses, instruction->arguments().get<Instruction::LaneIndex>().lane))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3469,7 +3446,7 @@ HANDLE_INSTRUCTION(i8x16_replace_lane)
 HANDLE_INSTRUCTION(i16x8_replace_lane)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorReplaceLane<8, i32>, source_address_mix, i32>(configuration, addresses, instruction->arguments().get<Instruction::LaneIndex>().lane))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorReplaceLane<8, i32>, source_address_mix, i32>(configuration, ip_and_addresses.addresses, instruction->arguments().get<Instruction::LaneIndex>().lane))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3477,7 +3454,7 @@ HANDLE_INSTRUCTION(i16x8_replace_lane)
 HANDLE_INSTRUCTION(i32x4_replace_lane)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorReplaceLane<4>, source_address_mix, i32>(configuration, addresses, instruction->arguments().get<Instruction::LaneIndex>().lane))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorReplaceLane<4>, source_address_mix, i32>(configuration, ip_and_addresses.addresses, instruction->arguments().get<Instruction::LaneIndex>().lane))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3485,7 +3462,7 @@ HANDLE_INSTRUCTION(i32x4_replace_lane)
 HANDLE_INSTRUCTION(i64x2_replace_lane)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorReplaceLane<2>, source_address_mix, i64>(configuration, addresses, instruction->arguments().get<Instruction::LaneIndex>().lane))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorReplaceLane<2>, source_address_mix, i64>(configuration, ip_and_addresses.addresses, instruction->arguments().get<Instruction::LaneIndex>().lane))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3493,7 +3470,7 @@ HANDLE_INSTRUCTION(i64x2_replace_lane)
 HANDLE_INSTRUCTION(f32x4_replace_lane)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorReplaceLane<4, float>, source_address_mix, float>(configuration, addresses, instruction->arguments().get<Instruction::LaneIndex>().lane))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorReplaceLane<4, float>, source_address_mix, float>(configuration, ip_and_addresses.addresses, instruction->arguments().get<Instruction::LaneIndex>().lane))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3501,7 +3478,7 @@ HANDLE_INSTRUCTION(f32x4_replace_lane)
 HANDLE_INSTRUCTION(f64x2_replace_lane)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorReplaceLane<2, double>, source_address_mix, double>(configuration, addresses, instruction->arguments().get<Instruction::LaneIndex>().lane))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorReplaceLane<2, double>, source_address_mix, double>(configuration, ip_and_addresses.addresses, instruction->arguments().get<Instruction::LaneIndex>().lane))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3509,7 +3486,7 @@ HANDLE_INSTRUCTION(f64x2_replace_lane)
 HANDLE_INSTRUCTION(i8x16_eq)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<16, Operators::Equals>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<16, Operators::Equals>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3517,7 +3494,7 @@ HANDLE_INSTRUCTION(i8x16_eq)
 HANDLE_INSTRUCTION(i8x16_ne)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<16, Operators::NotEquals>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<16, Operators::NotEquals>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3525,7 +3502,7 @@ HANDLE_INSTRUCTION(i8x16_ne)
 HANDLE_INSTRUCTION(i8x16_lt_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<16, Operators::LessThan, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<16, Operators::LessThan, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3533,7 +3510,7 @@ HANDLE_INSTRUCTION(i8x16_lt_s)
 HANDLE_INSTRUCTION(i8x16_lt_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<16, Operators::LessThan, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<16, Operators::LessThan, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3541,7 +3518,7 @@ HANDLE_INSTRUCTION(i8x16_lt_u)
 HANDLE_INSTRUCTION(i8x16_gt_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<16, Operators::GreaterThan, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<16, Operators::GreaterThan, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3549,7 +3526,7 @@ HANDLE_INSTRUCTION(i8x16_gt_s)
 HANDLE_INSTRUCTION(i8x16_gt_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<16, Operators::GreaterThan, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<16, Operators::GreaterThan, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3557,7 +3534,7 @@ HANDLE_INSTRUCTION(i8x16_gt_u)
 HANDLE_INSTRUCTION(i8x16_le_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<16, Operators::LessThanOrEquals, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<16, Operators::LessThanOrEquals, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3565,7 +3542,7 @@ HANDLE_INSTRUCTION(i8x16_le_s)
 HANDLE_INSTRUCTION(i8x16_le_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<16, Operators::LessThanOrEquals, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<16, Operators::LessThanOrEquals, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3573,7 +3550,7 @@ HANDLE_INSTRUCTION(i8x16_le_u)
 HANDLE_INSTRUCTION(i8x16_ge_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<16, Operators::GreaterThanOrEquals, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<16, Operators::GreaterThanOrEquals, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3581,7 +3558,7 @@ HANDLE_INSTRUCTION(i8x16_ge_s)
 HANDLE_INSTRUCTION(i8x16_ge_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<16, Operators::GreaterThanOrEquals, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<16, Operators::GreaterThanOrEquals, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3589,7 +3566,7 @@ HANDLE_INSTRUCTION(i8x16_ge_u)
 HANDLE_INSTRUCTION(i8x16_abs)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerUnaryOp<16, Operators::Absolute>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerUnaryOp<16, Operators::Absolute>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3597,7 +3574,7 @@ HANDLE_INSTRUCTION(i8x16_abs)
 HANDLE_INSTRUCTION(i8x16_neg)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerUnaryOp<16, Operators::Negate>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerUnaryOp<16, Operators::Negate>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3605,7 +3582,7 @@ HANDLE_INSTRUCTION(i8x16_neg)
 HANDLE_INSTRUCTION(i8x16_all_true)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, i32, Operators::VectorAllTrue<16>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, i32, Operators::VectorAllTrue<16>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3613,7 +3590,7 @@ HANDLE_INSTRUCTION(i8x16_all_true)
 HANDLE_INSTRUCTION(i8x16_popcnt)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerUnaryOp<16, Operators::PopCount>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerUnaryOp<16, Operators::PopCount>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3621,7 +3598,7 @@ HANDLE_INSTRUCTION(i8x16_popcnt)
 HANDLE_INSTRUCTION(i8x16_add)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<16, Operators::Add>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<16, Operators::Add>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3629,7 +3606,7 @@ HANDLE_INSTRUCTION(i8x16_add)
 HANDLE_INSTRUCTION(i8x16_sub)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<16, Operators::Subtract>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<16, Operators::Subtract>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3637,7 +3614,7 @@ HANDLE_INSTRUCTION(i8x16_sub)
 HANDLE_INSTRUCTION(i8x16_avgr_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<16, Operators::Average, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<16, Operators::Average, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3645,7 +3622,7 @@ HANDLE_INSTRUCTION(i8x16_avgr_u)
 HANDLE_INSTRUCTION(i8x16_add_sat_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<16, Operators::SaturatingOp<i8, Operators::Add>, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<16, Operators::SaturatingOp<i8, Operators::Add>, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3653,7 +3630,7 @@ HANDLE_INSTRUCTION(i8x16_add_sat_s)
 HANDLE_INSTRUCTION(i8x16_add_sat_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<16, Operators::SaturatingOp<u8, Operators::Add>, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<16, Operators::SaturatingOp<u8, Operators::Add>, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3661,7 +3638,7 @@ HANDLE_INSTRUCTION(i8x16_add_sat_u)
 HANDLE_INSTRUCTION(i8x16_sub_sat_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<16, Operators::SaturatingOp<i8, Operators::Subtract>, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<16, Operators::SaturatingOp<i8, Operators::Subtract>, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3669,7 +3646,7 @@ HANDLE_INSTRUCTION(i8x16_sub_sat_s)
 HANDLE_INSTRUCTION(i8x16_sub_sat_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<16, Operators::SaturatingOp<u8, Operators::Subtract>, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<16, Operators::SaturatingOp<u8, Operators::Subtract>, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3677,7 +3654,7 @@ HANDLE_INSTRUCTION(i8x16_sub_sat_u)
 HANDLE_INSTRUCTION(i8x16_min_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<16, Operators::Minimum, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<16, Operators::Minimum, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3685,7 +3662,7 @@ HANDLE_INSTRUCTION(i8x16_min_s)
 HANDLE_INSTRUCTION(i8x16_min_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<16, Operators::Minimum, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<16, Operators::Minimum, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3693,7 +3670,7 @@ HANDLE_INSTRUCTION(i8x16_min_u)
 HANDLE_INSTRUCTION(i8x16_max_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<16, Operators::Maximum, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<16, Operators::Maximum, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3701,7 +3678,7 @@ HANDLE_INSTRUCTION(i8x16_max_s)
 HANDLE_INSTRUCTION(i8x16_max_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<16, Operators::Maximum, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<16, Operators::Maximum, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3709,7 +3686,7 @@ HANDLE_INSTRUCTION(i8x16_max_u)
 HANDLE_INSTRUCTION(i16x8_eq)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<8, Operators::Equals>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<8, Operators::Equals>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3717,7 +3694,7 @@ HANDLE_INSTRUCTION(i16x8_eq)
 HANDLE_INSTRUCTION(i16x8_ne)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<8, Operators::NotEquals>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<8, Operators::NotEquals>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3725,7 +3702,7 @@ HANDLE_INSTRUCTION(i16x8_ne)
 HANDLE_INSTRUCTION(i16x8_lt_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<8, Operators::LessThan, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<8, Operators::LessThan, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3733,7 +3710,7 @@ HANDLE_INSTRUCTION(i16x8_lt_s)
 HANDLE_INSTRUCTION(i16x8_lt_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<8, Operators::LessThan, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<8, Operators::LessThan, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3741,7 +3718,7 @@ HANDLE_INSTRUCTION(i16x8_lt_u)
 HANDLE_INSTRUCTION(i16x8_gt_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<8, Operators::GreaterThan, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<8, Operators::GreaterThan, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3749,7 +3726,7 @@ HANDLE_INSTRUCTION(i16x8_gt_s)
 HANDLE_INSTRUCTION(i16x8_gt_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<8, Operators::GreaterThan, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<8, Operators::GreaterThan, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3757,7 +3734,7 @@ HANDLE_INSTRUCTION(i16x8_gt_u)
 HANDLE_INSTRUCTION(i16x8_le_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<8, Operators::LessThanOrEquals, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<8, Operators::LessThanOrEquals, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3765,7 +3742,7 @@ HANDLE_INSTRUCTION(i16x8_le_s)
 HANDLE_INSTRUCTION(i16x8_le_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<8, Operators::LessThanOrEquals, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<8, Operators::LessThanOrEquals, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3773,7 +3750,7 @@ HANDLE_INSTRUCTION(i16x8_le_u)
 HANDLE_INSTRUCTION(i16x8_ge_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<8, Operators::GreaterThanOrEquals, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<8, Operators::GreaterThanOrEquals, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3781,7 +3758,7 @@ HANDLE_INSTRUCTION(i16x8_ge_s)
 HANDLE_INSTRUCTION(i16x8_ge_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<8, Operators::GreaterThanOrEquals, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<8, Operators::GreaterThanOrEquals, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3789,7 +3766,7 @@ HANDLE_INSTRUCTION(i16x8_ge_u)
 HANDLE_INSTRUCTION(i16x8_abs)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerUnaryOp<8, Operators::Absolute>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerUnaryOp<8, Operators::Absolute>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3797,7 +3774,7 @@ HANDLE_INSTRUCTION(i16x8_abs)
 HANDLE_INSTRUCTION(i16x8_neg)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerUnaryOp<8, Operators::Negate>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerUnaryOp<8, Operators::Negate>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3805,7 +3782,7 @@ HANDLE_INSTRUCTION(i16x8_neg)
 HANDLE_INSTRUCTION(i16x8_all_true)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, i32, Operators::VectorAllTrue<8>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, i32, Operators::VectorAllTrue<8>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3813,7 +3790,7 @@ HANDLE_INSTRUCTION(i16x8_all_true)
 HANDLE_INSTRUCTION(i16x8_add)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<8, Operators::Add>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<8, Operators::Add>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3821,7 +3798,7 @@ HANDLE_INSTRUCTION(i16x8_add)
 HANDLE_INSTRUCTION(i16x8_sub)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<8, Operators::Subtract>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<8, Operators::Subtract>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3829,7 +3806,7 @@ HANDLE_INSTRUCTION(i16x8_sub)
 HANDLE_INSTRUCTION(i16x8_mul)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<8, Operators::Multiply>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<8, Operators::Multiply>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3837,7 +3814,7 @@ HANDLE_INSTRUCTION(i16x8_mul)
 HANDLE_INSTRUCTION(i16x8_avgr_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<8, Operators::Average, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<8, Operators::Average, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3845,7 +3822,7 @@ HANDLE_INSTRUCTION(i16x8_avgr_u)
 HANDLE_INSTRUCTION(i16x8_add_sat_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<8, Operators::SaturatingOp<i16, Operators::Add>, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<8, Operators::SaturatingOp<i16, Operators::Add>, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3853,7 +3830,7 @@ HANDLE_INSTRUCTION(i16x8_add_sat_s)
 HANDLE_INSTRUCTION(i16x8_add_sat_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<8, Operators::SaturatingOp<u16, Operators::Add>, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<8, Operators::SaturatingOp<u16, Operators::Add>, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3861,7 +3838,7 @@ HANDLE_INSTRUCTION(i16x8_add_sat_u)
 HANDLE_INSTRUCTION(i16x8_sub_sat_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<8, Operators::SaturatingOp<i16, Operators::Subtract>, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<8, Operators::SaturatingOp<i16, Operators::Subtract>, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3869,7 +3846,7 @@ HANDLE_INSTRUCTION(i16x8_sub_sat_s)
 HANDLE_INSTRUCTION(i16x8_sub_sat_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<8, Operators::SaturatingOp<u16, Operators::Subtract>, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<8, Operators::SaturatingOp<u16, Operators::Subtract>, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3877,7 +3854,7 @@ HANDLE_INSTRUCTION(i16x8_sub_sat_u)
 HANDLE_INSTRUCTION(i16x8_min_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<8, Operators::Minimum, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<8, Operators::Minimum, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3885,7 +3862,7 @@ HANDLE_INSTRUCTION(i16x8_min_s)
 HANDLE_INSTRUCTION(i16x8_min_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<8, Operators::Minimum, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<8, Operators::Minimum, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3893,7 +3870,7 @@ HANDLE_INSTRUCTION(i16x8_min_u)
 HANDLE_INSTRUCTION(i16x8_max_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<8, Operators::Maximum, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<8, Operators::Maximum, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3901,7 +3878,7 @@ HANDLE_INSTRUCTION(i16x8_max_s)
 HANDLE_INSTRUCTION(i16x8_max_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<8, Operators::Maximum, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<8, Operators::Maximum, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3909,7 +3886,7 @@ HANDLE_INSTRUCTION(i16x8_max_u)
 HANDLE_INSTRUCTION(i16x8_extend_low_i8x16_s)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerExt<8, Operators::VectorExt::Low, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerExt<8, Operators::VectorExt::Low, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3917,7 +3894,7 @@ HANDLE_INSTRUCTION(i16x8_extend_low_i8x16_s)
 HANDLE_INSTRUCTION(i16x8_extend_high_i8x16_s)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerExt<8, Operators::VectorExt::High, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerExt<8, Operators::VectorExt::High, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3925,7 +3902,7 @@ HANDLE_INSTRUCTION(i16x8_extend_high_i8x16_s)
 HANDLE_INSTRUCTION(i16x8_extend_low_i8x16_u)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerExt<8, Operators::VectorExt::Low, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerExt<8, Operators::VectorExt::Low, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3933,7 +3910,7 @@ HANDLE_INSTRUCTION(i16x8_extend_low_i8x16_u)
 HANDLE_INSTRUCTION(i16x8_extend_high_i8x16_u)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerExt<8, Operators::VectorExt::High, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerExt<8, Operators::VectorExt::High, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3941,7 +3918,7 @@ HANDLE_INSTRUCTION(i16x8_extend_high_i8x16_u)
 HANDLE_INSTRUCTION(i16x8_extadd_pairwise_i8x16_s)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerExtOpPairwise<8, Operators::Add, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerExtOpPairwise<8, Operators::Add, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3949,7 +3926,7 @@ HANDLE_INSTRUCTION(i16x8_extadd_pairwise_i8x16_s)
 HANDLE_INSTRUCTION(i16x8_extadd_pairwise_i8x16_u)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerExtOpPairwise<8, Operators::Add, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerExtOpPairwise<8, Operators::Add, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3957,7 +3934,7 @@ HANDLE_INSTRUCTION(i16x8_extadd_pairwise_i8x16_u)
 HANDLE_INSTRUCTION(i16x8_extmul_low_i8x16_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerExtOp<8, Operators::Multiply, Operators::VectorExt::Low, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerExtOp<8, Operators::Multiply, Operators::VectorExt::Low, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3965,7 +3942,7 @@ HANDLE_INSTRUCTION(i16x8_extmul_low_i8x16_s)
 HANDLE_INSTRUCTION(i16x8_extmul_high_i8x16_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerExtOp<8, Operators::Multiply, Operators::VectorExt::High, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerExtOp<8, Operators::Multiply, Operators::VectorExt::High, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3973,7 +3950,7 @@ HANDLE_INSTRUCTION(i16x8_extmul_high_i8x16_s)
 HANDLE_INSTRUCTION(i16x8_extmul_low_i8x16_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerExtOp<8, Operators::Multiply, Operators::VectorExt::Low, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerExtOp<8, Operators::Multiply, Operators::VectorExt::Low, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3981,7 +3958,7 @@ HANDLE_INSTRUCTION(i16x8_extmul_low_i8x16_u)
 HANDLE_INSTRUCTION(i16x8_extmul_high_i8x16_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerExtOp<8, Operators::Multiply, Operators::VectorExt::High, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerExtOp<8, Operators::Multiply, Operators::VectorExt::High, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3989,7 +3966,7 @@ HANDLE_INSTRUCTION(i16x8_extmul_high_i8x16_u)
 HANDLE_INSTRUCTION(i32x4_eq)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<4, Operators::Equals>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<4, Operators::Equals>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -3997,7 +3974,7 @@ HANDLE_INSTRUCTION(i32x4_eq)
 HANDLE_INSTRUCTION(i32x4_ne)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<4, Operators::NotEquals>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<4, Operators::NotEquals>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -4005,7 +3982,7 @@ HANDLE_INSTRUCTION(i32x4_ne)
 HANDLE_INSTRUCTION(i32x4_lt_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<4, Operators::LessThan, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<4, Operators::LessThan, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -4013,7 +3990,7 @@ HANDLE_INSTRUCTION(i32x4_lt_s)
 HANDLE_INSTRUCTION(i32x4_lt_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<4, Operators::LessThan, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<4, Operators::LessThan, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -4021,7 +3998,7 @@ HANDLE_INSTRUCTION(i32x4_lt_u)
 HANDLE_INSTRUCTION(i32x4_gt_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<4, Operators::GreaterThan, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<4, Operators::GreaterThan, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -4029,7 +4006,7 @@ HANDLE_INSTRUCTION(i32x4_gt_s)
 HANDLE_INSTRUCTION(i32x4_gt_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<4, Operators::GreaterThan, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<4, Operators::GreaterThan, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -4037,7 +4014,7 @@ HANDLE_INSTRUCTION(i32x4_gt_u)
 HANDLE_INSTRUCTION(i32x4_le_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<4, Operators::LessThanOrEquals, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<4, Operators::LessThanOrEquals, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -4045,7 +4022,7 @@ HANDLE_INSTRUCTION(i32x4_le_s)
 HANDLE_INSTRUCTION(i32x4_le_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<4, Operators::LessThanOrEquals, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<4, Operators::LessThanOrEquals, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -4053,7 +4030,7 @@ HANDLE_INSTRUCTION(i32x4_le_u)
 HANDLE_INSTRUCTION(i32x4_ge_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<4, Operators::GreaterThanOrEquals, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<4, Operators::GreaterThanOrEquals, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -4061,7 +4038,7 @@ HANDLE_INSTRUCTION(i32x4_ge_s)
 HANDLE_INSTRUCTION(i32x4_ge_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<4, Operators::GreaterThanOrEquals, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorCmpOp<4, Operators::GreaterThanOrEquals, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -4069,7 +4046,7 @@ HANDLE_INSTRUCTION(i32x4_ge_u)
 HANDLE_INSTRUCTION(i32x4_abs)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerUnaryOp<4, Operators::Absolute>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerUnaryOp<4, Operators::Absolute>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -4077,7 +4054,7 @@ HANDLE_INSTRUCTION(i32x4_abs)
 HANDLE_INSTRUCTION(i32x4_neg)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerUnaryOp<4, Operators::Negate, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerUnaryOp<4, Operators::Negate, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -4085,7 +4062,7 @@ HANDLE_INSTRUCTION(i32x4_neg)
 HANDLE_INSTRUCTION(i32x4_all_true)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, i32, Operators::VectorAllTrue<4>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, i32, Operators::VectorAllTrue<4>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -4093,7 +4070,7 @@ HANDLE_INSTRUCTION(i32x4_all_true)
 HANDLE_INSTRUCTION(i32x4_add)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<4, Operators::Add, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<4, Operators::Add, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -4101,7 +4078,7 @@ HANDLE_INSTRUCTION(i32x4_add)
 HANDLE_INSTRUCTION(i32x4_sub)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<4, Operators::Subtract, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<4, Operators::Subtract, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -4109,7 +4086,7 @@ HANDLE_INSTRUCTION(i32x4_sub)
 HANDLE_INSTRUCTION(i32x4_mul)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<4, Operators::Multiply, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<4, Operators::Multiply, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -4117,7 +4094,7 @@ HANDLE_INSTRUCTION(i32x4_mul)
 HANDLE_INSTRUCTION(i32x4_min_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<4, Operators::Minimum, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<4, Operators::Minimum, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -4125,7 +4102,7 @@ HANDLE_INSTRUCTION(i32x4_min_s)
 HANDLE_INSTRUCTION(i32x4_min_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<4, Operators::Minimum, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<4, Operators::Minimum, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -4133,7 +4110,7 @@ HANDLE_INSTRUCTION(i32x4_min_u)
 HANDLE_INSTRUCTION(i32x4_max_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<4, Operators::Maximum, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<4, Operators::Maximum, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -4141,7 +4118,7 @@ HANDLE_INSTRUCTION(i32x4_max_s)
 HANDLE_INSTRUCTION(i32x4_max_u)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<4, Operators::Maximum, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerBinaryOp<4, Operators::Maximum, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -4149,7 +4126,7 @@ HANDLE_INSTRUCTION(i32x4_max_u)
 HANDLE_INSTRUCTION(i32x4_extend_low_i16x8_s)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerExt<4, Operators::VectorExt::Low, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerExt<4, Operators::VectorExt::Low, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -4157,7 +4134,7 @@ HANDLE_INSTRUCTION(i32x4_extend_low_i16x8_s)
 HANDLE_INSTRUCTION(i32x4_extend_high_i16x8_s)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerExt<4, Operators::VectorExt::High, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerExt<4, Operators::VectorExt::High, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -4165,7 +4142,7 @@ HANDLE_INSTRUCTION(i32x4_extend_high_i16x8_s)
 HANDLE_INSTRUCTION(i32x4_extend_low_i16x8_u)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerExt<4, Operators::VectorExt::Low, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerExt<4, Operators::VectorExt::Low, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -4173,7 +4150,7 @@ HANDLE_INSTRUCTION(i32x4_extend_low_i16x8_u)
 HANDLE_INSTRUCTION(i32x4_extend_high_i16x8_u)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerExt<4, Operators::VectorExt::High, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerExt<4, Operators::VectorExt::High, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -4181,7 +4158,7 @@ HANDLE_INSTRUCTION(i32x4_extend_high_i16x8_u)
 HANDLE_INSTRUCTION(i32x4_extadd_pairwise_i16x8_s)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerExtOpPairwise<4, Operators::Add, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerExtOpPairwise<4, Operators::Add, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -4189,7 +4166,7 @@ HANDLE_INSTRUCTION(i32x4_extadd_pairwise_i16x8_s)
 HANDLE_INSTRUCTION(i32x4_extadd_pairwise_i16x8_u)
 {
     LOG_INSN;
-    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerExtOpPairwise<4, Operators::Add, MakeUnsigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.unary_operation<u128, u128, Operators::VectorIntegerExtOpPairwise<4, Operators::Add, MakeUnsigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -4197,7 +4174,7 @@ HANDLE_INSTRUCTION(i32x4_extadd_pairwise_i16x8_u)
 HANDLE_INSTRUCTION(i32x4_extmul_low_i16x8_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerExtOp<4, Operators::Multiply, Operators::VectorExt::Low, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerExtOp<4, Operators::Multiply, Operators::VectorExt::Low, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -4205,7 +4182,7 @@ HANDLE_INSTRUCTION(i32x4_extmul_low_i16x8_s)
 HANDLE_INSTRUCTION(i32x4_extmul_high_i16x8_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerExtOp<4, Operators::Multiply, Operators::VectorExt::High, MakeSigned>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorIntegerExtOp<4, Operators::Multiply, Operators::VectorExt::High, MakeSigned>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -4219,9 +4196,9 @@ ALIAS_INSTRUCTION(i32x4_relaxed_trunc_f64x2_u_zero, i32x4_trunc_sat_f64x2_u_zero
 HANDLE_INSTRUCTION(f32x4_relaxed_madd)
 {
     LOG_INSN;
-    auto a = configuration.take_source<source_address_mix>(0, addresses.sources).template to<u128>();
-    auto b = configuration.take_source<source_address_mix>(1, addresses.sources).template to<u128>();
-    auto& c_slot = configuration.source_value<source_address_mix>(2, addresses.sources);
+    auto a = configuration.take_source<source_address_mix>(0, ip_and_addresses.addresses.sources).template to<u128>();
+    auto b = configuration.take_source<source_address_mix>(1, ip_and_addresses.addresses.sources).template to<u128>();
+    auto& c_slot = configuration.source_value<source_address_mix>(2, ip_and_addresses.addresses.sources);
     auto c = c_slot.template to<u128>();
     c_slot = Value { Operators::VectorMultiplyAdd<4> {}(a, b, c) };
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
@@ -4230,9 +4207,9 @@ HANDLE_INSTRUCTION(f32x4_relaxed_madd)
 HANDLE_INSTRUCTION(f32x4_relaxed_nmadd)
 {
     LOG_INSN;
-    auto a = configuration.take_source<source_address_mix>(0, addresses.sources).template to<u128>();
-    auto b = configuration.take_source<source_address_mix>(1, addresses.sources).template to<u128>();
-    auto& c_slot = configuration.source_value<source_address_mix>(2, addresses.sources);
+    auto a = configuration.take_source<source_address_mix>(0, ip_and_addresses.addresses.sources).template to<u128>();
+    auto b = configuration.take_source<source_address_mix>(1, ip_and_addresses.addresses.sources).template to<u128>();
+    auto& c_slot = configuration.source_value<source_address_mix>(2, ip_and_addresses.addresses.sources);
     auto c = c_slot.template to<u128>();
     c_slot = Value { Operators::VectorMultiplySub<4> {}(a, b, c) };
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
@@ -4241,9 +4218,9 @@ HANDLE_INSTRUCTION(f32x4_relaxed_nmadd)
 HANDLE_INSTRUCTION(f64x2_relaxed_madd)
 {
     LOG_INSN;
-    auto a = configuration.take_source<source_address_mix>(0, addresses.sources).template to<u128>();
-    auto b = configuration.take_source<source_address_mix>(1, addresses.sources).template to<u128>();
-    auto& c_slot = configuration.source_value<source_address_mix>(2, addresses.sources);
+    auto a = configuration.take_source<source_address_mix>(0, ip_and_addresses.addresses.sources).template to<u128>();
+    auto b = configuration.take_source<source_address_mix>(1, ip_and_addresses.addresses.sources).template to<u128>();
+    auto& c_slot = configuration.source_value<source_address_mix>(2, ip_and_addresses.addresses.sources);
     auto c = c_slot.template to<u128>();
     c_slot = Value { Operators::VectorMultiplyAdd<2> {}(a, b, c) };
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
@@ -4252,9 +4229,9 @@ HANDLE_INSTRUCTION(f64x2_relaxed_madd)
 HANDLE_INSTRUCTION(f64x2_relaxed_nmadd)
 {
     LOG_INSN;
-    auto a = configuration.take_source<source_address_mix>(0, addresses.sources).template to<u128>();
-    auto b = configuration.take_source<source_address_mix>(1, addresses.sources).template to<u128>();
-    auto& c_slot = configuration.source_value<source_address_mix>(2, addresses.sources);
+    auto a = configuration.take_source<source_address_mix>(0, ip_and_addresses.addresses.sources).template to<u128>();
+    auto b = configuration.take_source<source_address_mix>(1, ip_and_addresses.addresses.sources).template to<u128>();
+    auto& c_slot = configuration.source_value<source_address_mix>(2, ip_and_addresses.addresses.sources);
     auto c = c_slot.template to<u128>();
     c_slot = Value { Operators::VectorMultiplySub<2> {}(a, b, c) };
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
@@ -4273,7 +4250,7 @@ ALIAS_INSTRUCTION(i16x8_relaxed_q15mulr_s, i16x8_q15mulr_sat_s)
 HANDLE_INSTRUCTION(i16x8_relaxed_dot_i8x16_i7x16_s)
 {
     LOG_INSN;
-    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorDotProduct<8>, source_address_mix>(configuration, addresses))
+    if (interpreter.binary_numeric_operation<u128, u128, Operators::VectorDotProduct<8>, source_address_mix>(configuration, ip_and_addresses.addresses))
         return Outcome::Return;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -4282,10 +4259,10 @@ HANDLE_INSTRUCTION(i32x4_relaxed_dot_i8x16_i7x16_add_s)
 {
     LOG_INSN;
     // do i16x8 dot first, then fold back down to i32, then do the final component add.
-    auto rhs = configuration.take_source<source_address_mix>(0, addresses.sources).template to<u128>();
-    auto lhs = configuration.take_source<source_address_mix>(1, addresses.sources).template to<u128>(); // bounds checked by verifier.
+    auto rhs = configuration.take_source<source_address_mix>(0, ip_and_addresses.addresses.sources).template to<u128>();
+    auto lhs = configuration.take_source<source_address_mix>(1, ip_and_addresses.addresses.sources).template to<u128>(); // bounds checked by verifier.
     auto result = Operators::VectorDotProduct<4, Operators::VectorIntegerExtOpPairwise<4, Operators::Add>> {}(lhs, rhs);
-    auto& c_slot = configuration.source_value<source_address_mix>(2, addresses.sources);
+    auto& c_slot = configuration.source_value<source_address_mix>(2, ip_and_addresses.addresses.sources);
     c_slot = Value { Operators::VectorIntegerBinaryOp<4, Operators::Add, MakeSigned> {}(result, c_slot.template to<u128>()) };
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
@@ -4333,20 +4310,18 @@ template<bool HasCompiledList, bool HasDynamicInsnLimit, bool HaveDirectThreadin
 FLATTEN void BytecodeInterpreter::interpret_impl(Configuration& configuration, Expression const& expression)
 {
     auto& instructions = expression.instructions();
-    auto current_ip_value = configuration.ip();
     u64 executed_instructions = 0;
-
-    SourcesAndDestination addresses { .sources_and_destination = default_sources_and_destination };
+    ShortenedIPAndAddresses ip_and_addresses { .current_ip_value = static_cast<u32>(configuration.ip()), .addresses = { .sources_and_destination = default_sources_and_destination } };
 
     auto cc = expression.compiled_instructions.dispatches.data();
     auto addresses_ptr = expression.compiled_instructions.src_dst_mappings.data();
 
     if constexpr (HaveDirectThreadingInfo) {
         static_assert(HasCompiledList, "Direct threading requires a compiled instruction list");
-        addresses.sources_and_destination = addresses_ptr[current_ip_value].sources_and_destination;
-        auto const instruction = cc[current_ip_value].instruction;
-        auto const handler = bit_cast<Outcome (*)(HANDLER_PARAMS(DECOMPOSE_PARAMS_TYPE_ONLY))>(cc[current_ip_value].handler_ptr);
-        handler(*this, configuration, instruction, addresses, current_ip_value, cc, addresses_ptr);
+        ip_and_addresses.addresses.sources_and_destination = addresses_ptr[ip_and_addresses.current_ip_value].sources_and_destination;
+        auto const instruction = cc[ip_and_addresses.current_ip_value].instruction;
+        auto const handler = bit_cast<Outcome (*)(HANDLER_PARAMS(DECOMPOSE_PARAMS_TYPE_ONLY))>(cc[ip_and_addresses.current_ip_value].handler_ptr);
+        handler(*this, configuration, instruction, ip_and_addresses, cc, addresses_ptr);
         return;
     }
 
@@ -4358,29 +4333,29 @@ FLATTEN void BytecodeInterpreter::interpret_impl(Configuration& configuration, E
             }
         }
         // bounds checked by loop condition.
-        addresses.sources_and_destination = HasCompiledList
-            ? addresses_ptr[current_ip_value].sources_and_destination
+        ip_and_addresses.addresses.sources_and_destination = HasCompiledList
+            ? addresses_ptr[ip_and_addresses.current_ip_value].sources_and_destination
             : default_sources_and_destination;
         auto const instruction = HasCompiledList
-            ? cc[current_ip_value].instruction
-            : &instructions.data()[current_ip_value];
+            ? cc[ip_and_addresses.current_ip_value].instruction
+            : &instructions.data()[ip_and_addresses.current_ip_value];
         auto const opcode = (HasCompiledList && !HaveDirectThreadingInfo
-                ? cc[current_ip_value].instruction_opcode
+                ? cc[ip_and_addresses.current_ip_value].instruction_opcode
                 : instruction->opcode())
                                 .value();
 
 #define RUN_NEXT_INSTRUCTION() \
     {                          \
-        ++current_ip_value;    \
+        ++ip_and_addresses.current_ip_value;    \
         break;                 \
     }
 
 #define HANDLE_INSTRUCTION_NEW(name, ...)                                                                                                                                                                   \
     case Instructions::name.value(): {                                                                                                                                                                      \
-        auto outcome = handle_instruction<Instructions::name.value(), HasDynamicInsnLimit, Skip, SourceAddressMix::Any>(*this, configuration, instruction, addresses, current_ip_value, cc, addresses_ptr); \
+        auto outcome = handle_instruction<Instructions::name.value(), HasDynamicInsnLimit, Skip, SourceAddressMix::Any>(*this, configuration, instruction, ip_and_addresses, cc, addresses_ptr); \
         if (outcome == Outcome::Return)                                                                                                                                                                     \
             return;                                                                                                                                                                                         \
-        current_ip_value = to_underlying(outcome);                                                                                                                                                          \
+        ip_and_addresses.current_ip_value = to_underlying(outcome);                                                                                                                                                          \
         if constexpr (Instructions::name == Instructions::return_call || Instructions::name == Instructions::return_call_indirect) {                                                                        \
             cc = configuration.frame().expression().compiled_instructions.dispatches.data();                                                                                                                \
             addresses_ptr = configuration.frame().expression().compiled_instructions.src_dst_mappings.data();                                                                                               \
@@ -4388,14 +4363,14 @@ FLATTEN void BytecodeInterpreter::interpret_impl(Configuration& configuration, E
         RUN_NEXT_INSTRUCTION();                                                                                                                                                                             \
     }
 
-        dbgln_if(WASM_TRACE_DEBUG, "Executing instruction {} at current_ip_value {}", instruction_name(instruction->opcode()), current_ip_value);
+        dbgln_if(WASM_TRACE_DEBUG, "Executing instruction {} at ip_and_addresses.current_ip_value {}", instruction_name(instruction->opcode()), ip_and_addresses.current_ip_value);
         if ((opcode & Instructions::SyntheticInstructionBase.value()) != Instructions::SyntheticInstructionBase.value())
             __builtin_prefetch(&instruction->arguments(), /* read */ 0, /* low temporal locality */ 1);
 
         switch (opcode) {
             ENUMERATE_WASM_OPCODES(HANDLE_INSTRUCTION_NEW)
         default:
-            dbgln("Bad opcode {} in insn {} (ip {})", opcode, instruction_name(instruction->opcode()), current_ip_value);
+            dbgln("Bad opcode {} in insn {} (ip {})", opcode, instruction_name(instruction->opcode()), ip_and_addresses.current_ip_value);
             VERIFY_NOT_REACHED();
         }
     }
@@ -5161,19 +5136,6 @@ CompiledInstructions try_compile_instructions(Expression const& expression, Span
     Vector<Vector<ValueID>> live_at_instr;
     live_at_instr.resize(result.dispatches.size());
 
-    // Track call record constraints
-    HashMap<ValueID, u8> value_to_callrec_slot;
-
-    struct CallInfo {
-        size_t call_index;
-        size_t param_count;
-        size_t result_count;
-        size_t earliest_arg_index;
-        Vector<ValueID> arg_values;
-        Vector<ValueID> result_values;
-    };
-    Vector<CallInfo> eligible_calls;
-
     for (size_t i = 0; i < result.dispatches.size(); ++i) {
         auto& dispatch = result.dispatches[i];
         auto opcode = dispatch.instruction->opcode();
@@ -5278,128 +5240,6 @@ CompiledInstructions try_compile_instructions(Expression const& expression, Span
 
     forced_stack_values.extend(value_stack);
 
-    // Now insert the allocate instructions for eligible calls
-    // Sort by index descending to avoid index adjustment issues
-    quick_sort(eligible_calls, [](auto const& a, auto const& b) {
-        return a.call_index > b.call_index;
-    });
-
-    HashTable<ValueID> call_values;
-    for (auto& call_info : eligible_calls) {
-        auto allocate_insn = Instruction(
-            Instructions::synthetic_allocate_call_record,
-            static_cast<i32>(call_info.param_count));
-
-        result.extra_instruction_storage.unchecked_append(allocate_insn);
-        result.dispatches.insert(call_info.earliest_arg_index, default_dispatch(result.extra_instruction_storage.unsafe_last()));
-
-        // Update the call instruction (now at index + 1 due to insertion)
-        size_t adjusted_call_index = call_info.call_index + 1;
-        auto new_call_opcode = call_info.result_count == 0
-            ? Instructions::synthetic_call_with_record0
-            : Instructions::synthetic_call_with_record1;
-
-        auto new_call_insn = Instruction(
-            new_call_opcode,
-            result.dispatches[adjusted_call_index].instruction->arguments());
-
-        result.extra_instruction_storage.unchecked_append(new_call_insn);
-        result.dispatches[adjusted_call_index].instruction = &result.extra_instruction_storage.unsafe_last();
-        result.dispatches[adjusted_call_index].instruction_opcode = new_call_opcode;
-
-        // Update all indices >= earliest_arg_index in the value tracking structures
-        HashMap<ValueID, Value> updated_values;
-        updated_values.ensure_capacity(values.size());
-        for (auto& [vid, value] : values) {
-            auto new_value = value;
-            if (value.definition_index >= call_info.earliest_arg_index)
-                new_value.definition_index = value.definition_index.value() + 1;
-
-            for (auto& use : new_value.uses) {
-                if (use >= call_info.earliest_arg_index)
-                    use = use.value() + 1;
-            }
-
-            if (new_value.last_use >= call_info.earliest_arg_index)
-                new_value.last_use = new_value.last_use.value() + 1;
-
-            updated_values.set(vid, new_value);
-        }
-        values = move(updated_values);
-
-        // Update instruction-to-value mappings
-        HashMap<IP, ValueID> new_output_map;
-        HashMap<IP, Vector<ValueID>> new_input_map;
-        HashMap<IP, Vector<ValueID>> new_dependent_map;
-
-        for (auto& [ip, vid] : instr_to_output_value) {
-            auto new_ip = ip >= call_info.earliest_arg_index ? IP(ip.value() + 1) : ip;
-            new_output_map.set(new_ip, vid);
-        }
-        instr_to_output_value = move(new_output_map);
-
-        for (auto& [ip, vids] : instr_to_input_values) {
-            auto new_ip = ip >= call_info.earliest_arg_index ? IP(ip.value() + 1) : ip;
-            new_input_map.set(new_ip, vids);
-        }
-        instr_to_input_values = move(new_input_map);
-
-        for (auto& [ip, vids] : instr_to_dependent_values) {
-            auto new_ip = ip >= call_info.earliest_arg_index ? IP(ip.value() + 1) : ip;
-            new_dependent_map.set(new_ip, vids);
-        }
-        instr_to_dependent_values = move(new_dependent_map);
-
-        // Update live_at_instr
-        Vector<Vector<ValueID>> new_live_at_instr;
-        new_live_at_instr.resize(result.dispatches.size());
-        for (size_t i = 0; i < live_at_instr.size(); ++i) {
-            size_t target_index = i;
-            if (i >= call_info.earliest_arg_index) {
-                target_index = i + 1;
-            }
-            if (target_index < new_live_at_instr.size()) {
-                new_live_at_instr[target_index] = move(live_at_instr[i]);
-            }
-        }
-        live_at_instr = move(new_live_at_instr);
-
-        // Update structured instruction arguments
-        for (size_t i = 0; i < result.dispatches.size(); ++i) {
-            auto& args = result.dispatches[i].instruction->arguments();
-            if (auto ptr = args.get_pointer<Instruction::StructuredInstructionArgs>()) {
-                bool needs_update = false;
-                auto new_end_ip = ptr->end_ip;
-                auto new_else_ip = ptr->else_ip;
-
-                if (ptr->end_ip >= call_info.earliest_arg_index) {
-                    new_end_ip = ptr->end_ip.value() + 1;
-                    needs_update = true;
-                }
-
-                if (ptr->else_ip.has_value() && *ptr->else_ip >= call_info.earliest_arg_index) {
-                    new_else_ip = ptr->else_ip->value() + 1;
-                    needs_update = true;
-                }
-
-                if (needs_update) {
-                    auto instruction = *result.dispatches[i].instruction;
-                    instruction.arguments() = Instruction::StructuredInstructionArgs {
-                        .block_type = ptr->block_type,
-                        .end_ip = new_end_ip,
-                        .else_ip = new_else_ip,
-                    };
-                    result.extra_instruction_storage.unchecked_append(move(instruction));
-                    result.dispatches[i].instruction = &result.extra_instruction_storage.unsafe_last();
-                    result.dispatches[i].instruction_opcode = result.dispatches[i].instruction->opcode();
-                }
-            }
-        }
-
-        for (auto val : call_info.result_values)
-            call_values.set(val);
-    }
-
     for (size_t i = 0; i < final_roots.size(); ++i)
         final_roots[i] = find_root(i);
 
@@ -5484,26 +5324,6 @@ CompiledInstructions try_compile_instructions(Expression const& expression, Span
     }
 
     for (auto& [key, group] : alias_groups) {
-        // Check if any value in this group needs a call record slot
-        Dispatch::RegisterOrStack forced_slot = Dispatch::RegisterOrStack::Stack;
-        bool has_callrec_constraint = false;
-
-        for (auto* interval : group) {
-            if (auto slot = value_to_callrec_slot.get(interval->value_id); slot.has_value()) {
-                forced_slot = static_cast<Dispatch::RegisterOrStack>(*slot);
-                has_callrec_constraint = true;
-                break;
-            }
-        }
-
-        if (has_callrec_constraint) {
-            // Force all values in this alias group to use the call record slot
-            for (auto* interval : group) {
-                value_alloc.set(interval->value_id, forced_slot);
-            }
-            continue;
-        }
-
         IP group_start = NumericLimits<size_t>::max();
         IP group_end = 0;
         auto group_forced_to_stack = false;

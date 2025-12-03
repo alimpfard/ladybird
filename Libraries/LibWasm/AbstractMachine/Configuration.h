@@ -77,20 +77,6 @@ public:
     ALWAYS_INLINE Value const& local(LocalIndex index) const { return m_locals_base[index.value()]; }
     ALWAYS_INLINE Value& local(LocalIndex index) { return m_locals_base[index.value()]; }
 
-    void allocate_call_record(size_t size)
-    {
-        m_current_call_record.resize(size);
-        m_call_record_base = m_current_call_record.data();
-        // dbgln("allocate_call_record of size {} at {:p}", size, m_call_record_base);
-    }
-
-    Vector<Value, 8> take_call_record()
-    {
-        // dbgln("take_call_record of size {} from {:p}", m_current_call_record.size(), m_call_record_base);
-        m_call_record_base = nullptr;
-        return move(m_current_call_record);
-    }
-
     struct CallFrameHandle {
         explicit CallFrameHandle(Configuration& configuration)
             : configuration(configuration)
@@ -125,11 +111,6 @@ public:
         if (auto index = m_call_argument_freelist.find_first_index_if([&](auto& entry) { return entry.capacity() >= max_size; }); index.has_value()) {
             arguments = m_call_argument_freelist.take(*index);
             return;
-        } else if constexpr (mix == SourceAddressMix::Any) {
-            if (!(destination & ~(Dispatch::Stack - 1))) [[likely]] {
-                regs.data()[to_underlying(destination)] = value;
-                return;
-            }
         }
 
         arguments.ensure_capacity(max_size);
@@ -147,7 +128,7 @@ public:
     }
 
     template<SourceAddressMix mix>
-    void push_to_destination(Value value, Dispatch::RegisterOrStack destination)
+    ALWAYS_INLINE FLATTEN void push_to_destination(Value value, Dispatch::RegisterOrStack destination)
     {
         if constexpr (mix == SourceAddressMix::AllRegisters) {
             regs.data()[to_underlying(destination)] = value;
@@ -170,7 +151,7 @@ public:
     }
 
     template<SourceAddressMix mix>
-    Value& source_value(u8 index, Dispatch::RegisterOrStack const* sources)
+    ALWAYS_INLINE FLATTEN Value& source_value(u8 index, Dispatch::RegisterOrStack const* sources)
     {
         // Note: The last source in a dispatch *must* be equal to the destination for this to be valid.
         auto const source = sources[index];
@@ -191,7 +172,7 @@ public:
     }
 
     template<SourceAddressMix mix>
-    Value take_source(u8 index, Dispatch::RegisterOrStack const* sources)
+    ALWAYS_INLINE FLATTEN Value take_source(u8 index, Dispatch::RegisterOrStack const* sources)
     {
         auto const source = sources[index];
         if constexpr (mix == SourceAddressMix::AllRegisters) {
@@ -226,7 +207,6 @@ private:
     Store& m_store;
     Vector<Value, 64, FastLastAccess::Yes> m_value_stack;
     Vector<Label, 64> m_label_stack;
-    Vector<Value, 8> m_current_call_record;
     DoublyLinkedList<Frame, 512> m_frame_stack;
     Vector<Vector<Value, ArgumentsStaticSize>, 16, FastLastAccess::Yes> m_call_argument_freelist;
     size_t m_depth { 0 };

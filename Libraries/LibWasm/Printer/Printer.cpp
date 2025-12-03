@@ -1287,8 +1287,5 @@ HashMap<Wasm::OpCode, ByteString> Wasm::Names::instruction_names {
     { Instructions::synthetic_call_31, "synthetic:call.31" },
     { Instructions::synthetic_end_expression, "synthetic:expression.end" },
     { Instructions::synthetic_argument_get, "synthetic:argument.get" },
-    { Instructions::synthetic_allocate_call_record, "synthetic:allocate.call_record" },
-    { Instructions::synthetic_call_with_record0, "synthetic:call.with_record.0" },
-    { Instructions::synthetic_call_with_record1, "synthetic:call.with_record.1" },
 };
 HashMap<ByteString, Wasm::OpCode> Wasm::Names::instructions_by_name;

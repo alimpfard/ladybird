@@ -10,6 +10,13 @@ from typing import Literal
 from typing import Union
 from typing import Optional
 
+TEST_MODULES_TO_SKIP: set[str]
+
+
+with open(Path(__file__).parent / "wasm_unimplemented_tests.txt", "r") as f:
+    TEST_MODULES_TO_SKIP = set(x.strip() + ".wasm" for x in f.readlines())
+
+
 
 class ParseException(Exception):
     pass
