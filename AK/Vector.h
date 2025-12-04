@@ -482,8 +482,11 @@ public:
 
     void clear_with_capacity()
     {
-        for (size_t i = 0; i < m_size; ++i)
-            data()[i].~StorageType();
+
+        if constexpr (!Traits<StorageType>::is_trivial()) {
+            for (size_t i = 0; i < m_size; ++i)
+                data()[i].~StorageType();
+        }
         m_size = 0;
         if (m_capacity != 0)
             update_metadata();
