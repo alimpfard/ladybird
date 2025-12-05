@@ -2079,6 +2079,11 @@ VALIDATE_INSTRUCTION(block)
     for (auto& parameter : parameters)
         stack.append(parameter);
 
+    args.meta = Instruction::StructuredInstructionArgs::Meta {
+        .arity = block_type.results().size(),
+        .parameter_count = parameters.size(),
+    };
+
     return {};
 }
 
@@ -2095,6 +2100,11 @@ VALIDATE_INSTRUCTION(loop)
     m_max_frame_size = max(m_max_frame_size, m_frames.size());
     for (auto& parameter : parameters)
         stack.append(parameter);
+
+    args.meta = Instruction::StructuredInstructionArgs::Meta {
+        .arity = block_type.results().size(),
+        .parameter_count = parameters.size(),
+    };
 
     return {};
 }
@@ -2116,6 +2126,11 @@ VALIDATE_INSTRUCTION(if_)
     m_max_frame_size = max(m_max_frame_size, m_frames.size());
     for (auto& parameter : parameters)
         stack.append(parameter);
+
+    args.meta = Instruction::StructuredInstructionArgs::Meta {
+        .arity = block_type.results().size(),
+        .parameter_count = parameters.size(),
+    };
 
     return {};
 }

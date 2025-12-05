@@ -478,6 +478,12 @@ public:
         BlockType block_type;
         InstructionPointer end_ip; // 'end' instruction IP if there is no 'else'; otherwise IP of instruction after 'end'.
         Optional<InstructionPointer> else_ip;
+
+        struct Meta {
+            size_t arity;
+            size_t parameter_count;
+        };
+        mutable Optional<Meta> meta {};
     };
 
     struct TableBranchArgs {
