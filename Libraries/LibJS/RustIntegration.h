@@ -12,7 +12,7 @@
 #include <AK/Utf16FlyString.h>
 #include <LibGC/Ptr.h>
 #include <LibGC/Root.h>
-#include <LibJS/Forward.h>
+#include <LibJS/AST.h>
 #include <LibJS/ParserError.h>
 #include <LibJS/Runtime/AbstractOperations.h>
 #include <LibJS/Runtime/FunctionKind.h>
