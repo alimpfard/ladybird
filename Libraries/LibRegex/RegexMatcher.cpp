@@ -514,6 +514,468 @@ private:
     Node* m_last { nullptr };
 };
 
+ALWAYS_INLINE static size_t get_opcode_size(OpCodeId opcode_id, ByteCodeValueType const* data, size_t ip)
+{
+    switch (opcode_id) {
+    case OpCodeId::Exit:
+    case OpCodeId::FailForks:
+    case OpCodeId::PopSaved:
+    case OpCodeId::Save:
+    case OpCodeId::Restore:
+    case OpCodeId::IncStepBack:
+    case OpCodeId::CheckStepBack:
+    case OpCodeId::CheckSavedPosition:
+    case OpCodeId::CheckBegin:
+    case OpCodeId::CheckEnd:
+    case OpCodeId::RestoreModifiers:
+        return 1;
+    case OpCodeId::Jump:
+    case OpCodeId::ForkJump:
+    case OpCodeId::ForkStay:
+    case OpCodeId::ForkReplaceJump:
+    case OpCodeId::ForkReplaceStay:
+    case OpCodeId::GoBack:
+    case OpCodeId::SetStepBack:
+    case OpCodeId::SaveLeftCaptureGroup:
+    case OpCodeId::SaveRightCaptureGroup:
+    case OpCodeId::RSeekTo:
+    case OpCodeId::CheckBoundary:
+    case OpCodeId::ClearCaptureGroup:
+    case OpCodeId::FailIfEmpty:
+    case OpCodeId::ResetRepeat:
+    case OpCodeId::Checkpoint:
+    case OpCodeId::SaveModifiers:
+        return 2;
+    case OpCodeId::SaveRightNamedCaptureGroup:
+        return 3;
+    case OpCodeId::JumpNonEmpty:
+    case OpCodeId::ForkIf:
+    case OpCodeId::Repeat:
+        return 4;
+    case OpCodeId::Compare:
+        return 3 + data[ip + 2];
+    case OpCodeId::CompareSimple:
+        return 2 + data[ip + 1];
+    }
+    VERIFY_NOT_REACHED();
+}
+
+ALWAYS_INLINE static ExecutionResult execute_opcode(FlatByteCode const& bytecode, OpCodeId opcode_id, ByteCodeValueType const* data, size_t ip, MatchInput const& input, MatchState& state)
+{
+    switch (opcode_id) {
+    case OpCodeId::Exit:
+        if (state.string_position > input.view.length() || state.instruction_position >= bytecode.size())
+            return ExecutionResult::Succeeded;
+        return ExecutionResult::Failed;
+
+    case OpCodeId::Save:
+        save_string_position(input, state);
+        state.forks_since_last_save = 0;
+        return ExecutionResult::Continue;
+
+    case OpCodeId::Restore:
+        if (!restore_string_position(input, state))
+            return ExecutionResult::Failed;
+        return ExecutionResult::Continue;
+
+    case OpCodeId::GoBack: {
+        auto count = data[ip + 1];
+        if (count > state.string_position)
+            return ExecutionResult::Failed_ExecuteLowPrioForks;
+        reverse_string_position(state, input.view, count);
+        return ExecutionResult::Continue;
+    }
+
+    case OpCodeId::SetStepBack:
+        state.step_backs.append(static_cast<i64>(data[ip + 1]));
+        return ExecutionResult::Continue;
+
+    case OpCodeId::IncStepBack: {
+        if (state.step_backs.is_empty())
+            return ExecutionResult::Failed_ExecuteLowPrioForks;
+        size_t last_step_back = static_cast<size_t>(++state.step_backs.mutable_last());
+        if (last_step_back > state.string_position)
+            return ExecutionResult::Failed_ExecuteLowPrioForks;
+        reverse_string_position(state, input.view, last_step_back);
+        return ExecutionResult::Continue;
+    }
+
+    case OpCodeId::CheckStepBack:
+        if (state.step_backs.is_empty())
+            return ExecutionResult::Failed_ExecuteLowPrioForks;
+        if (input.saved_positions.is_empty())
+            return ExecutionResult::Failed_ExecuteLowPrioForks;
+        if (static_cast<size_t>(state.step_backs.last()) > input.saved_positions.last())
+            return ExecutionResult::Failed_ExecuteLowPrioForks;
+        state.string_position = input.saved_positions.last();
+        state.string_position_in_code_units = input.saved_code_unit_positions.last();
+        return ExecutionResult::Continue;
+
+    case OpCodeId::CheckSavedPosition:
+        if (input.saved_positions.is_empty())
+            return ExecutionResult::Failed_ExecuteLowPrioForks;
+        if (state.string_position != input.saved_positions.last())
+            return ExecutionResult::Failed_ExecuteLowPrioForks;
+        state.step_backs.take_last();
+        return ExecutionResult::Continue;
+
+    case OpCodeId::FailForks:
+        input.fail_counter += state.forks_since_last_save;
+        return ExecutionResult::Failed_ExecuteLowPrioForks;
+
+    case OpCodeId::PopSaved:
+        if (input.saved_positions.is_empty() || input.saved_code_unit_positions.is_empty())
+            return ExecutionResult::Failed_ExecuteLowPrioForks;
+        input.saved_positions.take_last();
+        input.saved_code_unit_positions.take_last();
+        return ExecutionResult::Failed_ExecuteLowPrioForks;
+
+    case OpCodeId::Jump:
+        state.instruction_position += static_cast<ssize_t>(data[ip + 1]);
+        return ExecutionResult::Continue;
+
+    case OpCodeId::ForkJump: {
+        auto offset = static_cast<ssize_t>(data[ip + 1]);
+        state.fork_at_position = state.instruction_position + 2 + offset;
+        state.forks_since_last_save++;
+        return ExecutionResult::Fork_PrioHigh;
+    }
+
+    case OpCodeId::ForkStay: {
+        auto offset = static_cast<ssize_t>(data[ip + 1]);
+        state.fork_at_position = state.instruction_position + 2 + offset;
+        state.forks_since_last_save++;
+        return ExecutionResult::Fork_PrioLow;
+    }
+
+    case OpCodeId::ForkReplaceJump: {
+        auto offset = static_cast<ssize_t>(data[ip + 1]);
+        state.fork_at_position = state.instruction_position + 2 + offset;
+        input.fork_to_replace = state.instruction_position;
+        state.forks_since_last_save++;
+        return ExecutionResult::Fork_PrioHigh;
+    }
+
+    case OpCodeId::ForkReplaceStay: {
+        auto offset = static_cast<ssize_t>(data[ip + 1]);
+        state.fork_at_position = state.instruction_position + 2 + offset;
+        input.fork_to_replace = state.instruction_position;
+        return ExecutionResult::Fork_PrioLow;
+    }
+
+    case OpCodeId::ForkIf: {
+        auto offset = static_cast<ssize_t>(data[ip + 1]);
+        auto form = static_cast<OpCodeId>(data[ip + 2]);
+        auto condition = static_cast<ForkIfCondition>(data[ip + 3]);
+        constexpr size_t forkif_size = 4;
+
+        bool do_fork = false;
+        switch (condition) {
+        case ForkIfCondition::AtStartOfLine:
+            do_fork = !input.in_the_middle_of_a_line;
+            break;
+        default:
+            VERIFY_NOT_REACHED();
+        }
+
+        switch (form) {
+        case OpCodeId::ForkJump:
+            if (do_fork) {
+                state.fork_at_position = state.instruction_position + forkif_size + offset;
+                state.forks_since_last_save++;
+                return ExecutionResult::Fork_PrioHigh;
+            }
+            return ExecutionResult::Continue;
+        case OpCodeId::ForkReplaceJump:
+            if (do_fork) {
+                state.fork_at_position = state.instruction_position + forkif_size + offset;
+                input.fork_to_replace = state.instruction_position;
+                state.forks_since_last_save++;
+                return ExecutionResult::Fork_PrioHigh;
+            }
+            return ExecutionResult::Continue;
+        case OpCodeId::ForkStay:
+            if (do_fork) {
+                state.fork_at_position = state.instruction_position + forkif_size + offset;
+                state.forks_since_last_save++;
+                return ExecutionResult::Fork_PrioLow;
+            }
+            state.instruction_position += offset;
+            return ExecutionResult::Continue;
+        case OpCodeId::ForkReplaceStay:
+            if (do_fork) {
+                state.fork_at_position = state.instruction_position + forkif_size + offset;
+                input.fork_to_replace = state.instruction_position;
+                return ExecutionResult::Fork_PrioLow;
+            }
+            state.instruction_position += offset;
+            return ExecutionResult::Continue;
+        default:
+            VERIFY_NOT_REACHED();
+        }
+    }
+
+    case OpCodeId::CheckBegin: {
+        auto is_at_line_boundary = [&] {
+            if (state.string_position == 0)
+                return true;
+            if (state.current_options.has_flag_set(AllFlags::Multiline) && state.current_options.has_flag_set(AllFlags::Internal_ConsiderNewline)) {
+                auto ch = input.view.substring_view(state.string_position - 1, 1).code_point_at(0);
+                return ch == '\r' || ch == '\n' || ch == LineSeparator || ch == ParagraphSeparator;
+            }
+            return false;
+        }();
+        if (is_at_line_boundary && (state.current_options & AllFlags::MatchNotBeginOfLine))
+            return ExecutionResult::Failed_ExecuteLowPrioForks;
+        if ((is_at_line_boundary && !(state.current_options & AllFlags::MatchNotBeginOfLine))
+            || (!is_at_line_boundary && (state.current_options & AllFlags::MatchNotBeginOfLine))
+            || (is_at_line_boundary && (state.current_options & AllFlags::Global)))
+            return ExecutionResult::Continue;
+        return ExecutionResult::Failed_ExecuteLowPrioForks;
+    }
+
+    case OpCodeId::CheckEnd: {
+        auto is_at_line_boundary = [&] {
+            if (state.string_position == input.view.length())
+                return true;
+            if (state.current_options.has_flag_set(AllFlags::Multiline) && state.current_options.has_flag_set(AllFlags::Internal_ConsiderNewline)) {
+                auto ch = input.view.substring_view(state.string_position, 1).code_point_at(0);
+                return ch == '\r' || ch == '\n' || ch == LineSeparator || ch == ParagraphSeparator;
+            }
+            return false;
+        }();
+        if (is_at_line_boundary && (state.current_options & AllFlags::MatchNotEndOfLine))
+            return ExecutionResult::Failed_ExecuteLowPrioForks;
+        if ((is_at_line_boundary && !(state.current_options & AllFlags::MatchNotEndOfLine))
+            || (!is_at_line_boundary && (state.current_options & AllFlags::MatchNotEndOfLine || state.current_options & AllFlags::MatchNotBeginOfLine)))
+            return ExecutionResult::Continue;
+        return ExecutionResult::Failed_ExecuteLowPrioForks;
+    }
+
+    case OpCodeId::CheckBoundary: {
+        auto type = static_cast<BoundaryCheckType>(data[ip + 1]);
+        auto isword = [&](auto ch) {
+            return is_word_character(ch, state.current_options & AllFlags::Insensitive, input.view.unicode());
+        };
+        auto at_word_boundary = [&] {
+            if (state.string_position == input.view.length())
+                return (state.string_position > 0 && isword(input.view.code_point_at(state.string_position_in_code_units - 1)));
+            if (state.string_position == 0)
+                return isword(input.view.code_point_at(0));
+            return !!(isword(input.view.code_point_at(state.string_position_in_code_units)) ^ isword(input.view.code_point_at(state.string_position_in_code_units - 1)));
+        };
+        switch (type) {
+        case BoundaryCheckType::Word:
+            return at_word_boundary() ? ExecutionResult::Continue : ExecutionResult::Failed_ExecuteLowPrioForks;
+        case BoundaryCheckType::NonWord:
+            return !at_word_boundary() ? ExecutionResult::Continue : ExecutionResult::Failed_ExecuteLowPrioForks;
+        }
+        VERIFY_NOT_REACHED();
+    }
+
+    case OpCodeId::ClearCaptureGroup: {
+        auto id = data[ip + 1];
+        if (input.match_index < state.capture_group_matches_size()) {
+            auto group = state.mutable_capture_group_matches(input.match_index);
+            group[id - 1].reset();
+        }
+        return ExecutionResult::Continue;
+    }
+
+    case OpCodeId::SaveLeftCaptureGroup: {
+        auto id = data[ip + 1];
+        if (input.match_index >= state.capture_group_matches_size()) {
+            state.flat_capture_group_matches.ensure_capacity((input.match_index + 1) * state.capture_group_count);
+            for (size_t i = state.capture_group_matches_size(); i <= input.match_index; ++i)
+                for (size_t j = 0; j < state.capture_group_count; ++j)
+                    state.flat_capture_group_matches.append({});
+        }
+        state.mutable_capture_group_matches(input.match_index).at(id - 1).left_column = state.string_position;
+        return ExecutionResult::Continue;
+    }
+
+    case OpCodeId::SaveRightCaptureGroup: {
+        auto id = data[ip + 1];
+        auto& match = state.capture_group_matches(input.match_index).at(id - 1);
+        auto start_position = match.left_column;
+        if (state.string_position < start_position) {
+            return ExecutionResult::Failed_ExecuteLowPrioForks;
+        }
+        auto length = state.string_position - start_position;
+        if (start_position < match.column && state.step_backs.is_empty())
+            return ExecutionResult::Continue;
+        VERIFY(start_position + length <= input.view.length_in_code_units());
+        auto captured_text = input.view.substring_view(start_position, length);
+        auto& existing_capture = state.mutable_capture_group_matches(input.match_index).at(id - 1);
+        if (length == 0 && !existing_capture.view.is_null() && existing_capture.view.length() > 0) {
+            auto existing_end_position = existing_capture.global_offset - input.global_offset + existing_capture.view.length();
+            if (existing_end_position == state.string_position)
+                return ExecutionResult::Continue;
+        }
+        state.mutable_capture_group_matches(input.match_index).at(id - 1) = { captured_text, input.line, start_position, input.global_offset + start_position };
+        return ExecutionResult::Continue;
+    }
+
+    case OpCodeId::SaveRightNamedCaptureGroup: {
+        auto name_string_table_index = data[ip + 1];
+        auto id = data[ip + 2];
+        auto& match = state.capture_group_matches(input.match_index).at(id - 1);
+        auto start_position = match.left_column;
+        if (state.string_position < start_position)
+            return ExecutionResult::Failed_ExecuteLowPrioForks;
+        auto length = state.string_position - start_position;
+        if (start_position < match.column)
+            return ExecutionResult::Continue;
+        VERIFY(start_position + length <= input.view.length_in_code_units());
+        auto view = input.view.substring_view(start_position, length);
+        auto& existing_capture = state.mutable_capture_group_matches(input.match_index).at(id - 1);
+        if (length == 0 && !existing_capture.view.is_null() && existing_capture.view.length() > 0) {
+            auto existing_end_position = existing_capture.global_offset - input.global_offset + existing_capture.view.length();
+            if (existing_end_position == state.string_position)
+                return ExecutionResult::Continue;
+        }
+        state.mutable_capture_group_matches(input.match_index).at(id - 1) = { view, name_string_table_index, input.line, start_position, input.global_offset + start_position };
+        return ExecutionResult::Continue;
+    }
+
+    case OpCodeId::RSeekTo: {
+        auto ch = data[ip + 1];
+        size_t search_from;
+        size_t search_from_in_code_units;
+        auto line_limited = false;
+
+        if (state.string_position_before_rseek == NumericLimits<size_t>::max()) {
+            state.string_position_before_rseek = state.string_position;
+            state.string_position_in_code_units_before_rseek = state.string_position_in_code_units;
+            if (!input.regex_options.has_flag_set(AllFlags::SingleLine)) {
+                auto end_of_line = input.view.find_end_of_line(state.string_position, state.string_position_in_code_units);
+                search_from = end_of_line.code_point_index + 1;
+                search_from_in_code_units = end_of_line.code_unit_index + 1;
+                line_limited = true;
+            } else {
+                search_from = NumericLimits<size_t>::max();
+                search_from_in_code_units = NumericLimits<size_t>::max();
+            }
+        } else {
+            search_from = state.string_position;
+            search_from_in_code_units = state.string_position_in_code_units;
+        }
+        auto next = input.view.find_index_of_previous(ch, search_from, search_from_in_code_units);
+        if (!next.has_value() || next->code_unit_index < state.string_position_in_code_units_before_rseek) {
+            if (line_limited)
+                return ExecutionResult::Failed_ExecuteLowPrioForks;
+            return ExecutionResult::Failed_ExecuteLowPrioForksButNoFurtherPossibleMatches;
+        }
+        state.string_position = next->code_point_index;
+        state.string_position_in_code_units = next->code_unit_index;
+        return ExecutionResult::Continue;
+    }
+
+    case OpCodeId::FailIfEmpty: {
+        auto checkpoint_id = data[ip + 1];
+        u64 current_position = state.string_position + 1;
+        auto checkpoint_position = state.checkpoints.get(checkpoint_id).value_or(current_position);
+        if (checkpoint_position == current_position)
+            return ExecutionResult::Failed_ExecuteLowPrioForks;
+        return ExecutionResult::Continue;
+    }
+
+    case OpCodeId::Repeat: {
+        auto offset = data[ip + 1];
+        auto count = data[ip + 2];
+        auto id = data[ip + 3];
+        VERIFY(count > 0);
+        if (id >= state.repetition_marks.size())
+            state.repetition_marks.resize(id + 1);
+        auto& repetition_mark = state.repetition_marks.mutable_at(id);
+        if (repetition_mark == count - 1) {
+            repetition_mark = 0;
+        } else {
+            state.instruction_position -= offset + 4;
+            ++repetition_mark;
+        }
+        return ExecutionResult::Continue;
+    }
+
+    case OpCodeId::ResetRepeat: {
+        auto id = data[ip + 1];
+        if (id >= state.repetition_marks.size())
+            state.repetition_marks.resize(id + 1);
+        state.repetition_marks.mutable_at(id) = 0;
+        return ExecutionResult::Continue;
+    }
+
+    case OpCodeId::Checkpoint: {
+        auto id = data[ip + 1];
+        if (id >= state.checkpoints.size())
+            state.checkpoints.resize(id + 1);
+        state.checkpoints.mutable_at(id) = state.string_position + 1;
+        return ExecutionResult::Continue;
+    }
+
+    case OpCodeId::JumpNonEmpty: {
+        auto offset = static_cast<ssize_t>(data[ip + 1]);
+        auto checkpoint_id = data[ip + 2];
+        auto form = static_cast<OpCodeId>(data[ip + 3]);
+        constexpr size_t jne_size = 4;
+
+        u64 current_position = state.string_position;
+        auto checkpoint_position = state.checkpoints.get(checkpoint_id).value_or(0);
+
+        if (checkpoint_position != 0 && checkpoint_position != current_position + 1) {
+            if (form == OpCodeId::Jump) {
+                state.instruction_position += offset;
+                return ExecutionResult::Continue;
+            }
+            state.fork_at_position = state.instruction_position + jne_size + offset;
+            if (form == OpCodeId::ForkJump) {
+                state.forks_since_last_save++;
+                return ExecutionResult::Fork_PrioHigh;
+            }
+            if (form == OpCodeId::ForkStay) {
+                state.forks_since_last_save++;
+                return ExecutionResult::Fork_PrioLow;
+            }
+            if (form == OpCodeId::ForkReplaceStay) {
+                input.fork_to_replace = state.instruction_position;
+                return ExecutionResult::Fork_PrioLow;
+            }
+            if (form == OpCodeId::ForkReplaceJump) {
+                input.fork_to_replace = state.instruction_position;
+                return ExecutionResult::Fork_PrioHigh;
+            }
+        }
+        if (form == OpCodeId::Jump && state.string_position < input.view.length())
+            return ExecutionResult::Failed_ExecuteLowPrioForks;
+        return ExecutionResult::Continue;
+    }
+
+    case OpCodeId::SaveModifiers: {
+        auto new_modifiers = data[ip + 1];
+        auto current_flags = to_underlying(state.current_options.value());
+        state.modifier_stack.append(current_flags);
+        state.current_options = AllOptions { static_cast<AllFlags>(new_modifiers) };
+        return ExecutionResult::Continue;
+    }
+
+    case OpCodeId::RestoreModifiers: {
+        if (state.modifier_stack.is_empty())
+            return ExecutionResult::Failed;
+        auto previous_modifiers = state.modifier_stack.take_last();
+        state.current_options = AllOptions { static_cast<AllFlags>(previous_modifiers) };
+        return ExecutionResult::Continue;
+    }
+
+    case OpCodeId::Compare:
+        return CompareInternals<FlatByteCode, false>::execute_impl(bytecode, data, ip, input, state);
+
+    case OpCodeId::CompareSimple:
+        return CompareInternals<FlatByteCode, true>::execute_impl(bytecode, data, ip, input, state);
+    }
+
+    VERIFY_NOT_REACHED();
+}
+
 template<class Parser>
 Matcher<Parser>::ExecuteResult Matcher<Parser>::execute(MatchInput const& input, MatchState& state, size_t& operations) const
 {
@@ -565,13 +1027,20 @@ Matcher<Parser>::ExecuteResult Matcher<Parser>::execute(MatchInput const& input,
 #endif
 
     auto& bytecode = m_pattern->parser_result.bytecode.template get<FlatByteCode>();
+    auto const* data = bytecode.flat_data().data();
+    auto bytecode_size = bytecode.size();
 
     for (;;) {
-        auto& opcode = bytecode.get_opcode(state);
-        auto const opcode_size = opcode.size();
+        auto ip = state.instruction_position;
+        OpCodeId opcode_id = (ip < bytecode_size)
+            ? static_cast<OpCodeId>(data[ip])
+            : OpCodeId::Exit;
+
+        auto const opcode_size = get_opcode_size(opcode_id, data, ip);
         ++operations;
 
 #if REGEX_DEBUG
+        auto& opcode = bytecode.get_opcode(state);
         s_regex_dbg.print_opcode("VM", opcode, state, recursion_level, false);
 #endif
 
@@ -580,7 +1049,7 @@ Matcher<Parser>::ExecuteResult Matcher<Parser>::execute(MatchInput const& input,
             --input.fail_counter;
             result = ExecutionResult::Failed_ExecuteLowPrioForks;
         } else {
-            result = opcode.execute(input, state);
+            result = execute_opcode(bytecode, opcode_id, data, ip, input, state);
         }
 
 #if REGEX_DEBUG

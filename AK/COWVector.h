@@ -159,6 +159,25 @@ public:
         return m_detail->m_members.last();
     }
 
+    T& mutable_last()
+    {
+        copy();
+        return m_detail->m_members.last();
+    }
+
+    T take_last()
+    {
+        copy();
+        return m_detail->m_members.take_last();
+    }
+
+    Optional<T const&> get(size_t index) const
+    {
+        if (index >= m_detail->m_members.size())
+            return {};
+        return m_detail->m_members[index];
+    }
+
     auto begin() const { return m_detail->m_members.begin(); }
     auto end() const { return m_detail->m_members.end(); }
 
