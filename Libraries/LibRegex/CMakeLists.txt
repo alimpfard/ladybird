@@ -2,6 +2,7 @@ set(SOURCES
     RegexByteCode.cpp
     RegexLexer.cpp
     RegexMatcher.cpp
+    RegexNFA.cpp
     RegexOptimizer.cpp
     RegexParser.cpp
 )

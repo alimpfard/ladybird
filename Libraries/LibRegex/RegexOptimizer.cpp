@@ -362,6 +362,8 @@ template<typename Parser>
 void Regex<Parser>::run_optimization_passes()
 {
     ScopeGuard switch_to_flat = [&] {
+        if (parser_result.optimization_data.nfa_graph.has_value())
+            return; // We've already switched to flat bytecode to build the NFA, no need to switch again.
         parser_result.bytecode = FlatByteCode::from(move(parser_result.bytecode.template get<ByteCode>()));
     };
     rewrite_with_useless_jumps_removed();
@@ -375,6 +377,13 @@ void Regex<Parser>::run_optimization_passes()
     // e.g. a*b -> (ATOMIC a*)b
     blocks = split_basic_blocks_for_atomic_groups<Parser>(parser_result.bytecode.get<ByteCode>());
     attempt_rewrite_loops_as_atomic_groups(blocks);
+
+    // If we can build an NFA for this pattern, do it before doing more complex rewrites that might make it impossible to build an NFA later.
+    if (qualifies_for_nfa_execution(parser_result.bytecode.template get<ByteCode>())) {
+        parser_result.bytecode = FlatByteCode::from(move(parser_result.bytecode.template get<ByteCode>()));
+        parser_result.optimization_data.nfa_graph = build_nfa(parser_result.bytecode.template get<FlatByteCode>());
+        return;
+    }
 
     // Join adjacent compares that only match single characters into a single compare that matches a string.
     blocks = split_basic_blocks(parser_result.bytecode.get<ByteCode>());

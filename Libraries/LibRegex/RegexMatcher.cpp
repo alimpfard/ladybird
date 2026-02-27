@@ -1020,6 +1020,14 @@ Matcher<Parser>::ExecuteResult Matcher<Parser>::execute(MatchInput const& input,
         }
     }
 
+    if (auto const& nfa = m_pattern->parser_result.optimization_data.nfa_graph; nfa.has_value()) {
+        auto& bytecode = m_pattern->parser_result.bytecode.template get<FlatByteCode>();
+        auto result = execute_nfa(*nfa, bytecode, input, state);
+        if (result == NFAExecuteResult::Matched)
+            return ExecuteResult::Matched;
+        return ExecuteResult::DidNotMatch;
+    }
+
     BumpAllocatedLinkedList<MatchState> states_to_try_next;
     HashTable<u64, IdentityHashTraits<u64>> seen_state_hashes;
 #if REGEX_DEBUG

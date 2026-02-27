@@ -9,6 +9,7 @@
 #include "RegexByteCode.h"
 #include "RegexError.h"
 #include "RegexLexer.h"
+#include "RegexNFA.h"
 #include "RegexOptions.h"
 
 #include <AK/FlyString.h>
@@ -69,6 +70,7 @@ public:
             Vector<CharRange> starting_ranges;
             Vector<CharRange> starting_ranges_insensitive;
             bool only_start_of_line = false;
+            Optional<NFAGraph> nfa_graph;
         } optimization_data {};
     };
 
