@@ -26,8 +26,129 @@
 #include <LibWasm/Opcode.h>
 #include <LibWasm/Printer/Printer.h>
 #include <LibWasm/Types.h>
+#include <pthread.h>
+#include <setjmp.h>
+#include <signal.h>
+#include <unistd.h>
 
 using namespace AK::SIMD;
+
+namespace {
+
+struct CompiledFaultRecoveryContext {
+    Wasm::BytecodeInterpreter* interpreter { nullptr };
+    Wasm::Configuration* configuration { nullptr };
+    CompiledFaultRecoveryContext* previous { nullptr };
+    sigjmp_buf jump_buffer;
+    bool faulted { false };
+};
+
+thread_local CompiledFaultRecoveryContext* s_compiled_fault_recovery = nullptr;
+thread_local void const* volatile s_last_compiled_entry = nullptr;
+static struct sigaction s_old_sigsegv;
+static struct sigaction s_old_sigbus;
+static pthread_once_t s_fault_handler_once = PTHREAD_ONCE_INIT;
+
+static bool is_wasm_memory_fault(Wasm::Configuration& configuration, void* address)
+{
+    auto const& memories = configuration.frame().module().memories();
+    for (auto const& memory_address : memories) {
+        auto* memory = configuration.store().unsafe_get(memory_address);
+        if (memory && memory->contains_virtual_address(address))
+            return true;
+    }
+    return false;
+}
+
+[[noreturn]] static void chain_fault_signal(int signal, siginfo_t* info, void* context, struct sigaction const& previous_action)
+{
+    if (previous_action.sa_flags & SA_SIGINFO) {
+        previous_action.sa_sigaction(signal, info, context);
+        __builtin_trap();
+    }
+
+    if (previous_action.sa_handler == SIG_IGN)
+        _exit(128 + signal);
+
+    if (previous_action.sa_handler != SIG_DFL) {
+        previous_action.sa_handler(signal);
+        __builtin_trap();
+    }
+
+    struct sigaction default_action {};
+    default_action.sa_handler = SIG_DFL;
+    sigemptyset(&default_action.sa_mask);
+    sigaction(signal, &default_action, nullptr);
+    raise(signal);
+    _exit(128 + signal);
+}
+
+static void compiled_fault_signal_handler(int signal, siginfo_t* info, void* context)
+{
+    if (auto* recovery = s_compiled_fault_recovery; recovery && info && is_wasm_memory_fault(*recovery->configuration, info->si_addr)) {
+        recovery->faulted = true;
+        siglongjmp(recovery->jump_buffer, 1);
+    }
+
+    if (s_last_compiled_entry) {
+        char buf[128];
+        int len = __builtin_snprintf(buf, sizeof(buf), "cranelift: fault sig=%d addr=%p entry=%p\n",
+            signal, info ? info->si_addr : nullptr, (void const*)s_last_compiled_entry);
+        (void)write(STDERR_FILENO, buf, len > 0 ? len : 0);
+    }
+    if (signal == SIGSEGV)
+        chain_fault_signal(signal, info, context, s_old_sigsegv);
+    chain_fault_signal(signal, info, context, s_old_sigbus);
+}
+
+static void install_compiled_fault_handlers()
+{
+    struct sigaction action {};
+    action.sa_sigaction = compiled_fault_signal_handler;
+    action.sa_flags = SA_SIGINFO;
+    sigemptyset(&action.sa_mask);
+    sigaction(SIGSEGV, &action, &s_old_sigsegv);
+    sigaction(SIGBUS, &action, &s_old_sigbus);
+}
+
+class ScopedCompiledFaultRecovery {
+public:
+    ScopedCompiledFaultRecovery(Wasm::BytecodeInterpreter& interpreter, Wasm::Configuration& configuration)
+    {
+        m_context.interpreter = &interpreter;
+        m_context.configuration = &configuration;
+        m_context.previous = s_compiled_fault_recovery;
+    }
+
+    ~ScopedCompiledFaultRecovery()
+    {
+        if (m_armed)
+            s_compiled_fault_recovery = m_context.previous;
+    }
+
+    bool arm()
+    {
+        pthread_once(&s_fault_handler_once, install_compiled_fault_handlers);
+        s_compiled_fault_recovery = &m_context;
+        m_armed = true;
+        if (sigsetjmp(m_context.jump_buffer, 1) != 0) {
+            // Disarm immediately after longjmp return; the compiled code may
+            // have corrupted our stack frame, so the destructor must be a no-op.
+            s_compiled_fault_recovery = m_context.previous;
+            m_armed = false;
+            return false;
+        }
+        return true;
+    }
+
+    bool faulted() const { return m_context.faulted; }
+
+private:
+    CompiledFaultRecoveryContext m_context;
+    bool m_armed { false };
+};
+
+}
 
 #ifdef AK_COMPILER_CLANG
 #    define TAILCALL [[clang::musttail]]
@@ -102,26 +223,34 @@ struct ConvertToRaw<double> {
         out_count = outs;                  \
         break;
 
+static constexpr u64 trace_missing = NumericLimits<u64>::max();
+
 #define LOG_INSN_UNGUARDED                                                                    \
     do {                                                                                      \
         LOAD_ADDRESSES();                                                                     \
-        warnln("[{:04}]", short_ip.current_ip_value);                                         \
         ssize_t in_count = 0;                                                                 \
         ssize_t out_count = 0;                                                                \
         switch (instruction->opcode().value()) {                                              \
             ENUMERATE_WASM_OPCODES(XM)                                                        \
         }                                                                                     \
+        u64 src_lows[3] { trace_missing, trace_missing, trace_missing };                      \
+        u64 src_highs[3] { trace_missing, trace_missing, trace_missing };                     \
         ScopedValueRollback stack { configuration.value_stack() };                            \
         for (ssize_t i = 0; i < in_count; ++i) {                                              \
             auto value = configuration.take_source<source_address_mix>(i, addresses.sources); \
-            warnln("       arg{} [{}]: {}", i, regname(addresses.sources[i]), value.value()); \
+            src_lows[i] = value.value().low();                                                \
+            src_highs[i] = value.value().high();                                              \
         }                                                                                     \
-        if (out_count == 1) {                                                                 \
-            auto dest = addresses.destination;                                                \
-            warnln("       dest [{}]", regname(dest));                                        \
-        } else if (out_count > 1) {                                                           \
-            warnln("       dest [multiple outputs]");                                         \
-        }                                                                                     \
+        warnln("WASMTRACE ip={} op={} in={} out={} depth={} stack={} dst={} s0={} s0l={:x} s0h={:x} s1={} s1l={:x} s1h={:x} s2={} s2l={:x} s2h={:x} r0l={:x} r0h={:x} r1l={:x} r1h={:x} r2l={:x} r2h={:x} r3l={:x} r3h={:x}", \
+            short_ip.current_ip_value, instruction_name(instruction->opcode()), in_count, out_count, configuration.depth(), configuration.value_stack().size(), \
+            to_underlying(addresses.destination),                                             \
+            to_underlying(addresses.sources[0]), src_lows[0], src_highs[0],                   \
+            to_underlying(addresses.sources[1]), src_lows[1], src_highs[1],                   \
+            to_underlying(addresses.sources[2]), src_lows[2], src_highs[2],                   \
+            configuration.regs[0].value().low(), configuration.regs[0].value().high(),       \
+            configuration.regs[1].value().low(), configuration.regs[1].value().high(),       \
+            configuration.regs[2].value().low(), configuration.regs[2].value().high(),       \
+            configuration.regs[3].value().low(), configuration.regs[3].value().high());      \
     } while (0)
 
 #define LOG_INSN                          \
@@ -137,6 +266,14 @@ void BytecodeInterpreter::interpret(Configuration& configuration)
 {
     m_trap = Empty {};
     auto& expression = configuration.frame().expression();
+    Optional<ScopedCompiledFaultRecovery> compiled_fault_recovery;
+    if (expression.compiled_instructions.cranelift_compiled && !s_compiled_fault_recovery) {
+        compiled_fault_recovery.emplace(*this, configuration);
+        if (!compiled_fault_recovery->arm()) {
+            m_trap = Trap::from_string("Memory access out of bounds");
+            return;
+        }
+    }
     auto const should_limit_instruction_count = configuration.should_limit_instruction_count();
     if (!expression.compiled_instructions.dispatches.is_empty()) {
         if (expression.compiled_instructions.direct) {
@@ -173,6 +310,22 @@ static_assert(sizeof(ShortenedIP) == sizeof(u32));
 #define DECOMPOSE_PARAMS(t, n) [[maybe_unused]] t n
 #define DECOMPOSE_PARAMS_NAME_ONLY(t, n) n
 #define DECOMPOSE_PARAMS_TYPE_ONLY(t, ...) t
+
+Outcome BytecodeInterpreter::run_compiled_function_direct(Configuration& configuration)
+{
+    m_trap = Empty {};
+    auto& expression = configuration.frame().expression();
+    VERIFY(expression.compiled_instructions.direct);
+    auto const* cc = expression.compiled_instructions.dispatches.data();
+    auto const* addresses_ptr = expression.compiled_instructions.src_dst_mappings.data();
+    ShortenedIP short_ip { .current_ip_value = 0 };
+    auto const instruction = cc[0].instruction;
+    auto const handler = bit_cast<Outcome (*)(HANDLER_PARAMS(DECOMPOSE_PARAMS_TYPE_ONLY))>(cc[0].handler_ptr);
+    if (expression.compiled_instructions.cranelift_compiled)
+        s_last_compiled_entry = bit_cast<void const*>(cc[0].handler_ptr);
+    return handler(*this, configuration, instruction, short_ip, cc, addresses_ptr);
+}
+
 #define HANDLE_INSTRUCTION(name, ...)                                                              \
     template<>                                                                                     \
     struct InstructionHandler<Instructions::name.value()> {                                        \
@@ -1649,6 +1802,13 @@ HANDLE_INSTRUCTION(synthetic_local_seti64_const)
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
+// Continuation data for br_table with >8 labels. Only consumed by the
+// Cranelift compiler; the bytecode interpreter never encounters this.
+HANDLE_INSTRUCTION(synthetic_br_table_cont)
+{
+    VERIFY_NOT_REACHED();
+}
+
 HANDLE_INSTRUCTION(synthetic_call_00)
 {
     LOG_INSN;
@@ -2006,7 +2166,8 @@ HANDLE_INSTRUCTION(call_indirect)
     auto table_address = configuration.frame().module().tables()[args.table.value()];
     auto table_instance = configuration.store().get(table_address);
     // bounds checked by verifier.
-    auto index = configuration.take_source<source_address_mix>(0, addresses.sources).template to<i32>();
+    auto src_value = configuration.take_source<source_address_mix>(0, addresses.sources);
+    auto index = src_value.template to<i32>();
     TRAP_IN_LOOP_IF_NOT(index >= 0);
     TRAP_IN_LOOP_IF_NOT(static_cast<size_t>(index) < table_instance->elements().size());
     auto& element = table_instance->elements()[index];
@@ -5096,6 +5257,11 @@ HANDLE_INSTRUCTION(try_table)
     return Outcome::Return;
 }
 
+bool BytecodeInterpreter::trap_if_insufficient_native_stack_space(size_t minimum_native_stack_space_to_keep_free)
+{
+    return trap_if_not(m_stack_info.size_free() >= minimum_native_stack_space_to_keep_free, Constants::stack_exhaustion_message);
+}
+
 template<u64 opcode, bool HasDynamicInsnLimit, typename Continue, SourceAddressMix mix, typename... Args>
 constexpr static auto handle_instruction(Args&&... a)
 {
@@ -5223,7 +5389,6 @@ bool BytecodeInterpreter::load_and_push_mxn(Configuration& configuration, Instru
     dbgln_if(WASM_TRACE_DEBUG, "vec-load({} : {}) -> stack", instance_address, M * N / 8);
     if (instance_address + M * N / 8 > memory->size()) {
         m_trap = Trap::from_string("Memory access out of bounds");
-        dbgln("LibWasm: load_and_push_mxn - Memory access out of bounds (expected {} to be less than or equal to {})", instance_address + M * N / 8, memory->size());
         return true;
     }
     auto slice = memory->data().bytes().slice(instance_address, M * N / 8);
@@ -5254,7 +5419,6 @@ bool BytecodeInterpreter::load_and_push_lane_n(Configuration& configuration, Ins
     dbgln_if(WASM_TRACE_DEBUG, "load-lane({} : {}, lane {}) -> stack", instance_address, N / 8, memarg_and_lane.lane);
     if (instance_address + N / 8 > memory->size()) {
         m_trap = Trap::from_string("Memory access out of bounds");
-        dbgln("LibWasm: load_and_push_lane_n - Memory access out of bounds (expected {} to be less than or equal to {})", instance_address + N / 8, memory->size());
         return true;
     }
     auto slice = memory->data().bytes().slice(instance_address, N / 8);
@@ -5277,7 +5441,6 @@ bool BytecodeInterpreter::load_and_push_zero_n(Configuration& configuration, Ins
     dbgln_if(WASM_TRACE_DEBUG, "load-zero({} : {}) -> stack", instance_address, N / 8);
     if (instance_address + N / 8 > memory->size()) {
         m_trap = Trap::from_string("Memory access out of bounds");
-        dbgln("LibWasm: load_and_push_zero_n - Memory access out of bounds (expected {} to be less than or equal to {})", instance_address + N / 8, memory->size());
         return true;
     }
     auto slice = memory->data().bytes().slice(instance_address, N / 8);
@@ -5300,7 +5463,6 @@ bool BytecodeInterpreter::load_and_push_m_splat(Configuration& configuration, In
     dbgln_if(WASM_TRACE_DEBUG, "vec-splat({} : {}) -> stack", instance_address, M / 8);
     if (instance_address + M / 8 > memory->size()) {
         m_trap = Trap::from_string("Memory access out of bounds");
-        dbgln("LibWasm: load_and_push_m_splat - Memory access out of bounds (expected {} to be less than or equal to {})", instance_address + M / 8, memory->size());
         return true;
     }
     auto slice = memory->data().bytes().slice(instance_address, M / 8);
@@ -5534,7 +5696,6 @@ bool BytecodeInterpreter::store_to_memory(MemoryInstance& memory, u64 address, T
     addition += data_size;
     if (addition.has_overflow() || addition.value() > memory.size()) [[unlikely]] {
         m_trap = Trap::from_string("Memory access out of bounds");
-        dbgln("LibWasm: store_to_memory - Memory access out of bounds (expected 0 <= {} and {} <= {})", address, address + data_size, memory.size());
         return true;
     }
 
@@ -5574,9 +5735,13 @@ CompiledInstructions try_compile_instructions(Expression const& expression, Span
 {
     CompiledInstructions result;
 
-    result.dispatches.ensure_capacity(expression.instructions().size());
-    result.src_dst_mappings.ensure_capacity(expression.instructions().size());
-    result.extra_instruction_storage.ensure_capacity(expression.instructions().size());
+    auto instruction_count = expression.instructions().size();
+    result.dispatches.ensure_capacity(instruction_count);
+    result.src_dst_mappings.ensure_capacity(instruction_count);
+    // We keep raw pointers into this storage in dispatch entries across several
+    // later rewrite passes, so it must not reallocate while we append synthetic
+    // instructions.
+    result.extra_instruction_storage.ensure_capacity(max<size_t>(instruction_count * 8, 32));
 
     i32 i32_const_value { 0 };
     i64 i64_const_value { 0 };
@@ -6662,36 +6827,6 @@ CompiledInstructions try_compile_instructions(Expression const& expression, Span
     }
 
     result.max_call_arg_count = max_call_arg_count;
-
-    // Swap out local.get (0..7) with local.get_[0..7] to avoid one extra load when possible
-    for (size_t i = 0; i < result.dispatches.size(); ++i) {
-        auto& dispatch = result.dispatches[i];
-        if (dispatch.instruction->opcode() == Instructions::local_get) {
-            auto local_index = dispatch.instruction->local_index().value();
-            if (local_index <= 7) {
-                result.extra_instruction_storage.unchecked_append(Instruction(
-                    static_cast<OpCode>(Instructions::synthetic_local_get_0.value() + local_index),
-                    dispatch.instruction->local_index()));
-                result.dispatches[i].instruction = &result.extra_instruction_storage.unsafe_last();
-                result.dispatches[i].instruction_opcode = result.dispatches[i].instruction->opcode();
-            }
-        }
-    }
-
-    // Swap out local.set (0..7) with local.set_[0..7] to avoid one extra load when possible
-    for (size_t i = 0; i < result.dispatches.size(); ++i) {
-        auto& dispatch = result.dispatches[i];
-        if (dispatch.instruction->opcode() == Instructions::local_set) {
-            auto local_index = dispatch.instruction->local_index().value();
-            if (local_index <= 7) {
-                result.extra_instruction_storage.unchecked_append(Instruction(
-                    static_cast<OpCode>(Instructions::synthetic_local_set_0.value() + local_index),
-                    dispatch.instruction->local_index()));
-                result.dispatches[i].instruction = &result.extra_instruction_storage.unsafe_last();
-                result.dispatches[i].instruction_opcode = result.dispatches[i].instruction->opcode();
-            }
-        }
-    }
 
     // Swap out br(.if) with synthetic:br(.if).nostack if !args.has_stack_adjustment.
     for (size_t i = 0; i < result.dispatches.size(); ++i) {

@@ -1,0 +1,23 @@
+[package]
+name = "libwasm_cranelift"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["rlib"]
+
+# After changing dependencies, regenerate the Flatpak sources:
+#   python3 Meta/CMake/flatpak/generate-cargo-sources.py
+[dependencies]
+cranelift-codegen = "0.116"
+cranelift-frontend = "0.116"
+cranelift-module = "0.116"
+cranelift-native = "0.116"
+target-lexicon = "0.13"
+libc = "0.2"
+
+[build-dependencies]
+cbindgen = "0.29"
+
+[lints]
+workspace = true

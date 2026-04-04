@@ -32,8 +32,10 @@
 #if !defined(AK_OS_WINDOWS)
 #    include <LibWasm/Wasi.h>
 #endif
+#include <LibCore/Process.h>
 #include <math.h>
 #include <signal.h>
+#include <unistd.h>
 
 static OwnPtr<Stream> g_stdout {};
 static OwnPtr<Wasm::Printer> g_printer {};
@@ -301,6 +303,7 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
     StringView filename;
     bool print = false;
     bool print_compiled = false;
+    bool dump_native = false;
     bool attempt_instantiate = false;
     bool export_all_imports = false;
     [[maybe_unused]] bool wasi = false;
@@ -321,6 +324,7 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
     parser.add_positional_argument(filename, "File name to parse", "file");
     parser.add_option(print, "Print the parsed module", "print", 'p');
     parser.add_option(print_compiled, "Print the compiled module", "print-compiled");
+    parser.add_option(dump_native, "Disassemble Cranelift-compiled native code for each function", "dump-native");
     parser.add_option(specific_function_address, "Optional compiled function address to print", "print-function", 'f', "address");
     parser.add_option(attempt_instantiate, "Attempt to instantiate the module", "instantiate", 'i');
     parser.add_option(exported_function_to_execute, "Attempt to execute the named exported function from the module (implies -i)", "execute", 'e', "name");
@@ -581,7 +585,7 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
         printer.print(*parse_result);
     }
 
-    if (attempt_instantiate || print_compiled) {
+    if (attempt_instantiate || print_compiled || dump_native) {
 #if !defined(AK_OS_WINDOWS)
         Optional<Wasm::Wasi::Implementation> wasi_impl;
 
@@ -811,6 +815,122 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
                 }
 
                 TRY(g_stdout->write_until_depleted("\n"sv.bytes()));
+            }
+        }
+
+        if (dump_native) {
+            Span<Wasm::FunctionAddress const> functions = module_instance->functions();
+            Wasm::FunctionAddress spec = specific_function_address.value_or(0);
+
+            if (specific_function_address.has_value())
+                functions = { &spec, 1 };
+            for (auto address : functions) {
+                auto* function = machine.store().get(address)->get_pointer<Wasm::WasmFunction>();
+                if (!function)
+                    continue;
+                auto& ci = function->code().func().body().compiled_instructions;
+                if (!ci.cranelift_compiled || ci.cranelift_code_size == 0)
+                    continue;
+
+                ByteString export_name;
+                for (auto& entry : function->module().exports()) {
+                    if (entry.value() == address) {
+                        export_name = ByteString::formatted(" '{}'", entry.name());
+                        break;
+                    }
+                }
+
+                auto const* code_ptr = bit_cast<u8 const*>(ci.dispatches[0].handler_ptr);
+                auto code_size = ci.cranelift_code_size;
+
+                char tmp_path[] = "/tmp/wasm-native-XXXXXX";
+                int fd = mkstemp(tmp_path);
+                if (fd < 0) {
+                    warnln("Failed to create temp file for function #{}", address.value());
+                    continue;
+                }
+
+#if ARCH(AARCH64) && defined(AK_OS_MACOS)
+                // Write a minimal Mach-O object file so objdump can disassemble it.
+                struct [[gnu::packed]] {
+                    u32 magic = 0xFEEDFACF;
+                    u32 cputype = 0x0100000C; // CPU_TYPE_ARM64
+                    u32 cpusubtype = 0;
+                    u32 filetype = 1; // MH_OBJECT
+                    u32 ncmds = 1;
+                    u32 sizeofcmds = 72 + 80; // segment + section
+                    u32 flags = 0;
+                    u32 reserved = 0;
+                } mach_header;
+
+                struct [[gnu::packed]] {
+                    u32 cmd = 0x19; // LC_SEGMENT_64
+                    u32 cmdsize = 72 + 80;
+                    char segname[16] = {};
+                    u64 vmaddr = 0;
+                    u64 vmsize;
+                    u64 fileoff;
+                    u64 filesize;
+                    u32 maxprot = 7;
+                    u32 initprot = 7;
+                    u32 nsects = 1;
+                    u32 flags = 0;
+                } segment;
+                segment.vmsize = code_size;
+                segment.fileoff = sizeof(mach_header) + sizeof(segment) + 80;
+                segment.filesize = code_size;
+
+                struct [[gnu::packed]] {
+                    char sectname[16] = "__text";
+                    char segname[16] = "__TEXT";
+                    u64 addr = 0;
+                    u64 size;
+                    u32 offset;
+                    u32 align = 2;
+                    u32 reloff = 0;
+                    u32 nreloc = 0;
+                    u32 flags = 0x80000400; // S_REGULAR | S_ATTR_PURE_INSTRUCTIONS
+                    u32 reserved1 = 0;
+                    u32 reserved2 = 0;
+                    u32 reserved3 = 0;
+                } section;
+                static_assert(sizeof(section) == 80);
+                section.size = code_size;
+                section.offset = static_cast<u32>(segment.fileoff);
+
+                write(fd, &mach_header, sizeof(mach_header));
+                write(fd, &segment, sizeof(segment));
+                write(fd, &section, sizeof(section));
+#endif
+                write(fd, code_ptr, code_size);
+                close(fd);
+
+                outln("Function #{}{} ({} bytes):", address.value(), export_name, code_size);
+                fflush(stdout);
+
+#if defined(AK_OS_MACOS)
+                auto cmd = ByteString::formatted("/usr/bin/objdump -d {} | tail -n +7", tmp_path);
+#else
+#    if ARCH(X86_64)
+                auto cmd = ByteString::formatted("/usr/bin/objdump -D -b binary -m i386:x86-64 {} | tail -n +8", tmp_path);
+#    elif ARCH(AARCH64)
+                auto cmd = ByteString::formatted("/usr/bin/objdump -D -b binary -m aarch64 {} | tail -n +8", tmp_path);
+#    else
+                auto cmd = ByteString::formatted("/usr/bin/objdump -D -b binary {} | tail -n +8", tmp_path);
+#    endif
+#endif
+                auto result = Core::Process::spawn({
+                    .name = "sh"sv,
+                    .executable = "/bin/sh"sv,
+                    .arguments = { "-c"sv, cmd },
+                });
+                if (!result.is_error())
+                    (void)result.release_value().wait_for_termination();
+                else
+                    warnln("Failed to run objdump: {}", result.error());
+
+                unlink(tmp_path);
+                outln();
             }
         }
 
