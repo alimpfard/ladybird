@@ -18,6 +18,16 @@ namespace Web::WebAssembly {
 
 GC_DEFINE_ALLOCATOR(Memory);
 
+static u8* wasm_memory_buffer_data(void* context)
+{
+    return static_cast<Wasm::MemoryBuffer*>(context)->data();
+}
+
+static size_t wasm_memory_buffer_size(void* context)
+{
+    return static_cast<Wasm::MemoryBuffer*>(context)->size();
+}
+
 WebIDL::ExceptionOr<GC::Ref<Memory>> Memory::construct_impl(JS::Realm& realm, MemoryDescriptor& descriptor)
 {
     auto& vm = realm.vm();
@@ -231,7 +241,7 @@ void Memory::refresh_the_memory_buffer(JS::VM& vm, JS::Realm& realm, Wasm::Memor
 
         // 2. Set buffer.[[ArrayBufferData]] to block.
         // 3. Set buffer.[[ArrayBufferByteLength]] to the length of block.
-        buffer->set_data_block({ JS::DataBlock::UnownedFixedLengthByteBuffer(&bytes), is_shared });
+        buffer->set_data_block({ JS::DataBlock::UnownedExternalBuffer(&bytes, wasm_memory_buffer_data, wasm_memory_buffer_size), is_shared });
     }
 }
 
@@ -279,7 +289,7 @@ GC::Ref<JS::ArrayBuffer> Memory::create_a_fixed_length_memory_buffer(JS::VM& vm,
         // 1. Let block be a Shared Data Block which is identified with the underlying memory of memaddr.
         // 2. Let buffer be a new SharedArrayBuffer with the internal slots [[ArrayBufferData]] and [[ArrayBufferByteLength]].
         // 3. Set buffer.[[ArrayBufferData]] to block.
-        array_buffer = JS::ArrayBuffer::create(realm, &memory->data(), JS::DataBlock::Shared::Yes);
+        array_buffer = JS::ArrayBuffer::create(realm, JS::DataBlock::UnownedExternalBuffer(&memory->data(), wasm_memory_buffer_data, wasm_memory_buffer_size), JS::DataBlock::Shared::Yes);
 
         // 4. Set buffer.[[ArrayBufferByteLength]] to the length of block.
         VERIFY(array_buffer->byte_length() == memory->size());
@@ -290,7 +300,7 @@ GC::Ref<JS::ArrayBuffer> Memory::create_a_fixed_length_memory_buffer(JS::VM& vm,
 
     // 4. Otherwise,
     else {
-        array_buffer = JS::ArrayBuffer::create(realm, &memory->data());
+        array_buffer = JS::ArrayBuffer::create(realm, JS::DataBlock::UnownedExternalBuffer(&memory->data(), wasm_memory_buffer_data, wasm_memory_buffer_size));
         array_buffer->set_detach_key(JS::PrimitiveString::create(vm, "WebAssembly.Memory"_string));
     }
 
@@ -316,7 +326,7 @@ JS::ThrowCompletionOr<GC::Ref<JS::ArrayBuffer>> Memory::create_a_resizable_memor
         // 1. Let block be a Shared Data Block which is identified with the underlying memory of memaddr.
         // 2. Let buffer be a new SharedArrayBuffer with the internal slots [[ArrayBufferData]], [[ArrayBufferByteLength]], and [[ArrayBufferMaxByteLength]].
         // 3. Set buffer.[[ArrayBufferData]] to block.
-        auto buffer = JS::ArrayBuffer::create(realm, &memory->data(), JS::DataBlock::Shared::Yes);
+        auto buffer = JS::ArrayBuffer::create(realm, JS::DataBlock::UnownedExternalBuffer(&memory->data(), wasm_memory_buffer_data, wasm_memory_buffer_size), JS::DataBlock::Shared::Yes);
 
         // AD-HOC: The threads proposal uses the memory type's minimum for both shared and
         //         non-shared memories, but the upstream spec uses the memory instance's current
@@ -343,7 +353,7 @@ JS::ThrowCompletionOr<GC::Ref<JS::ArrayBuffer>> Memory::create_a_resizable_memor
         // 1. Let block be a Data Block which is identified with the underlying memory of memaddr.
         // 4. Let buffer be a new ArrayBuffer with the internal slots [[ArrayBufferData]], [[ArrayBufferByteLength]], [[ArrayBufferMaxByteLength]], and [[ArrayBufferDetachKey]].
         // 5. Set buffer.[[ArrayBufferData]] to block.
-        auto buffer = JS::ArrayBuffer::create(realm, &memory->data());
+        auto buffer = JS::ArrayBuffer::create(realm, JS::DataBlock::UnownedExternalBuffer(&memory->data(), wasm_memory_buffer_data, wasm_memory_buffer_size));
 
         // 2. Let length be the length of block.
         // 6. Set buffer.[[ArrayBufferByteLength]] to length.
