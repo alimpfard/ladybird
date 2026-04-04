@@ -49,24 +49,69 @@ struct DataBlock {
         size_t size = 0;
     };
 
+    // AD-HOC: ECMA-262 models ArrayBuffer backing storage as a Data Block. We additionally allow
+    //         host code to provide an external byte store via callbacks so engine-independent
+    //         consumers like LibWeb can project spec-defined host objects onto ArrayBuffer without
+    //         teaching LibJS about those hosts.
+    struct UnownedExternalBuffer {
+        using DataFunction = u8* (*)(void*);
+        using SizeFunction = size_t (*)(void*);
+
+        explicit UnownedExternalBuffer(void* context, DataFunction data, SizeFunction size)
+            : context(context)
+            , data(data)
+            , size(size)
+        {
+        }
+
+        void* context { nullptr };
+        DataFunction data { nullptr };
+        SizeFunction size { nullptr };
+    };
+
     ByteBuffer& buffer()
     {
         return byte_buffer.visit(
             [&](Empty) -> ByteBuffer& { VERIFY_NOT_REACHED(); },
             [&](ByteBuffer& value) -> ByteBuffer& { return value; },
-            [&](UnownedFixedLengthByteBuffer& value) -> ByteBuffer& { return *value.buffer; });
+            [&](UnownedFixedLengthByteBuffer& value) -> ByteBuffer& { return *value.buffer; },
+            [&](UnownedExternalBuffer&) -> ByteBuffer& { VERIFY_NOT_REACHED(); });
     }
     ByteBuffer const& buffer() const { return const_cast<DataBlock*>(this)->buffer(); }
+
+    u8* data()
+    {
+        return byte_buffer.visit(
+            [](Empty) -> u8* { VERIFY_NOT_REACHED(); },
+            [](ByteBuffer& value) -> u8* { return value.data(); },
+            [](UnownedFixedLengthByteBuffer& value) -> u8* { return value.buffer->data(); },
+            [](UnownedExternalBuffer& value) -> u8* { return value.data ? value.data(value.context) : nullptr; });
+    }
+    u8 const* data() const { return const_cast<DataBlock*>(this)->data(); }
+
+    Bytes span() { return { data(), size() }; }
+    ReadonlyBytes span() const { return { data(), size() }; }
+    Bytes bytes() { return { data(), size() }; }
+    ReadonlyBytes bytes() const { return { data(), size() }; }
+    void overwrite(size_t offset, void const* source, size_t count)
+    {
+        VERIFY(offset <= size());
+        VERIFY(count <= size() - offset);
+        __builtin_memcpy(data() + offset, source, count);
+    }
 
     size_t size() const
     {
         return byte_buffer.visit(
             [](Empty) -> size_t { return 0u; },
             [](ByteBuffer const& buffer) { return buffer.size(); },
-            [](UnownedFixedLengthByteBuffer const& value) { return value.size; });
+            [](UnownedFixedLengthByteBuffer const& value) { return value.size; },
+            [](UnownedExternalBuffer const& value) { return value.size ? value.size(value.context) : 0; });
     }
 
-    Variant<Empty, ByteBuffer, UnownedFixedLengthByteBuffer> byte_buffer;
+    bool is_external() const { return byte_buffer.has<UnownedExternalBuffer>(); }
+
+    Variant<Empty, ByteBuffer, UnownedFixedLengthByteBuffer, UnownedExternalBuffer> byte_buffer;
     Shared is_shared = { Shared::No };
 };
 
@@ -78,6 +123,7 @@ public:
     static ThrowCompletionOr<GC::Ref<ArrayBuffer>> create(Realm&, size_t, DataBlock::Shared = DataBlock::Shared::No);
     static GC::Ref<ArrayBuffer> create(Realm&, ByteBuffer, DataBlock::Shared = DataBlock::Shared::No);
     static GC::Ref<ArrayBuffer> create(Realm&, ByteBuffer*, DataBlock::Shared = DataBlock::Shared::No);
+    static GC::Ref<ArrayBuffer> create(Realm&, DataBlock::UnownedExternalBuffer, DataBlock::Shared = DataBlock::Shared::No);
 
     virtual ~ArrayBuffer() override = default;
 
@@ -86,6 +132,14 @@ public:
     // [[ArrayBufferData]]
     ByteBuffer& buffer() { return m_data_block.buffer(); }
     ByteBuffer const& buffer() const { return m_data_block.buffer(); }
+    u8* data() { return m_data_block.data(); }
+    u8 const* data() const { return m_data_block.data(); }
+    Bytes span() { return m_data_block.span(); }
+    ReadonlyBytes span() const { return m_data_block.span(); }
+    Bytes bytes() { return m_data_block.bytes(); }
+    ReadonlyBytes bytes() const { return m_data_block.bytes(); }
+    void overwrite(size_t offset, void const* source, size_t count) { m_data_block.overwrite(offset, source, count); }
+    bool is_external() const { return m_data_block.is_external(); }
 
     // [[ArrayBufferMaxByteLength]]
     size_t max_byte_length() const { return m_max_byte_length.value(); }
@@ -151,6 +205,7 @@ public:
 private:
     ArrayBuffer(ByteBuffer buffer, DataBlock::Shared, Object& prototype);
     ArrayBuffer(ByteBuffer* buffer, DataBlock::Shared, Object& prototype);
+    ArrayBuffer(DataBlock::UnownedExternalBuffer buffer, DataBlock::Shared, Object& prototype);
 
     virtual bool is_array_buffer() const final { return true; }
 
@@ -289,10 +344,10 @@ Value ArrayBuffer::get_value(size_t byte_index, [[maybe_unused]] bool is_typed_a
     VERIFY(!is_detached());
 
     // 2. Assert: There are sufficient bytes in arrayBuffer starting at byteIndex to represent a value of type.
-    VERIFY(m_data_block.buffer().bytes().slice(byte_index).size() >= sizeof(T));
+    VERIFY(m_data_block.bytes().slice(byte_index).size() >= sizeof(T));
 
     // 3. Let block be arrayBuffer.[[ArrayBufferData]].
-    auto& block = m_data_block.buffer();
+    auto block = m_data_block.bytes();
 
     // 4. Let elementSize be the Element Size value specified in Table 70 for Element Type type.
     auto element_size = sizeof(T);
@@ -313,7 +368,7 @@ Value ArrayBuffer::get_value(size_t byte_index, [[maybe_unused]] bool is_typed_a
     // 6. Else,
     else {
         // a. Let rawValue be a List whose elements are bytes from block at indices in the interval from byteIndex (inclusive) to byteIndex + elementSize (exclusive).
-        block.bytes().slice(byte_index, element_size).copy_to(raw_value);
+        block.slice(byte_index, element_size).copy_to(raw_value);
     }
 
     // 7. Assert: The number of elements in rawValue is elementSize.
@@ -407,7 +462,7 @@ void ArrayBuffer::set_value(size_t byte_index, Value value, [[maybe_unused]] boo
     VERIFY(!is_detached());
 
     // 2. Assert: There are sufficient bytes in arrayBuffer starting at byteIndex to represent a value of type.
-    VERIFY(m_data_block.buffer().bytes().slice(byte_index).size() >= sizeof(T));
+    VERIFY(m_data_block.bytes().slice(byte_index).size() >= sizeof(T));
 
     // 3. Assert: value is a BigInt if IsBigIntElementType(type) is true; otherwise, value is a Number.
     if constexpr (IsIntegral<T> && sizeof(T) == 8)
@@ -416,7 +471,7 @@ void ArrayBuffer::set_value(size_t byte_index, Value value, [[maybe_unused]] boo
         VERIFY(value.is_number());
 
     // 4. Let block be arrayBuffer.[[ArrayBufferData]].
-    auto& block = m_data_block.buffer();
+    auto block = m_data_block.span();
 
     // FIXME: 5. Let elementSize be the Element Size value specified in Table 70 for Element Type type.
 
@@ -437,7 +492,7 @@ void ArrayBuffer::set_value(size_t byte_index, Value value, [[maybe_unused]] boo
     // 9. Else,
     else {
         // a. Store the individual bytes of rawBytes into block, starting at block[byteIndex].
-        raw_bytes.span().copy_to(block.span().slice(byte_index));
+        raw_bytes.span().copy_to(block.slice(byte_index));
     }
 
     // 10. Return unused.
@@ -455,9 +510,9 @@ Value ArrayBuffer::get_modify_set_value(size_t byte_index, Value value, ReadWrit
     // FIXME: Check for shared buffer
 
     auto raw_bytes_read = MUST(ByteBuffer::create_uninitialized(sizeof(T)));
-    m_data_block.buffer().bytes().slice(byte_index, sizeof(T)).copy_to(raw_bytes_read);
+    m_data_block.bytes().slice(byte_index, sizeof(T)).copy_to(raw_bytes_read);
     auto raw_bytes_modified = operation(raw_bytes_read, raw_bytes);
-    raw_bytes_modified.span().copy_to(m_data_block.buffer().span().slice(byte_index));
+    raw_bytes_modified.span().copy_to(m_data_block.span().slice(byte_index));
 
     return raw_bytes_to_numeric<T>(vm, raw_bytes_read, is_little_endian);
 }

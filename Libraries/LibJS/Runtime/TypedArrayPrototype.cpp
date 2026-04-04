@@ -363,7 +363,7 @@ JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::copy_within)
             to_end += count_bytes;
 
             if (!from_end.has_overflow() && !to_end.has_overflow()) {
-                auto* base = buffer->buffer().data();
+                auto* base = buffer->data();
                 void const* src = base + from_byte_index;
                 void* dst = base + to_byte_index;
                 memmove(dst, src, count_bytes);
@@ -498,7 +498,7 @@ inline void fast_typed_array_fill(TypedArrayBase& typed_array, u32 begin, u32 en
     }
 
     auto& array_buffer = *typed_array.viewed_array_buffer();
-    auto* slot = reinterpret_cast<T*>(array_buffer.buffer().offset_pointer(computed_begin.value()));
+    auto* slot = reinterpret_cast<T*>(array_buffer.data() + computed_begin.value());
     for (auto i = begin; i < end; ++i)
         *(slot++) = value;
 }
@@ -1454,7 +1454,7 @@ static ThrowCompletionOr<void> set_typed_array_from_typed_array(VM& vm, TypedArr
     auto same_shared_array_buffer = false;
 
     // 18. If IsSharedArrayBuffer(srcBuffer) is true, IsSharedArrayBuffer(targetBuffer) is true, and srcBuffer.[[ArrayBufferData]] is targetBuffer.[[ArrayBufferData]], let sameSharedArrayBuffer be true; otherwise, let sameSharedArrayBuffer be false.
-    if (source_buffer->is_shared_array_buffer() && target_buffer->is_shared_array_buffer() && (&source_buffer->buffer() == &target_buffer->buffer()))
+    if (source_buffer->is_shared_array_buffer() && target_buffer->is_shared_array_buffer() && (source_buffer->data() == target_buffer->data()))
         same_shared_array_buffer = true;
 
     size_t source_byte_index = 0;
@@ -1502,7 +1502,7 @@ static ThrowCompletionOr<void> set_typed_array_from_typed_array(VM& vm, TypedArr
         //     ii. Perform SetValueInBuffer(targetBuffer, targetByteIndex, Uint8, value, true, Unordered).
         //     iii. Set srcByteIndex to srcByteIndex + 1.
         //     iv. Set targetByteIndex to targetByteIndex + 1.
-        target_buffer->buffer().overwrite(target_byte_index, source_buffer->buffer().data() + source_byte_index, limit - target_byte_index);
+        target_buffer->overwrite(target_byte_index, source_buffer->data() + source_byte_index, limit - target_byte_index);
     }
     // 24. Else,
     else {
@@ -1741,8 +1741,8 @@ JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::slice)
             // OPTIMIZATION: If the buffers are not detached and not shared, we can do a single bulk copy.
             if (!target_buffer.is_detached() && !target_buffer.is_shared_array_buffer()
                 && !source_buffer.is_detached() && !source_buffer.is_shared_array_buffer()
-                && &target_buffer.buffer() != &source_buffer.buffer()) {
-                target_buffer.buffer().overwrite(target_byte_index, source_buffer.buffer().data() + source_byte_index.value(), limit.value() - target_byte_index);
+                && target_buffer.data() != source_buffer.data()) {
+                target_buffer.overwrite(target_byte_index, source_buffer.data() + source_byte_index.value(), limit.value() - target_byte_index);
             } else {
                 // ix. Repeat, while targetByteIndex < limit,
                 while (target_byte_index < limit) {

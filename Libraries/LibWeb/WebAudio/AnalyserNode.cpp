@@ -194,7 +194,7 @@ WebIDL::ExceptionOr<void> AnalyserNode::get_byte_frequency_data(GC::Root<WebIDL:
     // Write the current frequency data into array. If array’s byte length is less than frequencyBinCount,
     // the excess elements will be dropped. If array’s byte length is greater than the frequencyBinCount ,
     // the excess elements will be ignored. The most recent fftSize frames are used in computing the frequency data.
-    auto& output_buffer = array->viewed_array_buffer()->buffer();
+    auto* output_buffer = array->viewed_array_buffer()->data() + array->byte_offset();
     size_t bytes_to_write = min(array->byte_length(), frequency_bin_count());
 
     for (size_t i = 0; i < bytes_to_write; i++)
@@ -247,7 +247,7 @@ WebIDL::ExceptionOr<void> AnalyserNode::get_byte_time_domain_data(GC::Root<WebID
         byte_data.unchecked_append(static_cast<u8>(x));
     }
 
-    auto& output_buffer = array->viewed_array_buffer()->buffer();
+    auto* output_buffer = array->viewed_array_buffer()->data() + array->byte_offset();
     size_t bytes_to_write = min(array->byte_length(), fft_size());
 
     for (size_t i = 0; i < bytes_to_write; i++)

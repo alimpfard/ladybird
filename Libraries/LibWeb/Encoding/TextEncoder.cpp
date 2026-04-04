@@ -59,7 +59,7 @@ TextEncoderEncodeIntoResult TextEncoder::encode_into(String const& source, GC::R
     if (destination->viewed_array_buffer()->is_detached())
         return { 0, 0 };
 
-    auto data = destination->viewed_array_buffer()->buffer().bytes().slice(destination->byte_offset(), destination->byte_length());
+    auto data = destination->viewed_array_buffer()->bytes().slice(destination->byte_offset(), destination->byte_length());
 
     // 1. Let read be 0.
     WebIDL::UnsignedLongLong read = 0;

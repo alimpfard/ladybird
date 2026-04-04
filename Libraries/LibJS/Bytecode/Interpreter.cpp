@@ -881,7 +881,7 @@ inline Value fast_typed_array_get_element(TypedArrayBase& typed_array, u32 index
     }
 
     auto const& array_buffer = *typed_array.viewed_array_buffer();
-    auto const* slot = reinterpret_cast<T const*>(array_buffer.buffer().offset_pointer(offset_into_array_buffer.value()));
+    auto const* slot = reinterpret_cast<T const*>(array_buffer.data() + offset_into_array_buffer.value());
     return Value { *slot };
 }
 
@@ -899,7 +899,7 @@ inline void fast_typed_array_set_element(TypedArrayBase& typed_array, u32 index,
     }
 
     auto& array_buffer = *typed_array.viewed_array_buffer();
-    auto* slot = reinterpret_cast<T*>(array_buffer.buffer().offset_pointer(offset_into_array_buffer.value()));
+    auto* slot = reinterpret_cast<T*>(array_buffer.data() + offset_into_array_buffer.value());
     *slot = value;
 }
 
