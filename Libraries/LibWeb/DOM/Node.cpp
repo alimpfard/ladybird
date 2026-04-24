@@ -2121,9 +2121,10 @@ bool Node::is_uninteresting_whitespace_node() const
         return false;
     if (!static_cast<Text const&>(*this).data().is_ascii_whitespace())
         return false;
-    if (!layout_node())
+    auto const* layout_node = unsafe_layout_node();
+    if (!layout_node)
         return true;
-    if (auto parent = layout_node()->parent(); parent && parent->is_anonymous())
+    if (auto parent = layout_node->parent(); parent && parent->is_anonymous())
         return true;
     return false;
 }
@@ -2170,14 +2171,14 @@ void Node::serialize_tree_as_json(JsonObjectSerializer<StringBuilder>& object) c
             }
         }
 
-        if (paintable_box()) {
-            if (paintable_box()->could_be_scrolled_by_wheel_event()) {
+        if (auto const* paintable_box = unsafe_paintable_box()) {
+            if (paintable_box->could_be_scrolled_by_wheel_event()) {
                 MUST(object.add("scrollable"sv, true));
             }
-            if (!paintable_box()->is_visible()) {
+            if (!paintable_box->is_visible()) {
                 MUST(object.add("invisible"sv, true));
             }
-            if (paintable_box()->has_stacking_context()) {
+            if (paintable_box->has_stacking_context()) {
                 MUST(object.add("stackingContext"sv, true));
             }
         }
@@ -2194,7 +2195,7 @@ void Node::serialize_tree_as_json(JsonObjectSerializer<StringBuilder>& object) c
         MUST(object.add("mode"sv, static_cast<DOM::ShadowRoot const&>(*this).mode() == Bindings::ShadowRootMode::Open ? "open"sv : "closed"sv));
     }
 
-    MUST((object.add("visible"sv, !!layout_node())));
+    MUST((object.add("visible"sv, !!unsafe_layout_node())));
 
     if (auto const* element = as_if<Element>(this)) {
         element->serialize_children_as_json(object);
