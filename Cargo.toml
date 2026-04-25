@@ -3,6 +3,7 @@ members = [
     "AK/Rust",
     "Libraries/LibGfx/Rust",
     "Libraries/LibImageDecoders/Rust",
+    "Libraries/LibIPC/Rust",
     "Libraries/LibJS/Rust",
     "Libraries/LibRegex/Rust",
     "Libraries/LibTextCodec/Rust",
@@ -12,11 +13,15 @@ members = [
     "Libraries/LibWeb/ContentBlocker/Rust",
     "Libraries/LibWeb/Rust",
     "Libraries/LibWeb/HTML/Parser/Rust",
+    "Build/*/cargo/generated/ipc/*",
 ]
 exclude = [
     "Libraries/LibJS/Flap",
 ]
 resolver = "2"
+
+[workspace.dependencies]
+libipc = { path = "Libraries/LibIPC/Rust" }
 
 [profile.release]
 panic = "abort"

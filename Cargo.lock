@@ -698,6 +698,104 @@ dependencies = [
 ]
 
 [[package]]
+name = "ipc_imagedecoderclient"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_imagedecoderserver"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_requestclient"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_requestserver"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_uiprocessclient"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_uiprocessserver"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_webcontentclient"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_webcontentserver"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_webdriverclient"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_webdriverserver"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_webuiclient"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_webuiserver"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_webworkerclient"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_webworkerserver"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
 name = "is_terminal_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -800,6 +898,10 @@ dependencies = [
  "cbindgen",
  "jxl",
 ]
+
+[[package]]
+name = "libipc"
+version = "0.1.0"
 
 [[package]]
 name = "libjs_rust"
