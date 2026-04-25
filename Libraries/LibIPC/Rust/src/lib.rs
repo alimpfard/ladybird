@@ -7,6 +7,12 @@
 //! Rust mirror of the LibIPC primitives. Provides Encoder / Decoder traits and
 //! impls for the wire-compatible primitive types used by Ladybird IPC.
 
+#[cfg(unix)]
+pub mod transport;
+
+#[cfg(unix)]
+pub use transport::{TransportHandle, TransportMessage, TransportSocket};
+
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::fmt;
@@ -45,22 +51,52 @@ pub const MAX_DECODED_SIZE: usize = 64 * 1024 * 1024;
 /// An attachment carried alongside the message bytes — typically a file
 /// descriptor (POSIX) or a HANDLE (Windows). The C++ side uses this for
 /// `IPC::File`, `Core::AnonymousBuffer`, and `IPC::TransportHandle`.
+#[cfg(unix)]
 #[derive(Debug)]
 pub struct Attachment {
-    fd: i32,
+    fd: Option<std::os::fd::OwnedFd>,
 }
 
+#[cfg(unix)]
 impl Attachment {
-    pub const fn from_fd(fd: i32) -> Self {
-        Self { fd }
+    pub fn from_owned_fd(fd: std::os::fd::OwnedFd) -> Self {
+        Self { fd: Some(fd) }
     }
 
-    pub const fn fd(&self) -> i32 {
+    /// Adopt ownership of a raw file descriptor. The attachment will close
+    /// the descriptor on drop unless [`Attachment::take`] is called first.
+    ///
+    /// # Safety
+    /// The caller must own `fd` and not use it after this call.
+    pub unsafe fn from_raw_fd(fd: std::os::fd::RawFd) -> Self {
+        use std::os::fd::FromRawFd;
+        Self {
+            fd: Some(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) }),
+        }
+    }
+
+    pub fn as_raw_fd(&self) -> std::os::fd::RawFd {
+        use std::os::fd::AsRawFd;
+        self.fd.as_ref().map_or(-1, std::os::fd::OwnedFd::as_raw_fd)
+    }
+
+    pub fn take(&mut self) -> Option<std::os::fd::OwnedFd> {
+        self.fd.take()
+    }
+
+    pub fn into_owned_fd(self) -> Option<std::os::fd::OwnedFd> {
         self.fd
     }
+}
 
-    pub fn take_fd(&mut self) -> i32 {
-        std::mem::replace(&mut self.fd, -1)
+#[cfg(not(unix))]
+#[derive(Debug, Default)]
+pub struct Attachment;
+
+#[cfg(not(unix))]
+impl Attachment {
+    pub fn new() -> Self {
+        Self
     }
 }
 
