@@ -5072,6 +5072,48 @@ VALIDATE_INSTRUCTION(synthetic_end_expression)
     return {}; // Always valid.
 }
 
+namespace {
+ValueType atomic_rmw_value_type(Instruction::AtomicRMWArgument::Width width)
+{
+    using W = Instruction::AtomicRMWArgument::Width;
+    switch (width) {
+    case W::I32:
+    case W::I8As32:
+    case W::I16As32:
+        return ValueType { ValueType::I32 };
+    case W::I64:
+    case W::I8As64:
+    case W::I16As64:
+    case W::I32As64:
+        return ValueType { ValueType::I64 };
+    }
+    VERIFY_NOT_REACHED();
+}
+}
+
+VALIDATE_INSTRUCTION(synthetic_atomic_RMW)
+{
+    auto& arg = instruction.arguments().get<Instruction::AtomicRMWArgument>();
+    auto memory = TRY(validate(arg.memory.memory_index));
+    auto value_type = atomic_rmw_value_type(arg.width);
+    TRY(stack.take(value_type));
+    TRY((take_memory_address(stack, memory, arg.memory)));
+    stack.append(value_type);
+    return {};
+}
+
+VALIDATE_INSTRUCTION(synthetic_atomic_cmpxchg)
+{
+    auto& arg = instruction.arguments().get<Instruction::AtomicRMWArgument>();
+    auto memory = TRY(validate(arg.memory.memory_index));
+    auto value_type = atomic_rmw_value_type(arg.width);
+    TRY(stack.take(value_type)); // replacement
+    TRY(stack.take(value_type)); // expected
+    TRY((take_memory_address(stack, memory, arg.memory)));
+    stack.append(value_type);
+    return {};
+}
+
 ErrorOr<void, ValidationError> Validator::validate(Instruction const& instruction, Stack& stack, bool& is_constant)
 {
     switch (instruction.opcode().value()) {

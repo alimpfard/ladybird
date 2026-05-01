@@ -281,6 +281,40 @@ ErrorOr<void> WorkerProcessManager::simulate_request_server_connection_loss_for_
     return {};
 }
 
+void WorkerProcessManager::rtc_transform_init(Web::HTML::WorkerAgentId agent_id, u64 transform_id, Web::HTML::SerializedTransferRecord options_record)
+{
+    auto maybe_agent = m_agents.find(agent_id);
+    if (maybe_agent == m_agents.end())
+        return;
+    maybe_agent->value.client->async_rtc_transform_init(transform_id, move(options_record));
+}
+
+void WorkerProcessManager::rtc_transform_encoded_audio_frame(Web::HTML::WorkerAgentId agent_id, u64 transform_id, ByteBuffer payload, u32 ssrc, u8 payload_type, u32 rtp_timestamp, u16 sequence_number)
+{
+    auto maybe_agent = m_agents.find(agent_id);
+    if (maybe_agent == m_agents.end())
+        return;
+    maybe_agent->value.client->async_rtc_transform_encoded_audio_frame(transform_id, payload.bytes(), ssrc, payload_type, rtp_timestamp, sequence_number);
+}
+
+void WorkerProcessManager::worker_did_write_rtc_transform_encoded_audio_frame(Web::HTML::WorkerAgentId agent_id, u64 transform_id, ByteBuffer payload, u32 ssrc, u8 payload_type, u32 rtp_timestamp, u16 sequence_number)
+{
+    auto maybe_agent = m_agents.find(agent_id);
+    if (maybe_agent == m_agents.end())
+        return;
+
+    for (auto const& owner : maybe_agent->value.owners) {
+        owner.client.visit(
+            [&](WebContentOwner const& web_content_owner) {
+                if (web_content_owner.client)
+                    web_content_owner.client->async_did_worker_rtc_transform_encoded_audio_frame_written(owner.token, transform_id, payload, ssrc, payload_type, rtp_timestamp, sequence_number);
+            },
+            [&](WebWorkerOwner const&) {
+                // FIXME: Route transform frames back to nested-worker owners once the WebWorkerServer endpoint carries this message.
+            });
+    }
+}
+
 void WorkerProcessManager::notify_worker_script_load_success(Owner const& owner)
 {
     owner.client.visit(

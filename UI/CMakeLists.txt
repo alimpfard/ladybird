@@ -102,6 +102,9 @@ else()
 endif()
 
 add_dependencies(ladybird ${ladybird_helper_processes})
+foreach(rust_helper IN LISTS ladybird_rust_helper_processes)
+    add_dependencies(ladybird "${rust_helper}-build")
+endforeach()
 # FIXME: Increase support for building targets on Windows
 if (NOT WIN32)
     add_dependencies(WebDriver ladybird)

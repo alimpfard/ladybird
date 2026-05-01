@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <AK/HashMap.h>
 #include <AK/Utf16String.h>
 #include <LibURL/URL.h>
 #include <LibWeb/Forward.h>
@@ -29,12 +30,21 @@ public:
     static WEB_API void did_fail_loading_worker_script(WorkerAgentOwnerToken);
     static WEB_API void did_report_worker_exception(WorkerAgentOwnerToken, Utf16String message, Utf16String filename, u32 lineno, u32 colno);
     static WEB_API void did_close_worker(WorkerAgentOwnerToken);
+    static WEB_API void did_write_rtc_transform_encoded_audio_frame(WorkerAgentOwnerToken, u64 transform_id, ByteBuffer payload, u32 ssrc, u8 payload_type, u32 rtp_timestamp, u16 sequence_number);
 
     void terminate();
 
 protected:
     virtual void visit_edges(Cell::Visitor&) override;
     virtual void finalize() override;
+
+public:
+    void rtc_transform_init(u64 transform_id, SerializedTransferRecord options_record);
+    void rtc_transform_encoded_audio_frame(u64 transform_id, ByteBuffer payload, u32 ssrc, u8 payload_type, u32 rtp_timestamp, u16 sequence_number);
+
+    using TransformFrameWrittenCallback = AK::Function<void(ByteBuffer payload, u32 ssrc, u8 payload_type, u32 rtp_timestamp, u16 sequence_number)>;
+    void register_transform_frame_callback(u64 transform_id, TransformFrameWrittenCallback callback);
+    void unregister_transform_frame_callback(u64 transform_id);
 
 private:
     WorkerAgentParent(URL::URL, WorkerOptions const&, GC::Ptr<MessagePort> outside_port,
@@ -58,6 +68,8 @@ private:
     GC::Ptr<MessagePort> m_outside_port;
     GC::Ref<EnvironmentSettingsObject> m_outside_settings;
     GC::Ref<DOM::EventTarget> m_worker_event_target;
+
+    HashMap<u64, TransformFrameWrittenCallback> m_transform_frame_callbacks;
 };
 
 }

@@ -1,0 +1,28 @@
+/*
+ * Copyright (c) 2026-present, the Ladybird developers.
+ *
+ * SPDX-License-Identifier: BSD-2-Clause
+ */
+
+#pragma once
+
+#include <LibWeb/Bindings/Forward.h>
+#include <LibWeb/WebIDL/DOMException.h>
+
+namespace Web::WebRTC {
+
+class RTCError final : public WebIDL::DOMException {
+    WEB_PLATFORM_OBJECT(RTCError, WebIDL::DOMException);
+    GC_DECLARE_ALLOCATOR(RTCError);
+
+public:
+    static GC::Ref<RTCError> create(JS::Realm&);
+    static WebIDL::ExceptionOr<GC::Ref<RTCError>> construct_impl(JS::Realm&, Bindings::RTCErrorInit const&, String const& message);
+    virtual ~RTCError() override;
+
+private:
+    explicit RTCError(JS::Realm&);
+    virtual void initialize(JS::Realm&) override;
+};
+
+}

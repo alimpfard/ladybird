@@ -33,6 +33,15 @@ install(TARGETS ${ladybird_helper_processes}
     DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}
 )
 
+# Rust-built helpers don't have cmake targets — install their built binaries
+# directly from the bin/ output directory.
+foreach(rust_helper IN LISTS ladybird_rust_helper_processes)
+    install(PROGRAMS "${CMAKE_BINARY_DIR}/bin/${rust_helper}"
+        COMPONENT ladybird_Runtime
+        DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}
+    )
+endforeach()
+
 include("${LADYBIRD_SOURCE_DIR}/Meta/CMake/get_linked_lagom_libraries.cmake")
 foreach (application IN LISTS ladybird_applications)
   get_linked_lagom_libraries("${application}" "${application}_lagom_libraries")

@@ -546,6 +546,11 @@ void Printer::print(Wasm::Instruction const& instruction)
                     args.source_type.kind_name(), args.source_type.is_nullable() ? " nullable"sv : ""sv,
                     args.target_type.kind_name(), args.target_type.is_nullable() ? " nullable"sv : ""sv);
             },
+            [&](Instruction::AtomicRMWArgument const& args) {
+                print("(atomic op={} width={} (memory align {} offset {} index {}))",
+                    to_underlying(args.op), to_underlying(args.width),
+                    args.memory.align, args.memory.offset, args.memory.memory_index.value());
+            },
             [&](ValueType const& type) { print(type); },
             [&](Vector<ValueType> const&) { print("(types...)"); },
             [&](auto const& value) { print("(const {})", value); });

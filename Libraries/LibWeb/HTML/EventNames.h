@@ -31,15 +31,18 @@ namespace Web::HTML::EventNames {
     __ENUMERATE_HTML_EVENT(blocked)                  \
     __ENUMERATE_HTML_EVENT(blur)                     \
     __ENUMERATE_HTML_EVENT(boundary)                 \
+    __ENUMERATE_HTML_EVENT(bufferedamountlow)        \
     __ENUMERATE_HTML_EVENT(cancel)                   \
     __ENUMERATE_HTML_EVENT(canplay)                  \
     __ENUMERATE_HTML_EVENT(canplaythrough)           \
     __ENUMERATE_HTML_EVENT(change)                   \
     __ENUMERATE_HTML_EVENT(click)                    \
     __ENUMERATE_HTML_EVENT(close)                    \
+    __ENUMERATE_HTML_EVENT(closing)                  \
     __ENUMERATE_HTML_EVENT(command)                  \
     __ENUMERATE_HTML_EVENT(complete)                 \
     __ENUMERATE_HTML_EVENT(connect)                  \
+    __ENUMERATE_HTML_EVENT(connectionstatechange)    \
     __ENUMERATE_HTML_EVENT(contextlost)              \
     __ENUMERATE_HTML_EVENT(contextmenu)              \
     __ENUMERATE_HTML_EVENT(contextrestored)          \
@@ -48,6 +51,7 @@ namespace Web::HTML::EventNames {
     __ENUMERATE_HTML_EVENT(cuechange)                \
     __ENUMERATE_HTML_EVENT(currententrychange)       \
     __ENUMERATE_HTML_EVENT(cut)                      \
+    __ENUMERATE_HTML_EVENT(datachannel)               \
     __ENUMERATE_HTML_EVENT(devicechange)             \
     __ENUMERATE_HTML_EVENT(disconnect)               \
     __ENUMERATE_HTML_EVENT(dispose)                  \
@@ -73,7 +77,12 @@ namespace Web::HTML::EventNames {
     __ENUMERATE_HTML_EVENT(formdata)                 \
     __ENUMERATE_HTML_EVENT(fullscreenchange)         \
     __ENUMERATE_HTML_EVENT(fullscreenerror)          \
+    __ENUMERATE_HTML_EVENT(gatheringstatechange)     \
     __ENUMERATE_HTML_EVENT(hashchange)               \
+    __ENUMERATE_HTML_EVENT(icecandidate)              \
+    __ENUMERATE_HTML_EVENT(icecandidateerror)         \
+    __ENUMERATE_HTML_EVENT(iceconnectionstatechange)  \
+    __ENUMERATE_HTML_EVENT(icegatheringstatechange)   \
     __ENUMERATE_HTML_EVENT(input)                    \
     __ENUMERATE_HTML_EVENT(invalid)                  \
     __ENUMERATE_HTML_EVENT(languagechange)           \
@@ -92,6 +101,7 @@ namespace Web::HTML::EventNames {
     __ENUMERATE_HTML_EVENT(navigate)                 \
     __ENUMERATE_HTML_EVENT(navigateerror)            \
     __ENUMERATE_HTML_EVENT(navigatesuccess)          \
+    __ENUMERATE_HTML_EVENT(negotiationneeded)        \
     __ENUMERATE_HTML_EVENT(nomatch)                  \
     __ENUMERATE_HTML_EVENT(offline)                  \
     __ENUMERATE_HTML_EVENT(online)                   \
@@ -123,7 +133,9 @@ namespace Web::HTML::EventNames {
     __ENUMERATE_HTML_EVENT(seeked)                   \
     __ENUMERATE_HTML_EVENT(seeking)                  \
     __ENUMERATE_HTML_EVENT(select)                   \
+    __ENUMERATE_HTML_EVENT(selectedcandidatepairchange) \
     __ENUMERATE_HTML_EVENT(selectionchange)          \
+    __ENUMERATE_HTML_EVENT(signalingstatechange)     \
     __ENUMERATE_HTML_EVENT(slotchange)               \
     __ENUMERATE_HTML_EVENT(soundend)                 \
     __ENUMERATE_HTML_EVENT(soundstart)               \
@@ -138,6 +150,9 @@ namespace Web::HTML::EventNames {
     __ENUMERATE_HTML_EVENT(suspend)                  \
     __ENUMERATE_HTML_EVENT(timeupdate)               \
     __ENUMERATE_HTML_EVENT(toggle)                   \
+    __ENUMERATE_HTML_EVENT(tonechange)                \
+    __ENUMERATE_HTML_EVENT(rtctransform)             \
+    __ENUMERATE_HTML_EVENT(track)                    \
     __ENUMERATE_HTML_EVENT(transitioncancel)         \
     __ENUMERATE_HTML_EVENT(transitionend)            \
     __ENUMERATE_HTML_EVENT(transitionrun)            \

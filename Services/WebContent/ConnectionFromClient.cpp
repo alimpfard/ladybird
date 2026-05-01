@@ -2796,6 +2796,11 @@ void ConnectionFromClient::did_worker_agent_close(Web::HTML::WorkerAgentOwnerTok
     Web::HTML::WorkerAgentParent::did_close_worker(owner_token);
 }
 
+void ConnectionFromClient::did_worker_rtc_transform_encoded_audio_frame_written(Web::HTML::WorkerAgentOwnerToken owner_token, u64 transform_id, ByteBuffer payload, u32 ssrc, u8 payload_type, u32 rtp_timestamp, u16 sequence_number)
+{
+    Web::HTML::WorkerAgentParent::did_write_rtc_transform_encoded_audio_frame(owner_token, transform_id, move(payload), ssrc, payload_type, rtp_timestamp, sequence_number);
+}
+
 // https://html.spec.whatwg.org/multipage/speculative-loading.html#nav-traversal-ui:close-a-top-level-traversable
 void ConnectionFromClient::request_close(u64 page_id)
 {

@@ -60,6 +60,9 @@ public:
         }
     }
 
+    void rtc_transform_init(Web::HTML::WorkerAgentId, u64 transform_id, Web::HTML::SerializedTransferRecord options_record);
+    void rtc_transform_encoded_audio_frame(Web::HTML::WorkerAgentId, u64 transform_id, ByteBuffer payload, u32 ssrc, u8 payload_type, u32 rtp_timestamp, u16 sequence_number);
+
 private:
     friend class WebWorkerClient;
 
@@ -93,6 +96,7 @@ private:
     void worker_did_die(Web::HTML::WorkerAgentId);
     void worker_did_request_file(Web::HTML::WorkerAgentId, ByteString path, i32 request_id);
     void worker_did_post_broadcast_channel_message(Web::HTML::WorkerAgentId, Web::HTML::BroadcastChannelMessage);
+    void worker_did_write_rtc_transform_encoded_audio_frame(Web::HTML::WorkerAgentId, u64 transform_id, ByteBuffer payload, u32 ssrc, u8 payload_type, u32 rtp_timestamp, u16 sequence_number);
 
     void remove_agent(Web::HTML::WorkerAgentId);
     void remove_owner(Web::HTML::WorkerAgentId, Owner const& identity);

@@ -289,9 +289,13 @@ ParseResult<Limits> Limits::parse(ConstrainedStream& stream)
     ScopeLogger<WASM_BINPARSER_DEBUG> logger("Limits"sv);
     auto flag = TRY_READ(stream, u8, ParseError::ExpectedKindTag);
 
+    // Proposal 'threads': bit 1 (0x02) is the shared flag. We don't support shared memory,
+    // so we accept the bit but bail clearly later in the section parser.
     // Proposal 'memory64': flags 0/1 refer to 32-bit limits, flags 4/5 refer to 64-bit limits.
-    if (flag & ~0b00000101)
+    if (flag & ~0b00000111)
         return with_eof_check(stream, ParseError::InvalidTag);
+    if (flag & 0b00000010)
+        return with_eof_check(stream, ParseError::InvalidInput);
 
     auto address_type = (flag & 0b00000100) ? AddressType::I64 : AddressType::I32;
 
@@ -1227,10 +1231,87 @@ ParseResult<Instruction> Instruction::parse(ConstrainedStream& stream)
             // op
             return Instruction { full_opcode };
         default:
+            dbgln("idk what {:#x} is bruh", full_opcode);
             return ParseError::UnknownInstruction;
         }
     }
+    case 0xfe: {
+        // Threads/atomics proposal. We don't support shared memory; on non-shared memory
+        // the atomic load/store family is observably equivalent to plain non-atomic ops,
+        // so we lower them in-place. The synchronization ops (fence, notify, wait) and
+        // RMW/cmpxchg are rewritten to nop/unreachable — fine if the module never actually
+        // executes them, traps cleanly if it does.
+        auto selector = TRY_READ(stream, LEB128<u32>, ParseError::InvalidInput);
+
+        auto read_memarg = [](ConstrainedStream& stream) -> ParseResult<MemoryArgument> {
+            u32 align = TRY_READ(stream, LEB128<u32>, ParseError::ExpectedIndex);
+            u32 memory_index = 0;
+            if ((align & 0x40) != 0) {
+                align &= ~0x40;
+                memory_index = TRY_READ(stream, LEB128<u32>, ParseError::InvalidInput);
+            }
+            auto offset = TRY_READ(stream, LEB128<u64>, ParseError::ExpectedIndex);
+            return MemoryArgument { align, offset, MemoryIndex(memory_index) };
+        };
+
+        switch (selector) {
+        case 0x00: // memory.atomic.notify
+        case 0x01: // memory.atomic.wait32
+        case 0x02: // memory.atomic.wait64
+            TRY(read_memarg(stream));
+            return Instruction { Instructions::unreachable };
+        case 0x03: { // atomic.fence
+            TRY_READ(stream, u8, ParseError::InvalidInput);
+            return Instruction { Instructions::nop };
+        }
+        case 0x10: { auto m = TRY(read_memarg(stream)); return Instruction { Instructions::i32_load, m }; }
+        case 0x11: { auto m = TRY(read_memarg(stream)); return Instruction { Instructions::i64_load, m }; }
+        case 0x12: { auto m = TRY(read_memarg(stream)); return Instruction { Instructions::i32_load8_u, m }; }
+        case 0x13: { auto m = TRY(read_memarg(stream)); return Instruction { Instructions::i32_load16_u, m }; }
+        case 0x14: { auto m = TRY(read_memarg(stream)); return Instruction { Instructions::i64_load8_u, m }; }
+        case 0x15: { auto m = TRY(read_memarg(stream)); return Instruction { Instructions::i64_load16_u, m }; }
+        case 0x16: { auto m = TRY(read_memarg(stream)); return Instruction { Instructions::i64_load32_u, m }; }
+        case 0x17: { auto m = TRY(read_memarg(stream)); return Instruction { Instructions::i32_store, m }; }
+        case 0x18: { auto m = TRY(read_memarg(stream)); return Instruction { Instructions::i64_store, m }; }
+        case 0x19: { auto m = TRY(read_memarg(stream)); return Instruction { Instructions::i32_store8, m }; }
+        case 0x1a: { auto m = TRY(read_memarg(stream)); return Instruction { Instructions::i32_store16, m }; }
+        case 0x1b: { auto m = TRY(read_memarg(stream)); return Instruction { Instructions::i64_store8, m }; }
+        case 0x1c: { auto m = TRY(read_memarg(stream)); return Instruction { Instructions::i64_store16, m }; }
+        case 0x1d: { auto m = TRY(read_memarg(stream)); return Instruction { Instructions::i64_store32, m }; }
+        default: {
+            using Op = Instruction::AtomicRMWArgument::Op;
+            using Width = Instruction::AtomicRMWArgument::Width;
+            // i32.atomic.rmw* sub-byte and full-width follow this layout per op:
+            //   <op>:        i32_full, i64_full, i32_8u, i32_16u, i64_8u, i64_16u, i64_32u
+            // 0x1e–0x24: add (i32, i64, i32_8u, i32_16u, i64_8u, i64_16u, i64_32u)
+            // 0x25–0x2b: sub
+            // 0x2c–0x32: and
+            // 0x33–0x39: or
+            // 0x3a–0x40: xor
+            // 0x41–0x47: xchg
+            // 0x48–0x4e: cmpxchg
+            static constexpr Width selector_widths[7] = {
+                Width::I32, Width::I64, Width::I8As32, Width::I16As32, Width::I8As64, Width::I16As64, Width::I32As64
+            };
+            if (selector >= 0x1e && selector <= 0x4e) {
+                auto offset_from_op_base = (selector - 0x1e) % 7;
+                auto op_index = (selector - 0x1e) / 7;
+                static constexpr Op ops[7] = {
+                    Op::Add, Op::Sub, Op::And, Op::Or, Op::Xor, Op::Xchg, Op::CmpXchg
+                };
+                auto op = ops[op_index];
+                auto width = selector_widths[offset_from_op_base];
+                auto memory = TRY(read_memarg(stream));
+                auto opcode = op == Op::CmpXchg ? Instructions::synthetic_atomic_cmpxchg : Instructions::synthetic_atomic_RMW;
+                return Instruction { opcode, Instruction::AtomicRMWArgument { memory, op, width } };
+            }
+            dbgln("idk what 0xfe {:#x} is bruh", static_cast<u32>(selector));
+            return ParseError::UnknownInstruction;
+        }
+        }
     }
+    }
+    dbgln("idk what {:#x} is bruh", opcode);
     return ParseError::UnknownInstruction;
 }
 

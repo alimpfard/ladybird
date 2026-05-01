@@ -309,6 +309,8 @@ private:
     virtual Messages::WebContentClient::DidRequestSessionStoreTabStateForTestingResponse did_request_session_store_tab_state_for_testing(u64 page_id) override;
     virtual Messages::WebContentClient::StartWorkerAgentResponse start_worker_agent(u64 page_id, Web::HTML::WorkerAgentStartRequest request) override;
     virtual void close_worker_agent(u64 page_id, Web::HTML::WorkerAgentId agent_id, Web::HTML::WorkerAgentOwnerToken owner_token) override;
+    virtual void rtc_transform_init(u64 page_id, Web::HTML::WorkerAgentId agent_id, u64 transform_id, Web::HTML::SerializedTransferRecord options_record) override;
+    virtual void rtc_transform_encoded_audio_frame(u64 page_id, Web::HTML::WorkerAgentId agent_id, u64 transform_id, ByteBuffer payload, u32 ssrc, u8 payload_type, u32 rtp_timestamp, u16 sequence_number) override;
 
     Optional<ViewImplementation&> view_for_page_id(u64, SourceLocation = SourceLocation::current());
     Optional<ViewImplementation&> owning_view_for_page_id(u64);

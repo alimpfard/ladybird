@@ -2859,6 +2859,152 @@ HANDLE_INSTRUCTION(global_set)
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
+// We don't support shared memory, so threads-proposal RMW/cmpxchg ops are
+// equivalent to a non-atomic load+modify+store sequence.
+template<typename ValueType, typename MemType, typename Op>
+ALWAYS_INLINE static bool atomic_rmw_impl(BytecodeInterpreter& interpreter, Configuration& configuration, Instruction const& instruction, SourcesAndDestination const& addresses, Op&& op)
+{
+    auto& arg = instruction.arguments().unsafe_get<Instruction::AtomicRMWArgument>();
+    auto& memory_addr = configuration.frame().module().memories().data()[arg.memory.memory_index.value()];
+    auto memory = configuration.store().unsafe_get(memory_addr);
+    auto value = configuration.take_source<SourceAddressMix::Any>(0, addresses.sources).template to<ValueType>();
+    auto& addr_slot = configuration.source_value<SourceAddressMix::Any>(1, addresses.sources);
+    auto base = addr_slot.template to<i32>();
+    u64 instance_address = static_cast<u64>(bit_cast<u32>(base)) + arg.memory.offset;
+    if (instance_address + sizeof(MemType) > memory->size()) [[unlikely]] {
+        interpreter.set_trap(Trap::from_string("Memory access out of bounds"));
+        return true;
+    }
+    auto slice = memory->data().bytes().slice(instance_address, sizeof(MemType));
+    auto old = static_cast<ValueType>(interpreter.template read_value<MemType>(slice));
+    auto new_value = static_cast<MemType>(op(old, value));
+    if (interpreter.store_to_memory(*memory, instance_address, new_value))
+        return true;
+    addr_slot = Value(old);
+    return false;
+}
+
+template<typename ValueType, typename MemType>
+ALWAYS_INLINE static bool atomic_cmpxchg_impl(BytecodeInterpreter& interpreter, Configuration& configuration, Instruction const& instruction, SourcesAndDestination const& addresses)
+{
+    auto& arg = instruction.arguments().unsafe_get<Instruction::AtomicRMWArgument>();
+    auto& memory_addr = configuration.frame().module().memories().data()[arg.memory.memory_index.value()];
+    auto memory = configuration.store().unsafe_get(memory_addr);
+    auto replacement = configuration.take_source<SourceAddressMix::Any>(0, addresses.sources).template to<ValueType>();
+    auto expected = configuration.take_source<SourceAddressMix::Any>(1, addresses.sources).template to<ValueType>();
+    auto& addr_slot = configuration.source_value<SourceAddressMix::Any>(2, addresses.sources);
+    auto base = addr_slot.template to<i32>();
+    u64 instance_address = static_cast<u64>(bit_cast<u32>(base)) + arg.memory.offset;
+    if (instance_address + sizeof(MemType) > memory->size()) [[unlikely]] {
+        interpreter.set_trap(Trap::from_string("Memory access out of bounds"));
+        return true;
+    }
+    auto slice = memory->data().bytes().slice(instance_address, sizeof(MemType));
+    // The cmpxchg comparison is on the truncated memory width.
+    auto old_truncated = interpreter.template read_value<MemType>(slice);
+    auto old = static_cast<ValueType>(old_truncated);
+    if (old_truncated == static_cast<MemType>(expected)) {
+        auto new_truncated = static_cast<MemType>(replacement);
+        if (interpreter.store_to_memory(*memory, instance_address, new_truncated))
+            return true;
+    }
+    addr_slot = Value(old);
+    return false;
+}
+
+template<typename Op>
+ALWAYS_INLINE static bool dispatch_atomic_rmw(BytecodeInterpreter& interpreter, Configuration& configuration, Instruction const& instruction, SourcesAndDestination const& addresses, Op&& op)
+{
+    using W = Instruction::AtomicRMWArgument::Width;
+    auto& arg = instruction.arguments().unsafe_get<Instruction::AtomicRMWArgument>();
+    switch (arg.width) {
+    case W::I32:
+        return atomic_rmw_impl<u32, u32>(interpreter, configuration, instruction, addresses, op);
+    case W::I8As32:
+        return atomic_rmw_impl<u32, u8>(interpreter, configuration, instruction, addresses, op);
+    case W::I16As32:
+        return atomic_rmw_impl<u32, u16>(interpreter, configuration, instruction, addresses, op);
+    case W::I64:
+        return atomic_rmw_impl<u64, u64>(interpreter, configuration, instruction, addresses, op);
+    case W::I8As64:
+        return atomic_rmw_impl<u64, u8>(interpreter, configuration, instruction, addresses, op);
+    case W::I16As64:
+        return atomic_rmw_impl<u64, u16>(interpreter, configuration, instruction, addresses, op);
+    case W::I32As64:
+        return atomic_rmw_impl<u64, u32>(interpreter, configuration, instruction, addresses, op);
+    }
+    VERIFY_NOT_REACHED();
+}
+
+HANDLE_INSTRUCTION(synthetic_atomic_RMW)
+{
+    LOG_INSN;
+    LOAD_ADDRESSES();
+    using O = Instruction::AtomicRMWArgument::Op;
+    auto& arg = instruction->arguments().unsafe_get<Instruction::AtomicRMWArgument>();
+    bool trapped = false;
+    switch (arg.op) {
+    case O::Add:
+        trapped = dispatch_atomic_rmw(interpreter, configuration, *instruction, addresses, [](auto a, auto b) { return a + b; });
+        break;
+    case O::Sub:
+        trapped = dispatch_atomic_rmw(interpreter, configuration, *instruction, addresses, [](auto a, auto b) { return a - b; });
+        break;
+    case O::And:
+        trapped = dispatch_atomic_rmw(interpreter, configuration, *instruction, addresses, [](auto a, auto b) { return a & b; });
+        break;
+    case O::Or:
+        trapped = dispatch_atomic_rmw(interpreter, configuration, *instruction, addresses, [](auto a, auto b) { return a | b; });
+        break;
+    case O::Xor:
+        trapped = dispatch_atomic_rmw(interpreter, configuration, *instruction, addresses, [](auto a, auto b) { return a ^ b; });
+        break;
+    case O::Xchg:
+        trapped = dispatch_atomic_rmw(interpreter, configuration, *instruction, addresses, [](auto, auto b) { return b; });
+        break;
+    case O::CmpXchg:
+        VERIFY_NOT_REACHED();
+    }
+    if (trapped)
+        return Outcome::Return;
+    TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
+}
+
+HANDLE_INSTRUCTION(synthetic_atomic_cmpxchg)
+{
+    LOG_INSN;
+    LOAD_ADDRESSES();
+    using W = Instruction::AtomicRMWArgument::Width;
+    auto& arg = instruction->arguments().unsafe_get<Instruction::AtomicRMWArgument>();
+    bool trapped = false;
+    switch (arg.width) {
+    case W::I32:
+        trapped = atomic_cmpxchg_impl<u32, u32>(interpreter, configuration, *instruction, addresses);
+        break;
+    case W::I8As32:
+        trapped = atomic_cmpxchg_impl<u32, u8>(interpreter, configuration, *instruction, addresses);
+        break;
+    case W::I16As32:
+        trapped = atomic_cmpxchg_impl<u32, u16>(interpreter, configuration, *instruction, addresses);
+        break;
+    case W::I64:
+        trapped = atomic_cmpxchg_impl<u64, u64>(interpreter, configuration, *instruction, addresses);
+        break;
+    case W::I8As64:
+        trapped = atomic_cmpxchg_impl<u64, u8>(interpreter, configuration, *instruction, addresses);
+        break;
+    case W::I16As64:
+        trapped = atomic_cmpxchg_impl<u64, u16>(interpreter, configuration, *instruction, addresses);
+        break;
+    case W::I32As64:
+        trapped = atomic_cmpxchg_impl<u64, u32>(interpreter, configuration, *instruction, addresses);
+        break;
+    }
+    if (trapped)
+        return Outcome::Return;
+    TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
+}
+
 HANDLE_INSTRUCTION(memory_size)
 {
     LOG_INSN;

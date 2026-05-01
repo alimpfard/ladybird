@@ -2450,6 +2450,16 @@ void WebContentClient::close_worker_agent(u64, Web::HTML::WorkerAgentId agent_id
     WorkerProcessManager::the().close_worker_agent(*this, agent_id, owner_token);
 }
 
+void WebContentClient::rtc_transform_init(u64, Web::HTML::WorkerAgentId agent_id, u64 transform_id, Web::HTML::SerializedTransferRecord options_record)
+{
+    WorkerProcessManager::the().rtc_transform_init(agent_id, transform_id, move(options_record));
+}
+
+void WebContentClient::rtc_transform_encoded_audio_frame(u64, Web::HTML::WorkerAgentId agent_id, u64 transform_id, ByteBuffer payload, u32 ssrc, u8 payload_type, u32 rtp_timestamp, u16 sequence_number)
+{
+    WorkerProcessManager::the().rtc_transform_encoded_audio_frame(agent_id, transform_id, move(payload), ssrc, payload_type, rtp_timestamp, sequence_number);
+}
+
 Optional<ViewImplementation&> WebContentClient::view_for_page_id(u64 page_id, SourceLocation location)
 {
     // Don't bother logging anything for the spare WebContent process. It will only receive a load notification for about:blank.

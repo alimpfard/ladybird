@@ -814,6 +814,33 @@ public:
         u8 lanes[16];
     };
 
+    // Threads proposal RMW/cmpxchg, lowered to non-atomic ops at the parser.
+    struct AtomicRMWArgument {
+        enum class Op : u8 {
+            Add,
+            Sub,
+            And,
+            Or,
+            Xor,
+            Xchg,
+            CmpXchg,
+        };
+        // The result type and the slice of memory accessed. I32As64 means a u32
+        // is loaded/stored but the stack value is i64 (zero-extended).
+        enum class Width : u8 {
+            I32,
+            I64,
+            I8As32,
+            I16As32,
+            I8As64,
+            I16As64,
+            I32As64,
+        };
+        MemoryArgument memory;
+        Op op;
+        Width width;
+    };
+
     template<typename T>
     explicit Instruction(OpCode opcode, T argument)
         : m_opcode(opcode)
@@ -855,6 +882,7 @@ private:
         ArrayDataArgs,
         ArrayElemArgs,
         ArrayNewFixedArgs,
+        AtomicRMWArgument,
         BlockType,
         BranchArgs,
         BranchOnCastArgs,

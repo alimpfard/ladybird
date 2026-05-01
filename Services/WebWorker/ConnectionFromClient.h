@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <AK/ByteBuffer.h>
 #include <AK/HashMap.h>
 #include <AK/Utf16String.h>
 #include <LibGC/Root.h>
@@ -17,6 +18,7 @@
 #include <LibWeb/Loader/FileRequest.h>
 #include <LibWeb/Worker/WebWorkerClientEndpoint.h>
 #include <LibWeb/Worker/WebWorkerServerEndpoint.h>
+#include <LibWeb/WebRTC/RTCRtpScriptTransformer.h>
 #include <LibWebView/Forward.h>
 #include <WebWorker/Forward.h>
 #include <WebWorker/PageHost.h>
@@ -76,6 +78,8 @@ private:
     virtual void did_worker_agent_report_exception(Web::HTML::WorkerAgentOwnerToken owner_token, Utf16String message, Utf16String filename, u32 lineno, u32 colno) override;
     virtual void did_worker_agent_close(Web::HTML::WorkerAgentOwnerToken owner_token) override;
     virtual void broadcast_channel_message(Web::HTML::BroadcastChannelMessage message) override;
+    virtual void rtc_transform_init(u64 transform_id, Web::HTML::SerializedTransferRecord options_record) override;
+    virtual void rtc_transform_encoded_audio_frame(u64 transform_id, ByteBuffer payload, u32 ssrc, u8 payload_type, u32 rtp_timestamp, u16 sequence_number) override;
 
     GC::Root<PageHost> m_page_host;
 
@@ -85,6 +89,11 @@ private:
 
     HashMap<int, Web::FileRequest> m_requested_files {};
     int last_id { 0 };
+
+    HashMap<u64, GC::Root<Web::WebRTC::RTCRtpScriptTransformer>> m_transformers;
+    HashMap<u64, Web::HTML::SerializedTransferRecord> m_pending_transform_inits;
+
+    void run_transform_init(u64 transform_id, Web::HTML::SerializedTransferRecord options_record);
 
     RefPtr<WorkerHost> m_worker_host;
     Function<void()> m_request_server_died_callback_for_testing;

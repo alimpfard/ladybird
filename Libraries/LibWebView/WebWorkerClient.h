@@ -53,6 +53,7 @@ public:
     virtual Messages::WebWorkerClient::MatchSystemFontResponse match_system_font(String family, u16 weight, u16 width, u8 slope) override;
     virtual Messages::WebWorkerClient::MatchSystemFontForCodePointResponse match_system_font_for_code_point(u32 code_point, u16 weight, u16 width, u8 slope, bool prefer_color_emoji) override;
     virtual Messages::WebWorkerClient::ResolveGenericFontResponse resolve_generic_font(String family, u16 weight, u8 slope) override;
+    virtual void rtc_transform_encoded_audio_frame_written(u64 transform_id, ByteBuffer payload, u32 ssrc, u8 payload_type, u32 rtp_timestamp, u16 sequence_number) override;
 
 private:
     virtual void die() override;

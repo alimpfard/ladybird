@@ -1,0 +1,30 @@
+[package]
+name = "ladybird_webrtc"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["rlib"]
+
+[[bin]]
+name = "webrtc-test"
+path = "src/bin/webrtc-test.rs"
+
+[dependencies]
+webrtc = "0.17.1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "signal", "time"] }
+anyhow = "1"
+env_logger = "0.11"
+log = "0.4"
+cpal = "0.15"
+audiopus = "0.2"
+bytes = "1"
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+libipc = { workspace = true }
+ipc_webrtcclientserver = { path = "../../../Build/release/cargo/generated/ipc/ipc_webrtcclientserver" }
+ipc_webrtcclientclient = { path = "../../../Build/release/cargo/generated/ipc/ipc_webrtcclientclient" }
+
+[lints]
+workspace = true
