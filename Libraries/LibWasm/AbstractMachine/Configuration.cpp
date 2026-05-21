@@ -5,6 +5,7 @@
  */
 
 #include <AK/MemoryStream.h>
+#include <AK/StringBuilder.h>
 #include <LibWasm/AbstractMachine/Configuration.h>
 #include <LibWasm/AbstractMachine/Interpreter.h>
 #include <LibWasm/Printer/Printer.h>
@@ -106,13 +107,16 @@ void Configuration::build_compiled_function_table()
     if (m_compiled_fn_table_module == current_module && !m_compiled_fn_table.is_empty())
         return;
 
-    m_compiled_fn_table.clear();
+    m_compiled_fn_table.clear_with_capacity();
     m_compiled_fn_table_module = current_module;
 
     auto const& functions = frame().module().functions();
     auto count = functions.size();
     if (count == 0)
         return;
+
+    m_compiled_fn_table.resize_with_default_value_and_keep_capacity(count, {});
+    auto fn_table = m_compiled_fn_table.data();
 
     for (size_t i = 0; i < count; i++) {
         auto* instance = m_store.unsafe_get(functions[i]);
@@ -122,7 +126,8 @@ void Configuration::build_compiled_function_table()
         auto& ci = wasm_fn->code().func().body().compiled_instructions;
         if (!ci.cranelift_compiled)
             continue;
-        CompiledFunctionEntry entry;
+
+        auto& entry = fn_table[i];
         entry.handler_ptr = ci.dispatches[0].handler_ptr;
         entry.dispatches_ptr = bit_cast<FlatPtr>(ci.dispatches.data());
         entry.src_dst_ptr = bit_cast<FlatPtr>(ci.src_dst_mappings.data());
@@ -132,8 +137,46 @@ void Configuration::build_compiled_function_table()
         entry.total_local_count = static_cast<u32>(wasm_fn->code().func().total_local_count());
         entry.arity = static_cast<u32>(wasm_fn->type().results().size());
         entry.max_call_rec_size = static_cast<u32>(ci.max_call_rec_size);
-        m_compiled_fn_table.set(static_cast<u32>(i), entry);
     }
+}
+
+void Configuration::report_value_stack_overflow()
+{
+    auto& stack = value_stack();
+    dbgln("Wasm value stack about to overflow: size={} capacity={} frames={}",
+        stack.size(), stack.capacity(), m_frame_stack.size());
+
+    size_t expected_base = 0;
+    for (size_t i = 0; i < m_frame_stack.size(); ++i) {
+        auto const& f = m_frame_stack[i];
+        auto hint = f.expression().stack_usage_hint();
+        size_t base = f.value_stack_base();
+        size_t next_base = i + 1 < m_frame_stack.size()
+            ? m_frame_stack[i + 1].value_stack_base()
+            : stack.size();
+        size_t growth = next_base - base;
+        bool exceeds = hint.has_value() && growth > *hint;
+        StringBuilder line;
+        line.appendff("  frame[{}]: base={} growth={} hint=", i, base, growth);
+        if (hint.has_value())
+            line.appendff("{}", *hint);
+        else
+            line.append("<unset>"sv);
+        line.appendff(" expected_base={}", expected_base);
+        if (base != expected_base)
+            line.append(" <-- base mismatch!"sv);
+        if (exceeds)
+            line.append(" <-- growth exceeds hint!"sv);
+        dbgln("{}", line.string_view());
+        expected_base = next_base;
+    }
+
+    // Dump the last up-to-64 raw stack entries so we can see what's actually leaking.
+    auto const& vs = m_value_stack;
+    size_t start = vs.size() > 64 ? vs.size() - 64 : 0;
+    dbgln("  value_stack contents [{}..{}]:", start, vs.size());
+    for (size_t i = start; i < vs.size(); ++i)
+        dbgln("    [{}] = i64:{:#x} f64:{}", i, vs[i].to<u64>(), vs[i].to<double>());
 }
 
 void Configuration::dump_stack()

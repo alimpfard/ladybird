@@ -670,7 +670,7 @@ public:
     ExceptionInstance* get(ExceptionAddress);
 
     ALWAYS_INLINE FunctionInstance* unsafe_get(FunctionAddress address) { return &m_functions.data()[address.value()]; }
-    ALWAYS_INLINE MemoryInstance* unsafe_get(MemoryAddress address) { return m_memories[address.value()].ptr(); }
+    ALWAYS_INLINE MemoryInstance* unsafe_get(MemoryAddress address) { return m_memories.data()[address.value()].ptr(); }
 
 private:
     Vector<FunctionInstance> m_functions;
@@ -731,6 +731,7 @@ public:
         , m_expression(other.m_expression)
         , m_arity(other.m_arity)
         , m_label_index(other.m_label_index)
+        , m_value_stack_base(other.m_value_stack_base)
         , m_owns_locals(other.m_owns_locals)
     {
     }
@@ -742,6 +743,7 @@ public:
             m_locals_ptr = other.m_owns_locals ? m_owned_locals.data() : other.m_locals_ptr;
             m_arity = other.m_arity;
             m_label_index = other.m_label_index;
+            m_value_stack_base = other.m_value_stack_base;
             m_owns_locals = other.m_owns_locals;
         }
         return *this;
@@ -758,6 +760,8 @@ public:
     auto arity() const { return m_arity; }
     auto label_index() const { return m_label_index; }
     auto& label_index() { return m_label_index; }
+    size_t value_stack_base() const { return m_value_stack_base; }
+    void set_value_stack_base(size_t base) { m_value_stack_base = base; }
 
 private:
     ModuleInstance const& m_module;
@@ -766,6 +770,7 @@ private:
     Expression const& m_expression;
     size_t m_arity { 0 };
     size_t m_label_index { 0 };
+    size_t m_value_stack_base { 0 };
     bool m_owns_locals { false };
 };
 

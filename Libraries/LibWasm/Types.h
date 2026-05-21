@@ -1543,7 +1543,7 @@ private:
     size_t m_minimum_call_record_allocation_size { 0 };
 };
 
-CompiledInstructions try_compile_instructions(Expression const&, Span<FunctionType const> functions);
+CompiledInstructions try_compile_instructions(Expression const&, Span<FunctionType const> functions, Optional<size_t> debug_function_index = {});
 bool try_cranelift_compile(CompiledInstructions& compiled, u32 result_arity = 0);
 void flush_cranelift_batch();
 

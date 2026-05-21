@@ -58,6 +58,7 @@ thread_local CompiledFaultRecoveryContext* s_compiled_fault_recovery = nullptr;
 
 static bool is_wasm_memory_fault(Wasm::Configuration& configuration, void* address)
 {
+    fprintf(stderr, "Checking for wasm memory fault at address %p (conf=%p)\n", address, &configuration);
     auto const& memories = configuration.frame().module().memories();
     for (auto const& memory_address : memories) {
         auto* memory = configuration.store().unsafe_get(memory_address);
@@ -2148,6 +2149,27 @@ HANDLE_INSTRUCTION(synthetic_br_nostack)
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
+// br variant that checks value_stack.size() against the target label's
+// expected post-branch size at runtime. If they match, jump nostack-style
+// (no value_stack touch). Otherwise, adjust the stack down to the expected
+// size and jump.
+HANDLE_INSTRUCTION(synthetic_br_nostack_check)
+{
+    LOG_INSN;
+    auto& branch_args = instruction->arguments().unsafe_get<Instruction::BranchArgs>();
+    auto label_idx = branch_args.label.value();
+    auto& label_stack = configuration.label_stack();
+    auto label_pos = label_stack.size() - 1 - label_idx;
+    auto& label = label_stack.at(label_pos);
+    auto expected = label.stack_height() + label.arity();
+    auto current = configuration.value_stack().size();
+    if (current != expected) [[unlikely]]
+        configuration.value_stack().remove(label.stack_height(), current - expected);
+    label_stack.unsafe_shrink(label_pos + 1);
+    short_ip.current_ip_value = label.continuation().value() - 1;
+    TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
+}
+
 HANDLE_INSTRUCTION(br_if)
 {
     LOG_INSN;
@@ -2165,6 +2187,29 @@ HANDLE_INSTRUCTION(synthetic_br_if_nostack)
     // bounds checked by verifier.
     auto cond = configuration.take_source<source_address_mix>(0, addresses.sources).template to<i32>();
     short_ip.current_ip_value = interpreter.branch_to_label<false>(configuration, instruction->arguments().unsafe_get<Instruction::BranchArgs>().label, short_ip.current_ip_value, cond != 0).value();
+    TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
+}
+
+// br_if variant with the same runtime size check as synthetic_br_nostack_check.
+HANDLE_INSTRUCTION(synthetic_br_if_nostack_check)
+{
+    LOG_INSN;
+    LOAD_ADDRESSES();
+    auto cond = configuration.take_source<source_address_mix>(0, addresses.sources).template to<i32>();
+    if (cond == 0) {
+        TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
+    }
+    auto& branch_args = instruction->arguments().unsafe_get<Instruction::BranchArgs>();
+    auto label_idx = branch_args.label.value();
+    auto& label_stack = configuration.label_stack();
+    auto label_pos = label_stack.size() - 1 - label_idx;
+    auto& label = label_stack.at(label_pos);
+    auto expected = label.stack_height() + label.arity();
+    auto current = configuration.value_stack().size();
+    if (current != expected) [[unlikely]]
+        configuration.value_stack().remove(label.stack_height(), current - expected);
+    label_stack.unsafe_shrink(label_pos + 1);
+    short_ip.current_ip_value = label.continuation().value() - 1;
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
@@ -5856,13 +5901,17 @@ Instruction& InstructionStorage::append(Instruction instruction)
     return slot.value();
 }
 
-CompiledInstructions try_compile_instructions(Expression const& expression, Span<FunctionType const> functions)
+CompiledInstructions try_compile_instructions(Expression const& expression, Span<FunctionType const> functions, Optional<size_t> debug_function_index)
 {
     CompiledInstructions result;
 
     auto instruction_count = expression.instructions().size();
     result.dispatches.ensure_capacity(instruction_count);
     result.src_dst_mappings.ensure_capacity(instruction_count);
+
+    size_t poly_old_ids_forced_to_stack = 0;
+    size_t poly_new_ids_synthesized = 0;
+    auto fn_label = debug_function_index.has_value() ? ByteString::number(*debug_function_index) : "?"sv.to_byte_string();
 
     i32 i32_const_value { 0 };
     i64 i64_const_value { 0 };
@@ -6586,6 +6635,9 @@ CompiledInstructions try_compile_instructions(Expression const& expression, Span
                 dependent_ids.append(val);
                 forced_stack_values.append(val);
                 live_at_instr[i].append(val);
+                ++poly_old_ids_forced_to_stack;
+                dbgln("[poly-trace fn={}] IP={} OLD id={} (def={}) forced to stack at variadic instruction (opcode {})",
+                    fn_label, i, val.value(), value.definition_index.value(), opcode.value());
             }
             value_stack.clear_with_capacity();
         }
@@ -6607,6 +6659,9 @@ CompiledInstructions try_compile_instructions(Expression const& expression, Span
                 input_ids.append(val_id);
                 forced_stack_values.append(val_id);
                 ensure_id_space(val_id);
+                ++poly_new_ids_synthesized;
+                dbgln("[poly-trace fn={}] IP={} NEW id={} synthesized as polymorphic input (opcode {})",
+                    fn_label, i, val_id.value(), opcode.value());
             }
 
             inputs = 0;
@@ -6977,14 +7032,23 @@ CompiledInstructions try_compile_instructions(Expression const& expression, Span
         }
     }
 
-    // Swap out br(.if) with synthetic:br(.if).nostack if !args.has_stack_adjustment.
+    // Swap out br(.if) with the runtime-checked nostack variant when the
+    // validator said no adjustment is needed. The check variant verifies
+    // value_stack.size() matches the target label's expected size at
+    // runtime, and only adjusts if not. This catches cases where the
+    // compiler's register allocator places more on the runtime stack than
+    // the validator's abstract-stack count predicted.
+    //
+    // TODO: when the compiler can statically prove its runtime stack matches
+    // the validator's count at this br site, emit the pure
+    // synthetic_br(_if)_nostack variant for the no-touch fast path.
     for (size_t i = 0; i < result.dispatches.size(); ++i) {
         auto& dispatch = result.dispatches[i];
         if ((dispatch.instruction->opcode() == Instructions::br || dispatch.instruction->opcode() == Instructions::br_if)
             && !dispatch.instruction->arguments().get<Instruction::BranchArgs>().has_stack_adjustment) {
             auto new_opcode = dispatch.instruction->opcode() == Instructions::br
-                ? Instructions::synthetic_br_nostack
-                : Instructions::synthetic_br_if_nostack;
+                ? Instructions::synthetic_br_nostack_check
+                : Instructions::synthetic_br_if_nostack_check;
             auto& extra_instruction = append_extra_instruction(
                 new_opcode,
                 dispatch.instruction->arguments());
@@ -7179,6 +7243,12 @@ CompiledInstructions try_compile_instructions(Expression const& expression, Span
                 used[to_underlying(dest)] = true;
             }
         }
+    }
+
+    if (poly_old_ids_forced_to_stack > 0 || poly_new_ids_synthesized > 0) {
+        dbgln("[poly-trace fn={}] totals: old_ids_forced_to_stack={} new_ids_synthesized={} hint={}",
+            fn_label, poly_old_ids_forced_to_stack, poly_new_ids_synthesized,
+            expression.stack_usage_hint().value_or(0));
     }
 
     return result;

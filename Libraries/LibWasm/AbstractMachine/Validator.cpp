@@ -291,7 +291,7 @@ ErrorOr<void, ValidationError> Validator::validate(CodeSection const& section)
         function_validator.m_frames.empend(function_type, FrameKind::Function, (size_t)0);
         function_validator.m_max_frame_size = max(function_validator.m_max_frame_size, function_validator.m_frames.size());
 
-        auto results = TRY(function_validator.validate(function.body(), function_type.results()));
+        auto results = TRY(function_validator.validate(function.body(), function_type.results(), function_index));
         if (results.result_types.size() != function_type.results().size())
             return Errors::invalid("function result"sv, function_type.results(), results.result_types);
 
@@ -4370,7 +4370,7 @@ ErrorOr<void, ValidationError> Validator::validate(Instruction const& instructio
     }
 }
 
-ErrorOr<Validator::ExpressionTypeResult, ValidationError> Validator::validate(Expression const& expression, Vector<ValueType> const& result_types)
+ErrorOr<Validator::ExpressionTypeResult, ValidationError> Validator::validate(Expression const& expression, Vector<ValueType> const& result_types, Optional<size_t> debug_function_index)
 {
     if (m_frames.is_empty())
         m_frames.empend(FunctionType { {}, result_types }, FrameKind::Function, (size_t)0);
@@ -4399,7 +4399,7 @@ ErrorOr<Validator::ExpressionTypeResult, ValidationError> Validator::validate(Ex
     m_max_frame_size = 0;
 
     // Now that we're in happy land, try to compile the expression down to a list of labels to help dispatch.
-    expression.compiled_instructions = try_compile_instructions(expression, m_context.functions.span());
+    expression.compiled_instructions = try_compile_instructions(expression, m_context.functions.span(), debug_function_index);
 
     // Optionally compile with Cranelift (skip constant expressions and unsupported types).
     if (expression.compiled_instructions.direct && !is_constant_expression) {

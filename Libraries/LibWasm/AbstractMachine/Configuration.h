@@ -49,6 +49,7 @@ public:
         frame.label_index() = m_label_stack.size();
         if (auto hint = frame.expression().stack_usage_hint(); hint.has_value())
             m_value_stack.ensure_capacity(*hint + m_value_stack.size());
+        frame.set_value_stack_base(m_value_stack.size());
         if (is_tailcall == IsTailcall::No) {
             if (auto hint = frame.expression().frame_usage_hint(); hint.has_value())
                 m_label_stack.ensure_capacity(*hint + m_label_stack.size());
@@ -69,6 +70,7 @@ public:
         Expression const& expression, size_t arity)
     {
         m_frame_stack.empend(module, locals_ptr, expression, arity);
+        m_frame_stack.last().set_value_stack_base(m_value_stack.size());
         m_locals_base = locals_ptr;
         auto const& memories = module.memories();
         m_default_memory = memories.is_empty() ? nullptr : m_store.unsafe_get(memories[0]);
@@ -127,7 +129,7 @@ public:
         u32 arity { 0 };
         u32 max_call_rec_size { 0 };
     };
-    HashMap<u32, CompiledFunctionEntry> m_compiled_fn_table;
+    Vector<CompiledFunctionEntry> m_compiled_fn_table;
     ModuleInstance const* m_compiled_fn_table_module { nullptr };
 
     void build_compiled_function_table();
@@ -216,6 +218,7 @@ public:
     bool should_limit_instruction_count() const { return m_should_limit_instruction_count; }
 
     void dump_stack();
+    void report_value_stack_overflow();
 
     void get_arguments_allocation_if_possible(Vector<Value, ArgumentsStaticSize>& arguments, size_t max_size)
     {
@@ -278,6 +281,8 @@ public:
             m_call_record_base[to_underlying(destination) - Dispatch::RegisterOrStack::CallRecord] = value;
             return;
         } else if constexpr (mix == SourceAddressMix::AllStack) {
+            if (value_stack().size() == value_stack().capacity()) [[unlikely]]
+                report_value_stack_overflow();
             value_stack().unchecked_append(value);
             return;
         } else if constexpr (mix == SourceAddressMix::Any) {
@@ -289,6 +294,8 @@ public:
 
         if constexpr (mix == SourceAddressMix::Any) {
             if (destination == Dispatch::RegisterOrStack::Stack) [[unlikely]] {
+                if (value_stack().size() == value_stack().capacity()) [[unlikely]]
+                    report_value_stack_overflow();
                 value_stack().unchecked_append(value);
                 return;
             }

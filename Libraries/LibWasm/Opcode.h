@@ -548,7 +548,16 @@ namespace Instructions {
     M(synthetic_local_seti64_const, 0xfe00003bu, 0, 0) \
     /* Continuation data for br_table with >8 labels.  \
      * Only consumed by the Cranelift compiler; */     \
-    M(synthetic_br_table_cont, 0xfe00003cu, 0, 0)
+    M(synthetic_br_table_cont, 0xfe00003cu, 0, 0)                  \
+    /* Same as synthetic_br_nostack but checks value_stack.size()  \
+     * vs the target label's expected size first. If it matches,   \
+     * jump (nostack-style). Otherwise, fall through to the next   \
+     * dispatch (which should be a regular br or br_if).           \
+     * Used when the validator said no stack adjustment is needed  \
+     * but the compiler can't statically prove its own stack model \
+     * agrees. */                                                  \
+    M(synthetic_br_nostack_check, 0xfe00003du, 0, -1)              \
+    M(synthetic_br_if_nostack_check, 0xfe00003eu, 1, -1)
 
 #define ENUMERATE_WASM_OPCODES(M)         \
     ENUMERATE_SINGLE_BYTE_WASM_OPCODES(M) \
