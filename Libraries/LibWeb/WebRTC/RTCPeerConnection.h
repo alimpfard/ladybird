@@ -15,6 +15,7 @@
 #include <LibWeb/Bindings/RTCSessionDescription.h>
 #include <LibWeb/DOM/EventTarget.h>
 #include <LibWeb/Forward.h>
+#include <LibWeb/MediaCapture/MediaStreamTrack.h>
 #include <LibWeb/WebIDL/Promise.h>
 
 namespace Audio {
@@ -32,7 +33,6 @@ class FFmpegAudioEncoder;
 
 namespace Web::WebRTC {
 
-class AudioCaptureSession;
 class RTCDataChannel;
 class RTCRtpReceiver;
 class RTCRtpSender;
@@ -219,15 +219,21 @@ private:
     void feed_decoded_audio(u64 receiver_id, ByteBuffer payload, u32 rtp_timestamp);
 
     // Sender-side counterpart: lazily allocated once a sender has both a track and
-    // (ideally) a script transform. Captures mic via SDL on a background thread,
-    // posts each 20 ms PCM frame back to the main thread for opus encode, then
-    // routes the resulting RTCEncodedAudioFrame through the sender's transform.
+    // (ideally) a script transform. Subscribes to the sender's MediaStreamTrack for
+    // PCM frames (which the track's source produces — mic, or a
+    // MediaStreamAudioDestinationNode-fed track), accumulates 20 ms blocks, opus
+    // encodes them, and routes each RTCEncodedAudioFrame through the sender's transform.
     struct OutgoingAudioPipeline {
-        OwnPtr<AudioCaptureSession> capture;
+        RefPtr<MediaCapture::AudioFrameSink> sink;
+        GC::Ptr<MediaCapture::MediaStreamTrack> track;
         OwnPtr<Media::FFmpeg::FFmpegAudioEncoder> encoder;
         u64 sender_id { 0 };
         u32 next_rtp_timestamp { 0 };
         u16 next_sequence_number { 0 };
+        // Float accumulator for 20 ms frames at the track's native channel layout.
+        // We convert to s16 only at the boundary where we hand off to the encoder.
+        Vector<float> float_accumulator;
+        u8 channels { 0 };
     };
     HashMap<u64, NonnullOwnPtr<OutgoingAudioPipeline>> m_outgoing_audio_pipelines;
     void start_outgoing_audio_for_sender(GC::Ref<RTCRtpSender>);

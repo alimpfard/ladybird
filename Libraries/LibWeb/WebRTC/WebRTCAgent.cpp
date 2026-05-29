@@ -15,7 +15,6 @@
 #include <LibWeb/DOM/Event.h>
 #include <LibWeb/HTML/EventNames.h>
 #include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
-#include <LibWeb/WebRTC/AudioCaptureSession.h>
 #include <LibWeb/WebRTC/RTCDataChannel.h>
 #include <LibWeb/WebRTC/RTCPeerConnection.h>
 #include <LibWeb/WebRTC/WebRTCAgent.h>
@@ -58,16 +57,6 @@ void WebRTCAgent::register_data_channel(u64 channel_id, GC::Ref<RTCDataChannel> 
 void WebRTCAgent::unregister_data_channel(u64 channel_id)
 {
     m_data_channels.remove(channel_id);
-}
-
-void WebRTCAgent::register_audio_capture_session(u64 sender_id, NonnullOwnPtr<AudioCaptureSession> session)
-{
-    m_audio_capture_sessions.set(sender_id, move(session));
-}
-
-void WebRTCAgent::unregister_audio_capture_session(u64 sender_id)
-{
-    m_audio_capture_sessions.remove(sender_id);
 }
 
 void WebRTCAgent::ensure_client()

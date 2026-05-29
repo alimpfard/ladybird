@@ -7,6 +7,8 @@
 
 #include <AK/Debug.h>
 #include <LibCore/Directory.h>
+#include <LibWeb/FileAPI/Blob.h>
+#include <LibWeb/FileAPI/BlobURLStore.h>
 #include <LibCore/MimeData.h>
 #include <LibCore/Resource.h>
 #include <LibCore/System.h>
@@ -430,6 +432,28 @@ RefPtr<Requests::Request> ResourceLoader::load(LoadRequest& request, GC::Root<On
                 on_complete->function()(false, {}, StringView(message));
             });
 
+        return nullptr;
+    }
+
+    if (url.scheme() == "blob"sv) {
+        // Resolve blob: URLs from the FileAPI store. Serve the Blob's bytes synchronously
+        // so any code path that fetches via ResourceLoader (worker scripts, audio worklet
+        // modules created from object URLs, etc.) just works.
+        auto blob_entry = FileAPI::resolve_a_blob_url(url);
+        if (!blob_entry.has_value() || !blob_entry->object.has<GC::Ref<FileAPI::Blob>>()) {
+            log_failure(request, "blob URL did not resolve");
+            on_complete->function()(false, {}, "blob URL did not resolve"sv);
+            return nullptr;
+        }
+        auto blob = blob_entry->object.get<GC::Ref<FileAPI::Blob>>();
+        auto bytes = blob->raw_bytes();
+        auto type = blob->type();
+        // FIXME: synthesize Content-Type / Content-Length headers from the Blob.
+        Requests::RequestTimingInfo fixme_timing {};
+        log_success(request);
+        on_headers_received->function()(*HTTP::HeaderList::create(), 200, "OK"_string, {}, {});
+        on_data_received->function()(Requests::ResponseData::from_bytes(bytes));
+        on_complete->function()(true, fixme_timing, {});
         return nullptr;
     }
 

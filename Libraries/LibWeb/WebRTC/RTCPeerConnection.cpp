@@ -22,7 +22,6 @@
 #include <LibWeb/WebRTC/RTCRtpSender.h>
 #include <LibWeb/WebRTC/RTCRtpTransceiver.h>
 #include <LibWeb/WebRTC/RTCSctpTransport.h>
-#include <LibWeb/WebRTC/AudioCaptureSession.h>
 #include <LibCore/EventLoop.h>
 #include <LibMedia/Audio/PlaybackStream.h>
 #include <LibMedia/AudioBlock.h>
@@ -85,6 +84,8 @@ void RTCPeerConnection::visit_edges(JS::Cell::Visitor& visitor)
     visitor.visit(m_pending_remote_description);
     visitor.visit(m_remote_streams);
     visitor.visit(m_remote_receivers_by_id);
+    for (auto& [_, pipeline] : m_outgoing_audio_pipelines)
+        visitor.visit(pipeline->track);
 }
 
 // https://www.w3.org/TR/webrtc/#dom-rtcpeerconnection-close
@@ -1091,6 +1092,11 @@ void RTCPeerConnection::on_sender_transform_changed(RTCRtpSender& sender)
 void RTCPeerConnection::start_outgoing_audio_for_sender(GC::Ref<RTCRtpSender> sender)
 {
     auto sender_id = sender->sender_id();
+    auto track = sender->track();
+    if (!track) {
+        dbgln("RTCPeerConnection: sender_id={} has no track yet, deferring", sender_id);
+        return;
+    }
     auto sample_spec = Audio::SampleSpecification(48000, Audio::ChannelMap::stereo());
     constexpr int OPUS_BITRATE_BPS = 64'000;
     auto encoder_or_err = Media::FFmpeg::FFmpegAudioEncoder::try_create(Media::CodecID::Opus, sample_spec, OPUS_BITRATE_BPS);
@@ -1101,30 +1107,65 @@ void RTCPeerConnection::start_outgoing_audio_for_sender(GC::Ref<RTCRtpSender> se
     auto pipeline = make<OutgoingAudioPipeline>();
     pipeline->encoder = encoder_or_err.release_value();
     pipeline->sender_id = sender_id;
+    pipeline->track = track;
     auto* pipeline_ptr = pipeline.ptr();
 
-    // Capture runs on the PulseAudio main-loop thread, which has no Core::EventLoop
-    // of its own. Capture a weak reference to the current (= main) event loop so we
-    // can post each 20 ms frame back to it for encode + JS-realm operations.
+    // The track sink fires on the producer thread (PulseAudio mainloop or, in the future,
+    // the audio render thread when a MediaStreamAudioDestinationNode feeds the track).
+    // Hop to the current Core::EventLoop for encode + JS-realm operations.
     auto main_loop_weak = Core::EventLoop::current_weak();
-    auto session = AudioCaptureSession::start([this, sender_id, pipeline_ptr, main_loop_weak](ReadonlyBytes pcm_bytes) {
-        (void)pipeline_ptr;
-        auto buffer_or_err = ByteBuffer::copy(pcm_bytes);
-        if (buffer_or_err.is_error())
+    auto sink = adopt_ref(*new MediaCapture::AudioFrameSink);
+    sink->on_frames = [this, sender_id, pipeline_ptr, main_loop_weak](float const* samples, size_t frame_count, u8 channels, u32 /*sample_rate*/) {
+        // FIXME: resample if the track's rate differs from 48 kHz (currently we assume 48 kHz).
+        if (channels == 0 || frame_count == 0)
             return;
-        auto buffer = buffer_or_err.release_value();
-        auto strong = main_loop_weak->take();
-        if (!strong)
-            return;
-        strong->deferred_invoke([this, sender_id, buffer = move(buffer)]() mutable {
-            encode_and_route_outgoing_pcm(sender_id, move(buffer));
-        });
-    });
-    if (!session) {
-        dbgln("RTCPeerConnection: AudioCaptureSession failed to start for sender_id={}", sender_id);
-        return;
-    }
-    pipeline->capture = move(session);
+
+        constexpr u32 SAMPLE_RATE = 48000;
+        constexpr size_t CHANNEL_COUNT = 2; // opus stereo
+        constexpr size_t SAMPLES_PER_FRAME = 960; // 20 ms @ 48 kHz
+        constexpr size_t INTERLEAVED_SAMPLES = SAMPLES_PER_FRAME * CHANNEL_COUNT;
+        (void)SAMPLE_RATE;
+
+        // FIXME: ad-hoc input gain — see the matching note in AnalyserNode::current_time_domain_data.
+        constexpr float CAPTURE_GAIN = 50.0f;
+
+        auto& accum = pipeline_ptr->float_accumulator;
+        if (pipeline_ptr->channels != CHANNEL_COUNT) {
+            pipeline_ptr->channels = CHANNEL_COUNT;
+            accum.clear();
+        }
+        accum.ensure_capacity(accum.size() + frame_count * CHANNEL_COUNT);
+        for (size_t f = 0; f < frame_count; ++f) {
+            // Up/down-mix to the encoder's stereo: replicate channel 0 if mono input,
+            // take the first two channels otherwise (drop the rest). Apply make-up gain.
+            float l = samples[f * channels + 0] * CAPTURE_GAIN;
+            float r = (channels >= 2 ? samples[f * channels + 1] : samples[f * channels + 0]) * CAPTURE_GAIN;
+            l = AK::clamp(l, -1.0f, 1.0f);
+            r = AK::clamp(r, -1.0f, 1.0f);
+            accum.append(l);
+            accum.append(r);
+        }
+        // Hand off any complete 20 ms frames to the main loop for encode.
+        while (accum.size() >= INTERLEAVED_SAMPLES) {
+            auto buffer_or_err = ByteBuffer::create_uninitialized(INTERLEAVED_SAMPLES * sizeof(i16));
+            if (buffer_or_err.is_error())
+                break;
+            auto buffer = buffer_or_err.release_value();
+            auto* dst = reinterpret_cast<i16*>(buffer.data());
+            for (size_t i = 0; i < INTERLEAVED_SAMPLES; ++i)
+                dst[i] = static_cast<i16>(accum[i] * 32767.0f);
+            accum.remove(0, INTERLEAVED_SAMPLES);
+
+            auto strong = main_loop_weak->take();
+            if (!strong)
+                continue;
+            strong->deferred_invoke([this, sender_id, buffer = move(buffer)]() mutable {
+                encode_and_route_outgoing_pcm(sender_id, move(buffer));
+            });
+        }
+    };
+    track->add_audio_sink(sink);
+    pipeline->sink = sink;
     m_outgoing_audio_pipelines.set(sender_id, move(pipeline));
 }
 

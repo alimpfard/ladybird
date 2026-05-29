@@ -441,7 +441,7 @@ async fn dispatch(state: &Arc<State>, id: i32, mut decoder: Decoder<'_>) -> Resu
             };
             match pc.create_data_channel(&req.label, Some(init)).await {
                 Ok(dc) => {
-                    wire_data_channel_events(state, req.channel_id, &dc);
+                    wire_data_channel_events(state, req.channel_id, &dc).await;
                     state.registry.lock().await.data_channels.insert(req.channel_id, dc);
                 }
                 Err(e) => log::warn!("create_data_channel: {e}"),
@@ -526,7 +526,7 @@ fn spawn_opus_encoder_task(track: Arc<TrackLocalStaticSample>, mut pcm_rx: mpsc:
     });
 }
 
-fn wire_data_channel_events(state: &Arc<State>, channel_id: u64, dc: &Arc<RTCDataChannel>) {
+async fn wire_data_channel_events(state: &Arc<State>, channel_id: u64, dc: &Arc<RTCDataChannel>) {
     let writer = state.writer.clone();
     dc.on_open(Box::new(move || {
         let writer = writer.clone();
@@ -582,7 +582,8 @@ fn wire_data_channel_events(state: &Arc<State>, channel_id: u64, dc: &Arc<RTCDat
         Box::pin(async move {
             let _ = send(&writer, &Client::OnDataChannelBufferedAmountLow { channel_id });
         })
-    }));
+    }))
+    .await;
 }
 
 async fn apply_description(
@@ -914,7 +915,7 @@ fn wire_pc_events(state: &Arc<State>, pc_id: u64, pc: &Arc<RTCPeerConnection>) {
                 },
             );
 
-            wire_data_channel_events(&state_for_dc, channel_id, &dc);
+            wire_data_channel_events(&state_for_dc, channel_id, &dc).await;
             state_for_dc.registry.lock().await.data_channels.insert(channel_id, dc);
         })
     }));

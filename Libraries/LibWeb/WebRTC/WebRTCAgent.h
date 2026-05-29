@@ -15,7 +15,6 @@
 
 namespace Web::WebRTC {
 
-class AudioCaptureSession;
 class RTCDataChannel;
 class RTCPeerConnection;
 
@@ -43,9 +42,6 @@ public:
     void register_data_channel(u64 channel_id, GC::Ref<RTCDataChannel>);
     void unregister_data_channel(u64 channel_id);
 
-    void register_audio_capture_session(u64 sender_id, NonnullOwnPtr<AudioCaptureSession>);
-    void unregister_audio_capture_session(u64 sender_id);
-
 private:
     WebRTCAgent() = default;
 
@@ -57,7 +53,6 @@ private:
 
     HashMap<u64, GC::Root<RTCPeerConnection>> m_peer_connections;
     HashMap<u64, GC::Root<RTCDataChannel>> m_data_channels;
-    HashMap<u64, NonnullOwnPtr<AudioCaptureSession>> m_audio_capture_sessions;
 
     u64 m_next_pc_id { 0 };
     u64 m_next_request_id { 0 };

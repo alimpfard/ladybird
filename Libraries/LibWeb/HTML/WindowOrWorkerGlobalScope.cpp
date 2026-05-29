@@ -163,8 +163,14 @@ bool WindowOrWorkerGlobalScopeMixin::is_secure_context() const
 // https://html.spec.whatwg.org/multipage/webappapis.html#dom-crossoriginisolated
 bool WindowOrWorkerGlobalScopeMixin::cross_origin_isolated() const
 {
-    // The crossOriginIsolated getter steps are to return this's relevant settings object's cross-origin isolated capability.
-    return relevant_settings_object(*this).cross_origin_isolated_capability() == CanUseCrossOriginIsolatedAPIs::Yes;
+    // FIXME: lie. The proper check is the relevant settings object's cross-origin-isolated
+    //        capability, but cross_origin_isolated_capability() is still hardcoded to No
+    //        (COOP/COEP response headers aren't processed yet). Discord's krisp gates
+    //        noise-suppression on `crossOriginIsolated` being true so it can use
+    //        SharedArrayBuffer; without this lie krisp silently bypasses and we get
+    //        unfiltered audio. Switch to the real capability once COOP/COEP lands.
+    return true;
+    // return relevant_settings_object(*this).cross_origin_isolated_capability() == CanUseCrossOriginIsolatedAPIs::Yes;
 }
 
 // https://html.spec.whatwg.org/multipage/webappapis.html#dom-btoa
