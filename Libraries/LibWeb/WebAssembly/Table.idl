@@ -5,8 +5,9 @@ enum TableKind {
 
 dictionary TableDescriptor {
     required TableKind element;
-    required [EnforceRange] unsigned long initial;
-    [EnforceRange] unsigned long maximum;
+    required any initial;
+    any maximum;
+    DOMString address = "i32";
 };
 
 // https://webassembly.github.io/spec/js-api/#tables

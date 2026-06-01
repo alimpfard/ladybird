@@ -977,19 +977,26 @@ static NonnullRefPtr<Core::Timer> load_page_for_screenshot_and_exit(Core::EventL
     return timer;
 }
 
-static void load_page_for_info_and_exit(Core::EventLoop& event_loop, HeadlessWebView& view, URL::URL const& url, WebView::PageInfoType type)
+static NonnullRefPtr<Core::Timer> load_page_for_info_and_exit(Core::EventLoop& event_loop, HeadlessWebView& view, URL::URL const& url, WebView::PageInfoType type, u32 info_timeout)
 {
-    view.on_load_finish = [&view, &event_loop, url, type](auto const& loaded_url) {
+    auto timer = Core::Timer::create_single_shot(
+        info_timeout * 1000,
+        [&view, &event_loop, type]() {
+            view.request_internal_page_info(type)->when_resolved([&event_loop](auto const& text) {
+                outln("{}", text);
+                event_loop.quit(0);
+            });
+        });
+
+    view.on_load_finish = [timer, url](auto const& loaded_url) {
         if (!url.equals(loaded_url, URL::ExcludeFragment::Yes))
             return;
 
-        view.request_internal_page_info(type)->when_resolved([&event_loop](auto const& text) {
-            outln("{}", text);
-            event_loop.quit(0);
-        });
+        timer->start();
     };
 
     view.load(url);
+    return timer;
 }
 
 static void load_page_and_exit_on_close(Core::EventLoop& event_loop, HeadlessWebView& view, URL::URL const& url)
@@ -1005,6 +1012,7 @@ ErrorOr<int> Application::execute()
 {
     OwnPtr<HeadlessWebView> view;
     RefPtr<Core::Timer> screenshot_timer;
+    RefPtr<Core::Timer> info_timer;
 
     if (m_browser_options.headless_mode.has_value()) {
         auto theme_path = LexicalPath::join(WebView::s_ladybird_resource_root, "themes"sv, "Default.ini"sv);
@@ -1021,10 +1029,10 @@ ErrorOr<int> Application::execute()
                 screenshot_timer = load_page_for_screenshot_and_exit(*m_event_loop, *view, m_browser_options.urls.first(), m_browser_options.screenshot_delay);
                 break;
             case HeadlessMode::LayoutTree:
-                load_page_for_info_and_exit(*m_event_loop, *view, m_browser_options.urls.first(), WebView::PageInfoType::LayoutTree | WebView::PageInfoType::PaintTree);
+                info_timer = load_page_for_info_and_exit(*m_event_loop, *view, m_browser_options.urls.first(), WebView::PageInfoType::LayoutTree | WebView::PageInfoType::PaintTree, m_browser_options.screenshot_delay);
                 break;
             case HeadlessMode::Text:
-                load_page_for_info_and_exit(*m_event_loop, *view, m_browser_options.urls.first(), WebView::PageInfoType::Text);
+                info_timer = load_page_for_info_and_exit(*m_event_loop, *view, m_browser_options.urls.first(), WebView::PageInfoType::Text, m_browser_options.screenshot_delay);
                 break;
             case HeadlessMode::Manual:
                 load_page_and_exit_on_close(*m_event_loop, *view, m_browser_options.urls.first());

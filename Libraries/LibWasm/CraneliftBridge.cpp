@@ -137,7 +137,7 @@ struct CacheState {
     Vector<BatchInput> pending_batch;
 };
 
-static CacheState s_cranelift_cache_state;
+static thread_local CacheState s_cranelift_cache_state;
 static thread_local u32 s_active_function_index = NumericLimits<u32>::max();
 
 static u64 compute_layout_hash(RuntimeHelpers const& h)
@@ -775,7 +775,7 @@ static ALWAYS_INLINE i32 wasm_cl_direct_call_impl(BytecodeInterpreter& interpret
     auto const& entry = (*table)[index];
 
     if (config.depth() > 500) [[unlikely]] {
-        interpreter.set_trap("call stack exhausted"sv);
+        interpreter.set_trap(Constants::stack_exhaustion_message);
         return 1;
     }
 

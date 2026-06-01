@@ -5,8 +5,10 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibJS/Runtime/BigInt.h>
 #include <LibJS/Runtime/Realm.h>
 #include <LibJS/Runtime/VM.h>
+#include <LibJS/Runtime/Value.h>
 #include <LibWasm/Types.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/Bindings/Table.h>
@@ -29,6 +31,28 @@ static Wasm::ValueType table_kind_to_value_type(Bindings::TableKind kind)
     VERIFY_NOT_REACHED();
 }
 
+static WebIDL::ExceptionOr<u64> table_limit_from_js_value(JS::VM& vm, JS::Value value)
+{
+    if (value.is_bigint()) {
+        if (value.as_bigint().big_integer().is_negative())
+            return vm.throw_completion<JS::TypeError>("Table size must be non-negative"sv);
+
+        auto string = TRY_OR_THROW_OOM(vm, value.as_bigint().big_integer().to_base(10));
+        auto number = string.to_number<u64>();
+        if (!number.has_value())
+            return vm.throw_completion<JS::RangeError>("Table size is too large"sv);
+        return *number;
+    }
+
+    auto number_value = TRY(value.to_number(vm));
+    if (!number_value.is_integral_number() || number_value.as_double() < 0)
+        return vm.throw_completion<JS::TypeError>("Table size must be a non-negative integer"sv);
+    auto number = number_value.as_double();
+    if (number > static_cast<double>(NumericLimits<u64>::max()))
+        return vm.throw_completion<JS::RangeError>("Table size is too large"sv);
+    return static_cast<u64>(number);
+}
+
 WebIDL::ExceptionOr<GC::Ref<Table>> Table::construct_impl(JS::Realm& realm, Bindings::TableDescriptor& descriptor, Optional<JS::Value> value)
 {
     auto& vm = realm.vm();
@@ -38,10 +62,16 @@ WebIDL::ExceptionOr<GC::Ref<Table>> Table::construct_impl(JS::Realm& realm, Bind
         ? Detail::default_webassembly_value(vm, reference_type)
         : TRY(Detail::to_webassembly_value(vm, *value, reference_type));
 
-    if (descriptor.maximum.has_value() && descriptor.maximum.value() < descriptor.initial)
+    auto initial = TRY(table_limit_from_js_value(vm, descriptor.initial));
+    auto maximum = descriptor.maximum.has_value()
+        ? Optional<u64> { TRY(table_limit_from_js_value(vm, descriptor.maximum.value())) }
+        : Optional<u64> {};
+    auto address_type = descriptor.address == "i64"sv ? Wasm::AddressType::I64 : Wasm::AddressType::I32;
+
+    if (maximum.has_value() && maximum.value() < initial)
         return vm.throw_completion<JS::RangeError>("Maximum should not be less than initial in table type"sv);
 
-    Wasm::Limits limits { Wasm::AddressType::I32, descriptor.initial, descriptor.maximum.map([](auto x) -> u64 { return x; }) };
+    Wasm::Limits limits { address_type, initial, maximum };
     Wasm::TableType table_type { reference_type, move(limits) };
 
     auto& cache = Detail::get_cache(realm);

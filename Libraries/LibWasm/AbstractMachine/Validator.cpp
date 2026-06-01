@@ -4485,6 +4485,69 @@ ErrorOr<Validator::ExpressionTypeResult, ValidationError> Validator::validate(Ex
                 }
             }
         }
+        // Multi-memory needs per-memory bounds/base handling. The compiled path only
+        // has a fast base for the default memory, and currently misses some OOB traps.
+        if (!has_unsupported_types && m_context.memories.size() > 1)
+            has_unsupported_types = true;
+        // Keep Cranelift on the subset that is known not to rely on native faults,
+        // call-frame recursion, table/reference state, or large floating/SIMD
+        // spec-test compile batches yet.
+        if (!has_unsupported_types) {
+            auto is_unsafe_for_cranelift = [](OpCode opcode) {
+                auto is_synthetic_call = opcode >= Instructions::synthetic_call_00 && opcode <= Instructions::synthetic_call_31;
+                return opcode == Instructions::memory_size
+                    || opcode == Instructions::memory_grow
+                    || opcode == Instructions::memory_init
+                    || opcode == Instructions::memory_copy
+                    || opcode == Instructions::memory_fill
+                    || opcode == Instructions::unreachable
+                    || opcode == Instructions::i32_divs
+                    || opcode == Instructions::i32_divu
+                    || opcode == Instructions::i32_rems
+                    || opcode == Instructions::i32_remu
+                    || opcode == Instructions::i64_divs
+                    || opcode == Instructions::i64_divu
+                    || opcode == Instructions::i64_rems
+                    || opcode == Instructions::i64_remu
+                    || (opcode >= Instructions::i32_trunc_sf32 && opcode <= Instructions::i32_trunc_uf64)
+                    || (opcode >= Instructions::i64_trunc_sf32 && opcode <= Instructions::i64_trunc_uf64)
+                    || (opcode >= Instructions::f32_const && opcode <= Instructions::f64_const)
+                    || (opcode >= Instructions::f32_eq && opcode <= Instructions::f64_copysign)
+                    || (opcode >= Instructions::f32_convert_si32 && opcode <= Instructions::f64_reinterpret_i64)
+                    || (opcode.value() & 0xff000000u) == 0xfd000000u
+                    || opcode == Instructions::br_table
+                    || opcode == Instructions::synthetic_br_table_cont
+                    || opcode == Instructions::call
+                    || is_synthetic_call
+                    || opcode == Instructions::synthetic_call_with_record_0
+                    || opcode == Instructions::synthetic_call_with_record_1
+                    || opcode == Instructions::call_indirect
+                    || opcode == Instructions::return_call
+                    || opcode == Instructions::return_call_indirect
+                    || opcode == Instructions::call_ref
+                    || opcode == Instructions::return_call_ref
+                    || (opcode >= Instructions::table_get && opcode <= Instructions::table_set)
+                    || (opcode >= Instructions::table_init && opcode <= Instructions::table_fill)
+                    || (opcode >= Instructions::ref_null && opcode <= Instructions::ref_func)
+                    || opcode == Instructions::throw_
+                    || opcode == Instructions::throw_ref
+                    || opcode == Instructions::try_table;
+            };
+
+            for (auto& insn : expression.instructions()) {
+                if (is_unsafe_for_cranelift(insn.opcode())) {
+                    has_unsupported_types = true;
+                    break;
+                }
+            }
+            for (auto& dispatch : expression.compiled_instructions.dispatches) {
+                auto opcode = dispatch.instruction ? dispatch.instruction->opcode() : dispatch.instruction_opcode;
+                if (is_unsafe_for_cranelift(opcode)) {
+                    has_unsupported_types = true;
+                    break;
+                }
+            }
+        }
         // Also skip if any call targets a function with multi-value returns.
         if (!has_unsupported_types) {
             for (auto& insn : expression.instructions()) {

@@ -134,8 +134,10 @@ void MemoryBuffer::try_reserve_wasm32_address_space()
     auto reservation_size = mapping_size + 2 * host_page_size;
 
     auto mapping_or_error = Core::System::reserve_address_space(reservation_size);
-    if (mapping_or_error.is_error())
+    if (mapping_or_error.is_error()) {
+        warnln("wasm: failed to reserve wasm32 virtual memory region of {} bytes: {}", reservation_size, mapping_or_error.error());
         return;
+    }
 
     m_mapping_base = mapping_or_error.value();
     m_data = reinterpret_cast<u8*>(m_mapping_base) + host_page_size;
