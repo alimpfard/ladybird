@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-use crate::CompiledFunction;
+use crate::{CompiledFunction, CraneliftTrap};
 use crate::CraneliftInsn;
 use crate::HelperId;
 use crate::HelperReloc;
@@ -26,6 +26,7 @@ use cranelift_codegen::ir::UserExternalName;
 use cranelift_codegen::ir::UserFuncName;
 use cranelift_codegen::ir::condcodes::FloatCC;
 use cranelift_codegen::ir::condcodes::IntCC;
+use cranelift_codegen::ir::immediates::{Ieee32, Ieee64};
 use cranelift_codegen::ir::types;
 use cranelift_codegen::settings::Configurable;
 use cranelift_codegen::settings::{self};
@@ -182,8 +183,8 @@ impl CraneliftCompiler {
             call_indirect_sig: i32 fn(ptr, ptr, i32, i32, i32);
             memory_copy_sig:   i32 fn(ptr, ptr, i32, i32, i32, i32, i32);
             memory_fill_sig:   i32 fn(ptr, ptr, i32, i32, i32, i32);
-            mem_load_sig:      i64 fn(ptr, i32, i64);
-            mem_store_sig:     i32 fn(ptr, i32, i64, i64);
+            mem_load_sig:      i32 fn(ptr, ptr, i32, i64, ptr);
+            mem_store_sig:     i32 fn(ptr, ptr, i32, i64, i64);
             mem_size_sig:      i64 fn(ptr, i32);
             mem_grow_sig:      i32 fn(ptr, i32, i32);
             read_global_sig:   i64 fn(ptr, i32);
@@ -564,6 +565,57 @@ impl CraneliftCompiler {
                 $builder.def_var(default_memory_base_var, new_default_memory_base);
             }};
         }
+        macro_rules! set_trap {
+            ($builder:expr, $msg:expr) => {{
+                let msg = $msg.as_bytes();
+                let ss = $builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    msg.len() as u32,
+                    0,
+                ));
+                for (i, &byte) in msg.iter().enumerate() {
+                    let b = $builder.ins().iconst(types::I8, i64::from(byte));
+                    $builder.ins().stack_store(b, ss, i as i32);
+                }
+                let msg_ptr = $builder.ins().stack_addr(ptr_type, ss, 0);
+                let msg_len = $builder.ins().iconst(types::I32, msg.len() as i64);
+                let st_ptr = $builder.ins().func_addr(ptr_type, h_set_trap);
+                let interp = $builder.use_var(interp_var);
+                $builder
+                    .ins()
+                    .call_indirect(set_trap_sig, st_ptr, &[interp, msg_ptr, msg_len]);
+            }};
+        }
+        macro_rules! trap_if {
+            ($builder:expr, $cond:expr, $msg:expr) => {{
+                let trap = $builder.create_block();
+                let cont = $builder.create_block();
+                $builder.ins().brif($cond, trap, &[], cont, &[]);
+
+                $builder.switch_to_block(trap);
+                $builder.seal_block(trap);
+                set_trap!($builder, $msg);
+                $builder.ins().jump(trap_block, &[]);
+
+                $builder.switch_to_block(cont);
+                $builder.seal_block(cont);
+            }};
+        }
+        macro_rules! trap_unless {
+            ($builder:expr, $cond:expr, $msg:expr) => {{
+                let trap = $builder.create_block();
+                let cont = $builder.create_block();
+                $builder.ins().brif($cond, cont, &[], trap, &[]);
+
+                $builder.switch_to_block(trap);
+                $builder.seal_block(trap);
+                set_trap!($builder, $msg);
+                $builder.ins().jump(trap_block, &[]);
+
+                $builder.switch_to_block(cont);
+                $builder.seal_block(cont);
+            }};
+        }
 
         let mut ip = 0usize;
         while ip < insns.len() {
@@ -582,23 +634,7 @@ impl CraneliftCompiler {
                         value_size,
                         &dirty_regs,
                     );
-                    let msg = b"unreachable executed";
-                    let ss = builder.create_sized_stack_slot(StackSlotData::new(
-                        StackSlotKind::ExplicitSlot,
-                        msg.len() as u32,
-                        0,
-                    ));
-                    for (i, &byte) in msg.iter().enumerate() {
-                        let b = builder.ins().iconst(types::I8, i64::from(byte));
-                        builder.ins().stack_store(b, ss, i as i32);
-                    }
-                    let msg_ptr = builder.ins().stack_addr(ptr_type, ss, 0);
-                    let msg_len = builder.ins().iconst(types::I32, msg.len() as i64);
-                    let st_ptr = builder.ins().func_addr(ptr_type, h_set_trap);
-                    let interp = builder.use_var(interp_var);
-                    builder
-                        .ins()
-                        .call_indirect(set_trap_sig, st_ptr, &[interp, msg_ptr, msg_len]);
+                    set_trap!(builder, "unreachable executed");
                     builder.ins().jump(trap_block, &[]);
                     is_unreachable = true;
                     let dead = builder.create_block();
@@ -1067,10 +1103,40 @@ impl CraneliftCompiler {
                 op::I32_SHRU => i32_binop!(builder, insn, ushr),
                 op::I32_ROTL => i32_binop!(builder, insn, rotl),
                 op::I32_ROTR => i32_binop!(builder, insn, rotr),
-                op::I32_DIVS => i32_binop!(builder, insn, sdiv),
-                op::I32_DIVU => i32_binop!(builder, insn, udiv),
-                op::I32_REMS => i32_binop!(builder, insn, srem),
-                op::I32_REMU => i32_binop!(builder, insn, urem),
+                op::I32_DIVS | op::I32_DIVU | op::I32_REMS | op::I32_REMU => {
+                    let rhs_raw = read_src!(builder, insn.sources[0]);
+                    let lhs_raw = read_src!(builder, insn.sources[1]);
+                    let lhs = builder.ins().ireduce(types::I32, lhs_raw);
+                    let rhs = builder.ins().ireduce(types::I32, rhs_raw);
+                    let rhs_is_zero = builder.ins().icmp_imm(IntCC::Equal, rhs, 0);
+                    trap_if!(builder, rhs_is_zero, "Integer division overflow");
+
+                    if opc == op::I32_DIVS {
+                        let lhs_is_min = builder.ins().icmp_imm(IntCC::Equal, lhs, i64::from(i32::MIN));
+                        let check_rhs = builder.create_block();
+                        let cont = builder.create_block();
+                        builder.ins().brif(lhs_is_min, check_rhs, &[], cont, &[]);
+
+                        builder.switch_to_block(check_rhs);
+                        builder.seal_block(check_rhs);
+                        let rhs_is_minus_one = builder.ins().icmp_imm(IntCC::Equal, rhs, -1);
+                        trap_if!(builder, rhs_is_minus_one, "Integer division overflow");
+                        builder.ins().jump(cont, &[]);
+
+                        builder.switch_to_block(cont);
+                        builder.seal_block(cont);
+                    }
+
+                    let result = match opc {
+                        op::I32_DIVS => builder.ins().sdiv(lhs, rhs),
+                        op::I32_DIVU => builder.ins().udiv(lhs, rhs),
+                        op::I32_REMS => builder.ins().srem(lhs, rhs),
+                        op::I32_REMU => builder.ins().urem(lhs, rhs),
+                        _ => unreachable!(),
+                    };
+                    let result = builder.ins().sextend(types::I64, result);
+                    write_dst!(builder, insn.destination, result);
+                }
                 op::I32_CLZ => i32_unop!(builder, insn, clz),
                 op::I32_CTZ => i32_unop!(builder, insn, ctz),
                 op::I32_POPCNT => i32_unop!(builder, insn, popcnt),
@@ -1086,10 +1152,37 @@ impl CraneliftCompiler {
                 op::I64_SHRU => i64_binop!(builder, insn, ushr),
                 op::I64_ROTL => i64_binop!(builder, insn, rotl),
                 op::I64_ROTR => i64_binop!(builder, insn, rotr),
-                op::I64_DIVS => i64_binop!(builder, insn, sdiv),
-                op::I64_DIVU => i64_binop!(builder, insn, udiv),
-                op::I64_REMS => i64_binop!(builder, insn, srem),
-                op::I64_REMU => i64_binop!(builder, insn, urem),
+                op::I64_DIVS | op::I64_DIVU | op::I64_REMS | op::I64_REMU => {
+                    let rhs = read_src!(builder, insn.sources[0]);
+                    let lhs = read_src!(builder, insn.sources[1]);
+                    let rhs_is_zero = builder.ins().icmp_imm(IntCC::Equal, rhs, 0);
+                    trap_if!(builder, rhs_is_zero, "Integer division overflow");
+
+                    if opc == op::I64_DIVS {
+                        let lhs_is_min = builder.ins().icmp_imm(IntCC::Equal, lhs, i64::MIN);
+                        let check_rhs = builder.create_block();
+                        let cont = builder.create_block();
+                        builder.ins().brif(lhs_is_min, check_rhs, &[], cont, &[]);
+
+                        builder.switch_to_block(check_rhs);
+                        builder.seal_block(check_rhs);
+                        let rhs_is_minus_one = builder.ins().icmp_imm(IntCC::Equal, rhs, -1);
+                        trap_if!(builder, rhs_is_minus_one, "Integer division overflow");
+                        builder.ins().jump(cont, &[]);
+
+                        builder.switch_to_block(cont);
+                        builder.seal_block(cont);
+                    }
+
+                    let result = match opc {
+                        op::I64_DIVS => builder.ins().sdiv(lhs, rhs),
+                        op::I64_DIVU => builder.ins().udiv(lhs, rhs),
+                        op::I64_REMS => builder.ins().srem(lhs, rhs),
+                        op::I64_REMU => builder.ins().urem(lhs, rhs),
+                        _ => unreachable!(),
+                    };
+                    write_dst!(builder, insn.destination, result);
+                }
                 op::I64_CLZ => i64_unop!(builder, insn, clz),
                 op::I64_CTZ => i64_unop!(builder, insn, ctz),
                 op::I64_POPCNT => i64_unop!(builder, insn, popcnt),
@@ -1312,7 +1405,6 @@ impl CraneliftCompiler {
                 | op::I64_TRUNC_UF32
                 | op::I64_TRUNC_SF64
                 | op::I64_TRUNC_UF64 => {
-                    // Use cranelift's fcvt_to_sint/fcvt_to_uint which traps on overflow/NaN.
                     let src = read_src!(builder, insn.sources[0]);
                     let is_f32_src = matches!(
                         opc,
@@ -1333,6 +1425,34 @@ impl CraneliftCompiler {
                     } else {
                         builder.ins().bitcast(types::F64, MemFlags::new(), src)
                     };
+
+                    if is_f32_src {
+                        let (lower, lower_cc, upper) = match (is_i32_dst, is_signed) {
+                            (true, true) => (i32::MIN as f32, FloatCC::GreaterThanOrEqual, 2147483648.0_f32),
+                            (true, false) => (-1.0_f32, FloatCC::GreaterThan, 4294967296.0_f32),
+                            (false, true) => (i64::MIN as f32, FloatCC::GreaterThanOrEqual, 9223372036854775808.0_f32),
+                            (false, false) => (-1.0_f32, FloatCC::GreaterThan, 18446744073709551616.0_f32),
+                        };
+                        let lower = builder.ins().f32const(Ieee32::with_float(lower));
+                        let upper = builder.ins().f32const(Ieee32::with_float(upper));
+                        let lower_ok = builder.ins().fcmp(lower_cc, float_val, lower);
+                        trap_unless!(builder, lower_ok, "Truncation out of range");
+                        let upper_ok = builder.ins().fcmp(FloatCC::LessThan, float_val, upper);
+                        trap_unless!(builder, upper_ok, "Truncation out of range");
+                    } else {
+                        let (lower, lower_cc, upper) = match (is_i32_dst, is_signed) {
+                            (true, true) => (i32::MIN as f64, FloatCC::GreaterThanOrEqual, 2147483648.0_f64),
+                            (true, false) => (-1.0_f64, FloatCC::GreaterThan, 4294967296.0_f64),
+                            (false, true) => (i64::MIN as f64, FloatCC::GreaterThanOrEqual, 9223372036854775808.0_f64),
+                            (false, false) => (-1.0_f64, FloatCC::GreaterThan, 18446744073709551616.0_f64),
+                        };
+                        let lower = builder.ins().f64const(Ieee64::with_float(lower));
+                        let upper = builder.ins().f64const(Ieee64::with_float(upper));
+                        let lower_ok = builder.ins().fcmp(lower_cc, float_val, lower);
+                        trap_unless!(builder, lower_ok, "Truncation out of range");
+                        let upper_ok = builder.ins().fcmp(FloatCC::LessThan, float_val, upper);
+                        trap_unless!(builder, upper_ok, "Truncation out of range");
+                    }
 
                     let int_type = if is_i32_dst { types::I32 } else { types::I64 };
                     let int_val = if is_signed {
@@ -1475,13 +1595,26 @@ impl CraneliftCompiler {
                             _ => unreachable!(),
                         }
                     } else {
+                        let result_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot,
+                            8,
+                            0,
+                        ));
+                        let result_ptr = builder.ins().stack_addr(ptr_type, result_slot, 0);
                         let mem_idx = builder.ins().iconst(types::I32, i64::from(insn.imm3 & 0x7fff_ffff));
-                        let _xv_config_var = builder.use_var(config_var);
+                        let interp = builder.use_var(interp_var);
+                        let config = builder.use_var(config_var);
                         let _xc_0 = builder.ins().func_addr(ptr_type, memory_load_helper);
                         let call = builder
                             .ins()
-                            .call_indirect(mem_load_sig, _xc_0, &[_xv_config_var, mem_idx, addr]);
-                        builder.inst_results(call)[0]
+                            .call_indirect(mem_load_sig, _xc_0, &[interp, config, mem_idx, addr, result_ptr]);
+                        let trapped = builder.inst_results(call)[0];
+                        let is_trap = builder.ins().icmp_imm(IntCC::NotEqual, trapped, 0);
+                        let cont = builder.create_block();
+                        builder.ins().brif(is_trap, trap_block, &[], cont, &[]);
+                        builder.switch_to_block(cont);
+                        builder.seal_block(cont);
+                        builder.ins().stack_load(types::I64, result_slot, 0)
                     };
                     write_dst!(builder, insn.destination, result);
                 }
@@ -1539,12 +1672,13 @@ impl CraneliftCompiler {
                         }
                     } else {
                         let mem_idx = builder.ins().iconst(types::I32, i64::from(insn.imm3 & 0x7fff_ffff));
+                        let interp = builder.use_var(interp_var);
                         let _xv_config_var = builder.use_var(config_var);
                         let _xc_0 = builder.ins().func_addr(ptr_type, memory_store_helper);
                         let call =
                             builder
                                 .ins()
-                                .call_indirect(mem_store_sig, _xc_0, &[_xv_config_var, mem_idx, addr, val]);
+                                .call_indirect(mem_store_sig, _xc_0, &[interp, _xv_config_var, mem_idx, addr, val]);
                         let trapped = builder.inst_results(call)[0];
                         let is_trap = builder.ins().icmp_imm(IntCC::NotEqual, trapped, 0);
                         let cont = builder.create_block();
@@ -1852,12 +1986,13 @@ impl CraneliftCompiler {
                         } else {
                             h_mem_store64
                         };
+                        let interp = builder.use_var(interp_var);
                         let _uv_config_var = builder.use_var(config_var);
                         let _ic_0 = builder.ins().func_addr(ptr_type, memory_store_helper);
                         let call =
                             builder
                                 .ins()
-                                .call_indirect(mem_store_sig, _ic_0, &[_uv_config_var, mem_idx, addr, val]);
+                                .call_indirect(mem_store_sig, _ic_0, &[interp, _uv_config_var, mem_idx, addr, val]);
                         let trapped = builder.inst_results(call)[0];
                         let is_trap = builder.ins().icmp_imm(IntCC::NotEqual, trapped, 0);
                         let cont = builder.create_block();
@@ -1915,13 +2050,23 @@ impl CraneliftCompiler {
         let mut ctx = Context::for_function(func);
         // Snapshot the code bytes + raw reloc list before we drop the borrow on ctx so we
         // can map UserExternalNameRefs back to helper ids via ctx.func.params below.
-        let (bytes, raw_relocs) = {
+        let (bytes, raw_relocs, traps) = {
             let code = ctx
                 .compile(&*isa, &mut Default::default())
                 .map_err(|_| "cranelift compilation failed")?;
+            let traps = code
+                .buffer
+                .traps()
+                .iter()
+                .map(|trap| CraneliftTrap {
+                    offset: trap.offset,
+                    code: trap.code.as_raw().get(),
+                    _padding: [0; 3],
+                })
+                .collect();
             let bytes = code.code_buffer().to_vec();
             let raw = code.buffer.relocs().to_vec();
-            (bytes, raw)
+            (bytes, raw, traps)
         };
 
         let mut relocs: Vec<HelperReloc> = Vec::with_capacity(raw_relocs.len());
@@ -1947,7 +2092,7 @@ impl CraneliftCompiler {
             });
         }
 
-        Ok(CompiledFunction { code: bytes, relocs })
+        Ok(CompiledFunction { code: bytes, relocs, traps })
     }
 
     fn is_supported(insn: &CraneliftInsn) -> bool {
