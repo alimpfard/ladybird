@@ -7,8 +7,8 @@
 #pragma once
 
 #include <LibJS/Forward.h>
-#include <LibWeb/Bindings/PlatformObject.h>
 #include <LibWeb/Bindings/RTCRtpScriptTransform.h>
+#include <LibWeb/Bindings/Wrappable.h>
 #include <LibWeb/Forward.h>
 #include <LibWeb/HTML/StructuredSerialize.h>
 #include <LibWeb/WebIDL/ExceptionOr.h>
@@ -17,8 +17,8 @@ namespace Web::WebRTC {
 
 using Bindings::WorkerAndParameters;
 
-class RTCRtpScriptTransform final : public Bindings::PlatformObject {
-    WEB_PLATFORM_OBJECT(RTCRtpScriptTransform, Bindings::PlatformObject);
+class RTCRtpScriptTransform final : public Bindings::GCAllocatedWrappable {
+    WEB_WRAPPABLE(RTCRtpScriptTransform, Bindings::GCAllocatedWrappable);
     GC_DECLARE_ALLOCATOR(RTCRtpScriptTransform);
 
 public:
@@ -43,8 +43,7 @@ public:
     bool has_frame_written_callback() const { return static_cast<bool>(m_on_frame_written); }
 
 private:
-    explicit RTCRtpScriptTransform(JS::Realm&);
-    virtual void initialize(JS::Realm&) override;
+    explicit RTCRtpScriptTransform();
     virtual void visit_edges(Cell::Visitor&) override;
 
     GC::Ptr<HTML::Worker> m_worker;

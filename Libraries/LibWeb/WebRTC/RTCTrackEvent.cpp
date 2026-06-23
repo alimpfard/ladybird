@@ -4,8 +4,10 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibWeb/Bindings/Intrinsics.h>
-#include <LibWeb/Bindings/RTCTrackEvent.h>
+#include <LibGC/Heap.h>
+#include <LibMedia/Audio/PulseAudioWrappers.h>
+#include <LibWeb/HTML/Scripting/Environments.h>
+#include <LibWeb/HighResolutionTime/TimeOrigin.h>
 #include <LibWeb/MediaCapture/MediaStream.h>
 #include <LibWeb/MediaCapture/MediaStreamTrack.h>
 #include <LibWeb/WebRTC/RTCRtpReceiver.h>
@@ -16,17 +18,52 @@ namespace Web::WebRTC {
 
 GC_DEFINE_ALLOCATOR(RTCTrackEvent);
 
-GC::Ref<RTCTrackEvent> RTCTrackEvent::create(JS::Realm& realm, FlyString const& event_name,
+GC::Ref<RTCTrackEvent> RTCTrackEvent::create(Utf16FlyString const& event_name,
     GC::Ref<RTCRtpReceiver> receiver, GC::Ref<MediaCapture::MediaStreamTrack> track,
-    Vector<GC::Ref<MediaCapture::MediaStream>> streams, GC::Ref<RTCRtpTransceiver> transceiver)
+    Vector<GC::Ref<MediaCapture::MediaStream>> streams, GC::Ref<RTCRtpTransceiver> transceiver,
+    HighResolutionTime::DOMHighResTimeStamp time_stamp)
 {
-    return realm.create<RTCTrackEvent>(realm, event_name, receiver, track, move(streams), transceiver);
+    return GC::Heap::the().allocate<RTCTrackEvent>(event_name, receiver, track, move(streams), transceiver, time_stamp);
 }
 
-RTCTrackEvent::RTCTrackEvent(JS::Realm& realm, FlyString const& event_name,
+WebIDL::ExceptionOr<GC::Ref<RTCTrackEvent>> RTCTrackEvent::construct_impl(Utf16String const& type, RTCTrackEventInit const& event_init)
+{
+    // NOTE: The init dictionary members are typed `object` (see RTCTrackEvent.idl); unwrap them to their
+    //       actual interface types here and reject anything else.
+    auto* receiver = Bindings::impl_from<RTCRtpReceiver>(event_init.receiver.ptr());
+    if (!receiver)
+        return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, "receiver is not an RTCRtpReceiver"_utf16 };
+
+    auto* track = Bindings::impl_from<MediaCapture::MediaStreamTrack>(event_init.track.ptr());
+    if (!track)
+        return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, "track is not a MediaStreamTrack"_utf16 };
+
+    auto* transceiver = Bindings::impl_from<RTCRtpTransceiver>(event_init.transceiver.ptr());
+    if (!transceiver)
+        return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, "transceiver is not an RTCRtpTransceiver"_utf16 };
+
+    Vector<GC::Ref<MediaCapture::MediaStream>> streams;
+    streams.ensure_capacity(event_init.streams.size());
+    for (auto const& stream_object : event_init.streams) {
+        auto* stream = Bindings::impl_from<MediaCapture::MediaStream>(stream_object.ptr());
+        if (!stream)
+            return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, "streams contains a non-MediaStream object"_utf16 };
+        streams.unchecked_append(*stream);
+    }
+
+    auto time_stamp = HighResolutionTime::current_high_resolution_time(HTML::current_global_object());
+    auto event = create(Utf16FlyString { type }, *receiver, *track, move(streams), *transceiver, time_stamp);
+    event->set_bubbles(event_init.bubbles);
+    event->set_cancelable(event_init.cancelable);
+    event->set_composed(event_init.composed);
+    return event;
+}
+
+RTCTrackEvent::RTCTrackEvent(Utf16FlyString const& event_name,
     GC::Ref<RTCRtpReceiver> receiver, GC::Ref<MediaCapture::MediaStreamTrack> track,
-    Vector<GC::Ref<MediaCapture::MediaStream>> streams, GC::Ref<RTCRtpTransceiver> transceiver)
-    : DOM::Event(realm, event_name)
+    Vector<GC::Ref<MediaCapture::MediaStream>> streams, GC::Ref<RTCRtpTransceiver> transceiver,
+    HighResolutionTime::DOMHighResTimeStamp time_stamp)
+    : DOM::Event(event_name, time_stamp)
     , m_receiver(receiver)
     , m_track(track)
     , m_streams(move(streams))
@@ -35,9 +72,8 @@ RTCTrackEvent::RTCTrackEvent(JS::Realm& realm, FlyString const& event_name,
 }
 
 RTCTrackEvent::~RTCTrackEvent() = default;
-void RTCTrackEvent::initialize(JS::Realm& realm) { WEB_SET_PROTOTYPE_FOR_INTERFACE(RTCTrackEvent); Base::initialize(realm); }
 
-void RTCTrackEvent::visit_edges(JS::Cell::Visitor& visitor)
+void RTCTrackEvent::visit_edges(GC::Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
     visitor.visit(m_receiver);

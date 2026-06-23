@@ -7,6 +7,7 @@
 #pragma once
 
 #include <AK/HashMap.h>
+#include <AK/Utf16String.h>
 #include <LibSync/Mutex.h>
 #include <LibWeb/Bindings/Forward.h>
 #include <LibWeb/Bindings/MediaStreamTrack.h>
@@ -53,13 +54,17 @@ using Bindings::RTCRtpTransceiverInit;
 using Bindings::RTCSessionDescriptionInit;
 
 class RTCPeerConnection final : public DOM::EventTarget {
-    WEB_PLATFORM_OBJECT(RTCPeerConnection, DOM::EventTarget);
+    WEB_WRAPPABLE(RTCPeerConnection, DOM::EventTarget);
     GC_DECLARE_ALLOCATOR(RTCPeerConnection);
 
 public:
-    static WebIDL::ExceptionOr<GC::Ref<RTCPeerConnection>> construct_impl(JS::Realm&, RTCConfiguration const& = {});
+    static WebIDL::ExceptionOr<GC::Ref<RTCPeerConnection>> create_for_constructor(JS::Object& relevant_global_object, RTCConfiguration const& = {});
 
     virtual ~RTCPeerConnection() override;
+
+    JS::Realm& relevant_realm() const;
+    JS::Object& relevant_global_object() const;
+    virtual GC::Ptr<Bindings::Wrappable> relevant_global_impl() const override { return m_global_object; }
 
     Bindings::RTCSignalingState signaling_state() const { return m_signaling_state; }
     Bindings::RTCIceGatheringState ice_gathering_state() const { return m_ice_gathering_state; }
@@ -78,7 +83,7 @@ public:
     GC::Ref<WebIDL::Promise> set_remote_description(RTCSessionDescriptionInit const&);
     GC::Ref<WebIDL::Promise> add_ice_candidate(RTCIceCandidateInit const&);
 
-    GC::Ref<WebIDL::Promise> set_a_local_description(Bindings::RTCSdpType, String const& sdp);
+    GC::Ref<WebIDL::Promise> set_a_local_description(Bindings::RTCSdpType, Utf16String const& sdp);
     GC::Ref<WebIDL::Promise> set_a_remote_description(RTCSessionDescriptionInit const&);
 
     GC::Ptr<RTCSessionDescription> local_description() const;
@@ -94,9 +99,9 @@ public:
 
     WebIDL::ExceptionOr<GC::Ref<RTCRtpSender>> add_track(GC::Ref<MediaCapture::MediaStreamTrack>, GC::Ref<MediaCapture::MediaStream>);
     WebIDL::ExceptionOr<GC::Ref<RTCRtpSender>> add_track(GC::Ref<MediaCapture::MediaStreamTrack>, GC::RootVector<GC::Ref<MediaCapture::MediaStream>> const&);
-    WebIDL::ExceptionOr<GC::Ref<RTCRtpTransceiver>> add_transceiver(Variant<GC::Ref<MediaCapture::MediaStreamTrack>, String> const& track_or_kind, RTCRtpTransceiverInit const& = {});
+    WebIDL::ExceptionOr<GC::Ref<RTCRtpTransceiver>> add_transceiver(Variant<GC::Ref<MediaCapture::MediaStreamTrack>, Utf16String> const& track_or_kind, RTCRtpTransceiverInit const& = {});
     GC::Ptr<RTCSctpTransport> sctp() const { return m_sctp; }
-    WebIDL::ExceptionOr<GC::Ref<RTCDataChannel>> create_data_channel(String const& label, RTCDataChannelInit const&);
+    WebIDL::ExceptionOr<GC::Ref<RTCDataChannel>> create_data_channel(Utf16String const& label, RTCDataChannelInit const&);
 
     Vector<GC::Ref<RTCRtpSender>> collect_senders() const;
 
@@ -140,12 +145,15 @@ public:
 #undef EVENT_HANDLER
 
 private:
-    explicit RTCPeerConnection(JS::Realm&, RTCConfiguration);
+    explicit RTCPeerConnection(GC::Ref<DOM::EventTarget> relevant_global_object, RTCConfiguration);
 
-    virtual void initialize(JS::Realm&) override;
     virtual void visit_edges(JS::Cell::Visitor&) override;
 
     void close_the_connection_algorithm(bool disappear);
+
+    // The global this connection was created for; used to recover the realm for
+    // promise/event work triggered by IPC.
+    GC::Ref<DOM::EventTarget> m_global_object;
 
     RTCConfiguration m_configuration;
 
@@ -167,7 +175,7 @@ private:
     Vector<GC::Ref<RTCDataChannel>> m_data_channels;
     HashMap<u64, GC::Ref<RTCDataChannel>> m_data_channels_by_id;
     // [[LastCreatedOffer]]
-    String m_last_created_offer;
+    Utf16String m_last_created_offer;
     u64 m_pc_id { 0 };
     HashMap<u64, GC::Root<WebIDL::Promise>> m_pending_void_requests;
     HashMap<u64, GC::Root<WebIDL::Promise>> m_pending_description_requests;
@@ -188,12 +196,12 @@ private:
 
     struct PendingDescription {
         Bindings::RTCSdpType type;
-        String sdp;
+        Utf16String sdp;
         bool is_local;
     };
     HashMap<u64, PendingDescription> m_pending_description_payloads;
     // [[LastCreatedAnswer]]
-    String m_last_created_answer;
+    Utf16String m_last_created_answer;
     // [[CurrentLocalDescription]]
     GC::Ptr<RTCSessionDescription> m_current_local_description;
     // [[PendingLocalDescription]]

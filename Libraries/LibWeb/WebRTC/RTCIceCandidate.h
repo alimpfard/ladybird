@@ -6,30 +6,29 @@
 
 #pragma once
 
-#include <LibWeb/Bindings/PlatformObject.h>
 #include <LibWeb/Bindings/RTCIceCandidate.h>
+#include <LibWeb/Bindings/Wrappable.h>
+#include <LibWeb/WebIDL/ExceptionOr.h>
 
 namespace Web::WebRTC {
 
 using Bindings::RTCIceCandidateInit;
 
-class RTCIceCandidate final : public Bindings::PlatformObject {
-    WEB_PLATFORM_OBJECT(RTCIceCandidate, Bindings::PlatformObject);
+class RTCIceCandidate final : public Bindings::GCAllocatedWrappable {
+    WEB_WRAPPABLE(RTCIceCandidate, Bindings::GCAllocatedWrappable);
     GC_DECLARE_ALLOCATOR(RTCIceCandidate);
 
 public:
-    static GC::Ref<RTCIceCandidate> create(JS::Realm&, RTCIceCandidateInit const& = {});
-    static WebIDL::ExceptionOr<GC::Ref<RTCIceCandidate>> construct_impl(JS::Realm&, RTCIceCandidateInit const& = {});
+    [[nodiscard]] static GC::Ref<RTCIceCandidate> create(RTCIceCandidateInit const& = {});
+    static WebIDL::ExceptionOr<GC::Ref<RTCIceCandidate>> construct_impl(RTCIceCandidateInit const& = {});
 
     virtual ~RTCIceCandidate() override;
 
-    Optional<String> foundation() const { return {}; }
+    Optional<Utf16String> foundation() const { return {}; }
     Optional<Bindings::RTCIceServerTransportProtocol> relay_protocol() const { return {}; }
 
 private:
-    explicit RTCIceCandidate(JS::Realm&);
-
-    virtual void initialize(JS::Realm&) override;
+    RTCIceCandidate();
 };
 
 }

@@ -6,35 +6,34 @@
 
 #pragma once
 
-#include <LibWeb/Bindings/PlatformObject.h>
 #include <LibWeb/Bindings/RTCSessionDescription.h>
+#include <LibWeb/Bindings/Wrappable.h>
+#include <LibWeb/WebIDL/ExceptionOr.h>
 
 namespace Web::WebRTC {
 
 using Bindings::RTCLocalSessionDescriptionInit;
 using Bindings::RTCSessionDescriptionInit;
 
-class RTCSessionDescription final : public Bindings::PlatformObject {
-    WEB_PLATFORM_OBJECT(RTCSessionDescription, Bindings::PlatformObject);
+class RTCSessionDescription final : public Bindings::GCAllocatedWrappable {
+    WEB_WRAPPABLE(RTCSessionDescription, Bindings::GCAllocatedWrappable);
     GC_DECLARE_ALLOCATOR(RTCSessionDescription);
 
 public:
-    static GC::Ref<RTCSessionDescription> create(JS::Realm&, RTCSessionDescriptionInit const&);
-    static WebIDL::ExceptionOr<GC::Ref<RTCSessionDescription>> construct_impl(JS::Realm&, RTCSessionDescriptionInit const&);
+    [[nodiscard]] static GC::Ref<RTCSessionDescription> create(RTCSessionDescriptionInit const&);
+    static WebIDL::ExceptionOr<GC::Ref<RTCSessionDescription>> construct_impl(RTCSessionDescriptionInit const&);
 
     virtual ~RTCSessionDescription() override;
 
     Bindings::RTCSdpType type() const { return m_type; }
-    String const& sdp() const { return m_sdp; }
+    Utf16String const& sdp() const { return m_sdp; }
     RTCSessionDescriptionInit to_json() const { return { .sdp = m_sdp, .type = m_type }; }
 
 private:
-    RTCSessionDescription(JS::Realm&, Bindings::RTCSdpType, String);
-
-    virtual void initialize(JS::Realm&) override;
+    RTCSessionDescription(Bindings::RTCSdpType, Utf16String);
 
     Bindings::RTCSdpType m_type {};
-    String m_sdp;
+    Utf16String m_sdp;
 };
 
 }

@@ -6,21 +6,24 @@
 
 #pragma once
 
+#include <LibJS/Forward.h>
+#include <LibWeb/Bindings/SFrameTransformErrorEvent.h>
 #include <LibWeb/DOM/Event.h>
 
 namespace Web::WebRTC {
 
+using SFrameTransformErrorEventInit = Bindings::SFrameTransformErrorEventInit;
+
 class SFrameTransformErrorEvent final : public DOM::Event {
-    WEB_PLATFORM_OBJECT(SFrameTransformErrorEvent, DOM::Event);
+    WEB_WRAPPABLE(SFrameTransformErrorEvent, DOM::Event);
     GC_DECLARE_ALLOCATOR(SFrameTransformErrorEvent);
 
 public:
-    static GC::Ref<SFrameTransformErrorEvent> create(JS::Realm&, FlyString const& event_name);
+    [[nodiscard]] static GC::Ref<SFrameTransformErrorEvent> create(Utf16FlyString const& event_name, SFrameTransformErrorEventInit const&, HighResolutionTime::DOMHighResTimeStamp);
     virtual ~SFrameTransformErrorEvent() override;
 
 private:
-    SFrameTransformErrorEvent(JS::Realm&, FlyString const&);
-    virtual void initialize(JS::Realm&) override;
+    SFrameTransformErrorEvent(Utf16FlyString const& event_name, SFrameTransformErrorEventInit const&, HighResolutionTime::DOMHighResTimeStamp);
 };
 
 }

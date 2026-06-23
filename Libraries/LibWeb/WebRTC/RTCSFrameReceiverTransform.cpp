@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibWeb/Bindings/Intrinsics.h>
+#include <LibGC/Heap.h>
 #include <LibWeb/Bindings/RTCSFrameReceiverTransform.h>
 #include <LibWeb/WebRTC/RTCSFrameReceiverTransform.h>
 
@@ -12,15 +12,14 @@ namespace Web::WebRTC {
 
 GC_DEFINE_ALLOCATOR(RTCSFrameReceiverTransform);
 
-GC::Ref<RTCSFrameReceiverTransform> RTCSFrameReceiverTransform::create(JS::Realm& realm) { return realm.create<RTCSFrameReceiverTransform>(realm); }
+GC::Ref<RTCSFrameReceiverTransform> RTCSFrameReceiverTransform::create() { return GC::Heap::the().allocate<RTCSFrameReceiverTransform>(); }
 
 // FIXME: RTCSFrameReceiverTransform is a stub — wire up the options once SFrame transforms are implemented.
-WebIDL::ExceptionOr<GC::Ref<RTCSFrameReceiverTransform>> RTCSFrameReceiverTransform::construct_impl(JS::Realm& realm, Bindings::SFrameTransformOptions const&)
+WebIDL::ExceptionOr<GC::Ref<RTCSFrameReceiverTransform>> RTCSFrameReceiverTransform::construct_impl(Bindings::SFrameTransformOptions const&)
 {
-    return create(realm);
+    return create();
 }
-RTCSFrameReceiverTransform::RTCSFrameReceiverTransform(JS::Realm& realm) : DOM::EventTarget(realm) { }
+RTCSFrameReceiverTransform::RTCSFrameReceiverTransform() = default;
 RTCSFrameReceiverTransform::~RTCSFrameReceiverTransform() = default;
-void RTCSFrameReceiverTransform::initialize(JS::Realm& realm) { WEB_SET_PROTOTYPE_FOR_INTERFACE(RTCSFrameReceiverTransform); Base::initialize(realm); }
 
 }

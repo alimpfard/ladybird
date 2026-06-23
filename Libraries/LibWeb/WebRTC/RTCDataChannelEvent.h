@@ -6,21 +6,24 @@
 
 #pragma once
 
+#include <LibJS/Forward.h>
+#include <LibWeb/Bindings/RTCDataChannelEvent.h>
 #include <LibWeb/DOM/Event.h>
 
 namespace Web::WebRTC {
 
+using RTCDataChannelEventInit = Bindings::RTCDataChannelEventInit;
+
 class RTCDataChannelEvent final : public DOM::Event {
-    WEB_PLATFORM_OBJECT(RTCDataChannelEvent, DOM::Event);
+    WEB_WRAPPABLE(RTCDataChannelEvent, DOM::Event);
     GC_DECLARE_ALLOCATOR(RTCDataChannelEvent);
 
 public:
-    static GC::Ref<RTCDataChannelEvent> create(JS::Realm&, FlyString const& event_name);
+    [[nodiscard]] static GC::Ref<RTCDataChannelEvent> create(Utf16FlyString const& event_name, RTCDataChannelEventInit const&, HighResolutionTime::DOMHighResTimeStamp);
     virtual ~RTCDataChannelEvent() override;
 
 private:
-    RTCDataChannelEvent(JS::Realm&, FlyString const&);
-    virtual void initialize(JS::Realm&) override;
+    RTCDataChannelEvent(Utf16FlyString const& event_name, RTCDataChannelEventInit const&, HighResolutionTime::DOMHighResTimeStamp);
 };
 
 }

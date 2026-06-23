@@ -4,23 +4,24 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibWeb/Bindings/Intrinsics.h>
-#include <LibWeb/Bindings/KeyFrameRequestEvent.h>
+#include <LibGC/Heap.h>
 #include <LibWeb/WebRTC/KeyFrameRequestEvent.h>
 
 namespace Web::WebRTC {
 
 GC_DEFINE_ALLOCATOR(KeyFrameRequestEvent);
 
-GC::Ref<KeyFrameRequestEvent> KeyFrameRequestEvent::create(JS::Realm& realm, FlyString const& event_name) { return realm.create<KeyFrameRequestEvent>(realm, event_name); }
+GC::Ref<KeyFrameRequestEvent> KeyFrameRequestEvent::create(Utf16FlyString const& event_name, HighResolutionTime::DOMHighResTimeStamp time_stamp)
+{
+    return GC::Heap::the().allocate<KeyFrameRequestEvent>(event_name, time_stamp);
+}
 
 // FIXME: KeyFrameRequestEvent is a stub — store the rid once the attribute is implemented.
-GC::Ref<KeyFrameRequestEvent> KeyFrameRequestEvent::construct_impl(JS::Realm& realm, String const& type, Optional<String> const&)
+GC::Ref<KeyFrameRequestEvent> KeyFrameRequestEvent::create_for_constructor(Utf16String const& type, Optional<Utf16String> const&, HighResolutionTime::DOMHighResTimeStamp time_stamp)
 {
-    return create(realm, type);
+    return create(Utf16FlyString { type }, time_stamp);
 }
-KeyFrameRequestEvent::KeyFrameRequestEvent(JS::Realm& realm, FlyString const& event_name) : DOM::Event(realm, event_name) { }
+KeyFrameRequestEvent::KeyFrameRequestEvent(Utf16FlyString const& event_name, HighResolutionTime::DOMHighResTimeStamp time_stamp) : DOM::Event(event_name, time_stamp) { }
 KeyFrameRequestEvent::~KeyFrameRequestEvent() = default;
-void KeyFrameRequestEvent::initialize(JS::Realm& realm) { WEB_SET_PROTOTYPE_FOR_INTERFACE(KeyFrameRequestEvent); Base::initialize(realm); }
 
 }

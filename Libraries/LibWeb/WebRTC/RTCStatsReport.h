@@ -6,24 +6,36 @@
 
 #pragma once
 
-#include <LibWeb/Bindings/PlatformObject.h>
+#include <AK/FlyString.h>
+#include <AK/HashMap.h>
+#include <LibWeb/Bindings/Wrappable.h>
+#include <LibWeb/Forward.h>
 
 namespace Web::WebRTC {
 
 // https://w3c.github.io/webrtc-pc/#rtcstatsreport-object
-class RTCStatsReport final : public Bindings::PlatformObject {
-    WEB_PLATFORM_OBJECT(RTCStatsReport, Bindings::PlatformObject);
+//
+// Read-only maplike<DOMString, object>. Native entries live here; the bindings
+// glue materializes a JS::Map on demand. The values are plain JS objects built
+// by the stats gathering code (see RTCPeerConnection::get_stats()).
+class RTCStatsReport final : public Bindings::Wrappable {
+    WEB_WRAPPABLE(RTCStatsReport, Bindings::Wrappable);
     GC_DECLARE_ALLOCATOR(RTCStatsReport);
 
 public:
-    static GC::Ref<RTCStatsReport> create(JS::Realm&);
+    [[nodiscard]] static GC::Ref<RTCStatsReport> create();
 
     virtual ~RTCStatsReport() override;
 
-private:
-    explicit RTCStatsReport(JS::Realm&);
+    OrderedHashMap<FlyString, GC::Ref<JS::Object>> const& entries() const { return m_entries; }
+    void set_entry(FlyString key, GC::Ref<JS::Object> value) { m_entries.set(move(key), value); }
 
-    virtual void initialize(JS::Realm&) override;
+private:
+    RTCStatsReport();
+
+    virtual void visit_edges(Cell::Visitor&) override;
+
+    OrderedHashMap<FlyString, GC::Ref<JS::Object>> m_entries;
 };
 
 }

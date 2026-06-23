@@ -13,17 +13,16 @@
 namespace Web::WebRTC {
 
 class SFrameDecrypterStream final : public DOM::EventTarget {
-    WEB_PLATFORM_OBJECT(SFrameDecrypterStream, DOM::EventTarget);
+    WEB_WRAPPABLE(SFrameDecrypterStream, DOM::EventTarget);
     GC_DECLARE_ALLOCATOR(SFrameDecrypterStream);
 
 public:
-    static GC::Ref<SFrameDecrypterStream> create(JS::Realm&);
-    static WebIDL::ExceptionOr<GC::Ref<SFrameDecrypterStream>> construct_impl(JS::Realm&, Bindings::SFrameTransformOptions const&);
+    static GC::Ref<SFrameDecrypterStream> create();
+    static WebIDL::ExceptionOr<GC::Ref<SFrameDecrypterStream>> construct_impl(Bindings::SFrameTransformOptions const&);
     virtual ~SFrameDecrypterStream() override;
 
 private:
-    explicit SFrameDecrypterStream(JS::Realm&);
-    virtual void initialize(JS::Realm&) override;
+    explicit SFrameDecrypterStream();
 };
 
 }

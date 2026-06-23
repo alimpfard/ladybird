@@ -7,19 +7,19 @@
 #pragma once
 
 #include <LibWeb/Bindings/MediaStreamTrack.h>
-#include <LibWeb/Bindings/PlatformObject.h>
+#include <LibWeb/Bindings/Wrappable.h>
 #include <LibWeb/Forward.h>
 
 namespace Web::WebRTC {
 
 using RTCRtpReceiverTransform = Variant<GC::Ref<RTCSFrameReceiverTransform>, GC::Ref<RTCRtpScriptTransform>, Empty>;
 
-class RTCRtpReceiver final : public Bindings::PlatformObject {
-    WEB_PLATFORM_OBJECT(RTCRtpReceiver, Bindings::PlatformObject);
+class RTCRtpReceiver final : public Bindings::GCAllocatedWrappable {
+    WEB_WRAPPABLE(RTCRtpReceiver, Bindings::GCAllocatedWrappable);
     GC_DECLARE_ALLOCATOR(RTCRtpReceiver);
 
 public:
-    static GC::Ref<RTCRtpReceiver> create(JS::Realm&, Bindings::MediaStreamTrackKind);
+    static GC::Ref<RTCRtpReceiver> create(Bindings::MediaStreamTrackKind);
     virtual ~RTCRtpReceiver() override;
 
     GC::Ref<MediaCapture::MediaStreamTrack> track() const;
@@ -32,13 +32,12 @@ public:
     void set_associated_remote_streams(Vector<GC::Ref<MediaCapture::MediaStream>>);
 
 private:
-    RTCRtpReceiver(JS::Realm&, GC::Ref<MediaCapture::MediaStreamTrack>);
-    virtual void initialize(JS::Realm&) override;
+    explicit RTCRtpReceiver(GC::Ref<MediaCapture::MediaStreamTrack>);
     virtual void visit_edges(JS::Cell::Visitor&) override;
 
     // [[ReceiverTrack]]
     GC::Ref<MediaCapture::MediaStreamTrack> m_track;
-    GC::Ptr<JS::Object> m_transform;
+    GC::Ptr<Bindings::Wrappable> m_transform;
     Vector<GC::Ref<MediaCapture::MediaStream>> m_associated_remote_streams;
 };
 

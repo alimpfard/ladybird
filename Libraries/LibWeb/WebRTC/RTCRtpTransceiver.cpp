@@ -4,8 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibWeb/Bindings/Intrinsics.h>
-#include <LibWeb/Bindings/RTCRtpTransceiver.h>
+#include <LibGC/Heap.h>
 #include <LibWeb/WebIDL/DOMException.h>
 #include <LibWeb/WebRTC/RTCPeerConnection.h>
 #include <LibWeb/WebRTC/RTCRtpReceiver.h>
@@ -16,14 +15,13 @@ namespace Web::WebRTC {
 
 GC_DEFINE_ALLOCATOR(RTCRtpTransceiver);
 
-GC::Ref<RTCRtpTransceiver> RTCRtpTransceiver::create(JS::Realm& realm, RTCPeerConnection& connection, GC::Ref<RTCRtpSender> sender, GC::Ref<RTCRtpReceiver> receiver, Bindings::RTCRtpTransceiverDirection direction, Bindings::MediaStreamTrackKind kind)
+GC::Ref<RTCRtpTransceiver> RTCRtpTransceiver::create(RTCPeerConnection& connection, GC::Ref<RTCRtpSender> sender, GC::Ref<RTCRtpReceiver> receiver, Bindings::RTCRtpTransceiverDirection direction, Bindings::MediaStreamTrackKind kind)
 {
-    return realm.create<RTCRtpTransceiver>(realm, connection, sender, receiver, direction, kind);
+    return GC::Heap::the().allocate<RTCRtpTransceiver>(connection, sender, receiver, direction, kind);
 }
 
-RTCRtpTransceiver::RTCRtpTransceiver(JS::Realm& realm, RTCPeerConnection& connection, GC::Ref<RTCRtpSender> sender, GC::Ref<RTCRtpReceiver> receiver, Bindings::RTCRtpTransceiverDirection direction, Bindings::MediaStreamTrackKind kind)
-    : Bindings::PlatformObject(realm)
-    , m_connection(connection)
+RTCRtpTransceiver::RTCRtpTransceiver(RTCPeerConnection& connection, GC::Ref<RTCRtpSender> sender, GC::Ref<RTCRtpReceiver> receiver, Bindings::RTCRtpTransceiverDirection direction, Bindings::MediaStreamTrackKind kind)
+    : m_connection(connection)
     , m_sender(sender)
     , m_receiver(receiver)
     , m_direction(direction)
@@ -32,12 +30,6 @@ RTCRtpTransceiver::RTCRtpTransceiver(JS::Realm& realm, RTCPeerConnection& connec
 }
 
 RTCRtpTransceiver::~RTCRtpTransceiver() = default;
-
-void RTCRtpTransceiver::initialize(JS::Realm& realm)
-{
-    WEB_SET_PROTOTYPE_FOR_INTERFACE(RTCRtpTransceiver);
-    Base::initialize(realm);
-}
 
 void RTCRtpTransceiver::visit_edges(JS::Cell::Visitor& visitor)
 {
@@ -55,7 +47,7 @@ WebIDL::ExceptionOr<void> RTCRtpTransceiver::stop_method()
     auto& connection = *m_connection;
     // 3. If connection.[[IsClosed]] is true, throw an InvalidStateError.
     if (connection.is_closed())
-        return WebIDL::InvalidStateError::create(realm(), "RTCPeerConnection is closed"_utf16);
+        return WebIDL::InvalidStateError::create("RTCPeerConnection is closed"_utf16);
     // 4. If transceiver.[[Stopping]] is true, abort these steps.
     if (m_stopping)
         return {};

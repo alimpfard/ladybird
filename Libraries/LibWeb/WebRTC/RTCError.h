@@ -6,23 +6,24 @@
 
 #pragma once
 
-#include <LibWeb/Bindings/Forward.h>
+#include <LibWeb/Bindings/RTCError.h>
 #include <LibWeb/WebIDL/DOMException.h>
 
 namespace Web::WebRTC {
 
+using RTCErrorInit = Bindings::RTCErrorInit;
+
 class RTCError final : public WebIDL::DOMException {
-    WEB_PLATFORM_OBJECT(RTCError, WebIDL::DOMException);
+    WEB_WRAPPABLE(RTCError, WebIDL::DOMException);
     GC_DECLARE_ALLOCATOR(RTCError);
 
 public:
-    static GC::Ref<RTCError> create(JS::Realm&);
-    static WebIDL::ExceptionOr<GC::Ref<RTCError>> construct_impl(JS::Realm&, Bindings::RTCErrorInit const&, String const& message);
+    [[nodiscard]] static GC::Ref<RTCError> create();
+    static WebIDL::ExceptionOr<GC::Ref<RTCError>> construct_impl(RTCErrorInit const&, Utf16String const& message);
     virtual ~RTCError() override;
 
 private:
-    explicit RTCError(JS::Realm&);
-    virtual void initialize(JS::Realm&) override;
+    RTCError();
 };
 
 }

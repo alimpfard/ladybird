@@ -5,11 +5,9 @@
 // real spec defines a long enum (codec, candidate-pair, transport, etc.).
 // Treating it as DOMString until the stats taxonomy is wired up.
 
-// FIXME: spec says `readonly maplike<DOMString, object>`. Ladybird's bindings
-//        codegen doesn't yet support maplike with non-sequence values; left as
-//        an empty interface until that lands.
 [Exposed=Window]
 interface RTCStatsReport {
+    readonly maplike<DOMString, object>;
 };
 
 dictionary RTCStats {

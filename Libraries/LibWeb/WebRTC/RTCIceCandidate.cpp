@@ -4,36 +4,25 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibWeb/Bindings/Intrinsics.h>
-#include <LibWeb/Bindings/RTCIceCandidate.h>
-#include <LibWeb/WebIDL/ExceptionOr.h>
+#include <LibGC/Heap.h>
 #include <LibWeb/WebRTC/RTCIceCandidate.h>
 
 namespace Web::WebRTC {
 
 GC_DEFINE_ALLOCATOR(RTCIceCandidate);
 
-GC::Ref<RTCIceCandidate> RTCIceCandidate::create(JS::Realm& realm, RTCIceCandidateInit const&)
+GC::Ref<RTCIceCandidate> RTCIceCandidate::create(RTCIceCandidateInit const&)
 {
-    return realm.create<RTCIceCandidate>(realm);
+    return GC::Heap::the().allocate<RTCIceCandidate>();
 }
 
-WebIDL::ExceptionOr<GC::Ref<RTCIceCandidate>> RTCIceCandidate::construct_impl(JS::Realm& realm, RTCIceCandidateInit const& init)
+WebIDL::ExceptionOr<GC::Ref<RTCIceCandidate>> RTCIceCandidate::construct_impl(RTCIceCandidateInit const& init)
 {
-    return create(realm, init);
+    return create(init);
 }
 
-RTCIceCandidate::RTCIceCandidate(JS::Realm& realm)
-    : Bindings::PlatformObject(realm)
-{
-}
+RTCIceCandidate::RTCIceCandidate() = default;
 
 RTCIceCandidate::~RTCIceCandidate() = default;
-
-void RTCIceCandidate::initialize(JS::Realm& realm)
-{
-    WEB_SET_PROTOTYPE_FOR_INTERFACE(RTCIceCandidate);
-    Base::initialize(realm);
-}
 
 }

@@ -6,21 +6,24 @@
 
 #pragma once
 
+#include <LibJS/Forward.h>
+#include <LibWeb/Bindings/RTCPeerConnectionIceEvent.h>
 #include <LibWeb/DOM/Event.h>
 
 namespace Web::WebRTC {
 
+using RTCPeerConnectionIceEventInit = Bindings::RTCPeerConnectionIceEventInit;
+
 class RTCPeerConnectionIceEvent final : public DOM::Event {
-    WEB_PLATFORM_OBJECT(RTCPeerConnectionIceEvent, DOM::Event);
+    WEB_WRAPPABLE(RTCPeerConnectionIceEvent, DOM::Event);
     GC_DECLARE_ALLOCATOR(RTCPeerConnectionIceEvent);
 
 public:
-    static GC::Ref<RTCPeerConnectionIceEvent> create(JS::Realm&, FlyString const& event_name);
+    [[nodiscard]] static GC::Ref<RTCPeerConnectionIceEvent> create(Utf16FlyString const& event_name, RTCPeerConnectionIceEventInit const&, HighResolutionTime::DOMHighResTimeStamp);
     virtual ~RTCPeerConnectionIceEvent() override;
 
 private:
-    RTCPeerConnectionIceEvent(JS::Realm&, FlyString const&);
-    virtual void initialize(JS::Realm&) override;
+    RTCPeerConnectionIceEvent(Utf16FlyString const& event_name, RTCPeerConnectionIceEventInit const&, HighResolutionTime::DOMHighResTimeStamp);
 };
 
 }

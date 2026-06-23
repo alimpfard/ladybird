@@ -4,8 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibWeb/Bindings/Intrinsics.h>
-#include <LibWeb/Bindings/RTCError.h>
+#include <LibGC/Heap.h>
 #include <LibWeb/WebIDL/ExceptionOr.h>
 #include <LibWeb/WebRTC/RTCError.h>
 
@@ -13,15 +12,14 @@ namespace Web::WebRTC {
 
 GC_DEFINE_ALLOCATOR(RTCError);
 
-GC::Ref<RTCError> RTCError::create(JS::Realm& realm) { return realm.create<RTCError>(realm); }
+GC::Ref<RTCError> RTCError::create() { return GC::Heap::the().allocate<RTCError>(); }
 
 // FIXME: RTCError is a stub — populate errorDetail/sdpLineNumber/etc. from init and use the message.
-WebIDL::ExceptionOr<GC::Ref<RTCError>> RTCError::construct_impl(JS::Realm& realm, Bindings::RTCErrorInit const&, String const&)
+WebIDL::ExceptionOr<GC::Ref<RTCError>> RTCError::construct_impl(RTCErrorInit const&, Utf16String const&)
 {
-    return create(realm);
+    return create();
 }
-RTCError::RTCError(JS::Realm& realm) : WebIDL::DOMException(realm, "OperationError"_string, {}) { }
+RTCError::RTCError() : WebIDL::DOMException("OperationError"_fly_string, {}) { }
 RTCError::~RTCError() = default;
-void RTCError::initialize(JS::Realm& realm) { WEB_SET_PROTOTYPE_FOR_INTERFACE(RTCError); Base::initialize(realm); }
 
 }

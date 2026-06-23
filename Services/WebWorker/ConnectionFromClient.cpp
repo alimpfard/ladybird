@@ -11,7 +11,11 @@
 #include <LibGfx/Font/SharedFontProvider.h>
 #include <LibGC/Function.h>
 #include <LibJS/Runtime/ArrayBuffer.h>
+#include <LibWeb/Bindings/Wrappable.h>
+#include <LibWeb/Bindings/WrapperWorld.h>
 #include <LibWeb/HTML/BroadcastChannel.h>
+#include <LibWeb/HTML/Scripting/Environments.h>
+#include <LibWeb/HighResolutionTime/TimeOrigin.h>
 #include <LibWeb/HTML/EventLoop/EventLoop.h>
 #include <LibWeb/HTML/EventLoop/Task.h>
 #include <LibWeb/HTML/EventNames.h>
@@ -301,7 +305,7 @@ void ConnectionFromClient::run_transform_init(u64 transform_id, Web::HTML::Seria
         dbgln("ConnectionFromClient::rtc_transform_init: no worker global scope yet (transform_id={})", transform_id);
         return;
     }
-    auto& realm = global_scope->realm();
+    auto& realm = Web::HTML::relevant_realm(*global_scope);
     Web::HTML::TemporaryExecutionContext context(realm, Web::HTML::TemporaryExecutionContext::CallbacksEnabled::Yes);
 
     // Spec step 8.1: deserialize serializedOptions in the worker realm.
@@ -326,7 +330,7 @@ void ConnectionFromClient::run_transform_init(u64 transform_id, Web::HTML::Seria
     // decode/playback path consumes them. Captured `this` is fine — the connection
     // outlives the transformer (close_worker tears the connection down via die()).
     auto write_encoded_data = GC::create_function(realm.heap(), [this, transform_id](JS::Value chunk) {
-        auto* frame = as_if<Web::WebRTC::RTCEncodedAudioFrame>(chunk.is_object() ? &chunk.as_object() : nullptr);
+        auto* frame = chunk.is_object() ? Web::Bindings::impl_from<Web::WebRTC::RTCEncodedAudioFrame>(&chunk.as_object()) : nullptr;
         if (!frame) {
             static size_t logged_non_frame = 0;
             if (logged_non_frame++ < 3)
@@ -340,7 +344,7 @@ void ConnectionFromClient::run_transform_init(u64 transform_id, Web::HTML::Seria
         if (logged_writes++ < 3)
             dbgln("worker: write algorithm received frame id={}", transform_id);
         auto data = frame->data();
-        auto bytes = ByteBuffer::copy(data->bytes()).release_value_but_fixme_should_propagate_errors();
+        auto bytes = data->copy_to_byte_buffer(0, data->byte_length()).release_value_but_fixme_should_propagate_errors();
         auto metadata = frame->get_metadata();
         u32 ssrc = metadata.synchronization_source.value_or(0);
         u8 payload_type = metadata.payload_type.value_or(0);
@@ -353,10 +357,11 @@ void ConnectionFromClient::run_transform_init(u64 transform_id, Web::HTML::Seria
     // Spec step 8: queue a global task on the DOM manipulation task source so the
     // event fires on the worker's own event loop, after any pending script setup
     // (e.g. `self.onrtctransform = ...`) has had a chance to run.
-    Web::HTML::queue_global_task(Web::HTML::Task::Source::DOMManipulation, *global_scope,
+    Web::HTML::queue_global_task(Web::HTML::Task::Source::DOMManipulation, Web::HTML::relevant_global_object(*global_scope),
         GC::create_function(realm.heap(), [global_scope, transformer, &realm, transform_id] {
             Web::HTML::TemporaryExecutionContext context(realm, Web::HTML::TemporaryExecutionContext::CallbacksEnabled::Yes);
-            auto event = Web::WebRTC::RTCTransformEvent::create(realm, Web::HTML::EventNames::rtctransform, transformer);
+            auto event = Web::WebRTC::RTCTransformEvent::create(Web::HTML::EventNames::rtctransform, transformer,
+                Web::HighResolutionTime::current_high_resolution_time(Web::HTML::relevant_global_object(*global_scope)));
             auto handler_attr = global_scope->event_handler_attribute(Web::HTML::EventNames::rtctransform);
             auto has_listeners = global_scope->has_event_listener(Web::HTML::EventNames::rtctransform);
             dbgln("worker: dispatching rtctransform id={} attr_present={} addEventListener_present={}", transform_id, handler_attr != nullptr, has_listeners);
@@ -380,11 +385,12 @@ void ConnectionFromClient::rtc_transform_encoded_audio_frame(u64 transform_id, B
 
     if (!m_worker_host || !m_worker_host->global_scope())
         return;
-    auto& realm = m_worker_host->global_scope()->realm();
+    auto& realm = Web::HTML::relevant_realm(*m_worker_host->global_scope());
     Web::HTML::TemporaryExecutionContext context(realm, Web::HTML::TemporaryExecutionContext::CallbacksEnabled::Yes);
 
     auto frame = Web::WebRTC::RTCEncodedAudioFrame::create_from_packet(realm, move(payload), ssrc, payload_type, rtp_timestamp, sequence_number);
-    if (auto result = transformer->enqueue_encoded_frame(frame); result.is_exception())
+    auto wrapped_frame = Web::Bindings::wrap(Web::Bindings::host_defined_wrapper_world(realm), realm, frame);
+    if (auto result = transformer->enqueue_encoded_frame(wrapped_frame); result.is_exception())
         dbgln("rtc_transform_encoded_audio_frame: enqueue failed for transform_id={}", transform_id);
 }
 

@@ -4,30 +4,58 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibWeb/Bindings/Intrinsics.h>
-#include <LibWeb/Bindings/RTCStatsReport.h>
+#include <LibGC/Heap.h>
+#include <LibJS/Runtime/Map.h>
+#include <LibJS/Runtime/PrimitiveString.h>
+#include <LibJS/Runtime/Realm.h>
+#include <LibWeb/WebRTC/BindingsGlue.h>
 #include <LibWeb/WebRTC/RTCStatsReport.h>
 
 namespace Web::WebRTC {
 
 GC_DEFINE_ALLOCATOR(RTCStatsReport);
 
-GC::Ref<RTCStatsReport> RTCStatsReport::create(JS::Realm& realm)
+GC::Ref<RTCStatsReport> RTCStatsReport::create()
 {
-    return realm.create<RTCStatsReport>(realm);
+    return GC::Heap::the().allocate<RTCStatsReport>();
 }
 
-RTCStatsReport::RTCStatsReport(JS::Realm& realm)
-    : Bindings::PlatformObject(realm)
-{
-}
+RTCStatsReport::RTCStatsReport() = default;
 
 RTCStatsReport::~RTCStatsReport() = default;
 
-void RTCStatsReport::initialize(JS::Realm& realm)
+void RTCStatsReport::visit_edges(Cell::Visitor& visitor)
 {
-    WEB_SET_PROTOTYPE_FOR_INTERFACE(RTCStatsReport);
-    Base::initialize(realm);
+    Base::visit_edges(visitor);
+    for (auto const& entry : m_entries)
+        visitor.visit(entry.value);
+}
+
+}
+
+namespace Web::Bindings {
+
+GC::Ref<JS::Map> map_entries(JS::Realm& realm, WebRTC::RTCStatsReport& report)
+{
+    auto map_entries = JS::Map::create(realm);
+    for (auto const& entry : report.entries()) {
+        auto key = JS::PrimitiveString::create(realm.vm(), Utf16String::from_utf8(entry.key));
+        map_entries->map_set(JS::Value { key.ptr() }, JS::Value { entry.value.ptr() });
+    }
+    return map_entries;
+}
+
+Optional<JS::Value> map_get(JS::Realm&, WebRTC::RTCStatsReport& report, FlyString const& key)
+{
+    auto it = report.entries().find(key);
+    if (it == report.entries().end())
+        return {};
+    return JS::Value { it->value.ptr() };
+}
+
+bool map_has(WebRTC::RTCStatsReport& report, FlyString const& key)
+{
+    return report.entries().contains(key);
 }
 
 }

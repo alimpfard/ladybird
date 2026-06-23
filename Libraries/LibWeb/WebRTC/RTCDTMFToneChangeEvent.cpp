@@ -4,21 +4,24 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibWeb/Bindings/Intrinsics.h>
-#include <LibWeb/Bindings/RTCDTMFToneChangeEvent.h>
+#include <LibGC/Heap.h>
 #include <LibWeb/WebRTC/RTCDTMFToneChangeEvent.h>
 
 namespace Web::WebRTC {
 
 GC_DEFINE_ALLOCATOR(RTCDTMFToneChangeEvent);
 
-GC::Ref<RTCDTMFToneChangeEvent> RTCDTMFToneChangeEvent::create(JS::Realm& realm, FlyString const& event_name)
+GC::Ref<RTCDTMFToneChangeEvent> RTCDTMFToneChangeEvent::create(Utf16FlyString const& event_name, RTCDTMFToneChangeEventInit const& event_init, HighResolutionTime::DOMHighResTimeStamp time_stamp)
 {
-    return realm.create<RTCDTMFToneChangeEvent>(realm, event_name);
+    return GC::Heap::the().allocate<RTCDTMFToneChangeEvent>(event_name, event_init, time_stamp);
 }
 
-RTCDTMFToneChangeEvent::RTCDTMFToneChangeEvent(JS::Realm& realm, FlyString const& event_name) : DOM::Event(realm, event_name) { }
+// FIXME: RTCDTMFToneChangeEvent is a stub — store the tone once the attribute is implemented.
+RTCDTMFToneChangeEvent::RTCDTMFToneChangeEvent(Utf16FlyString const& event_name, RTCDTMFToneChangeEventInit const& event_init, HighResolutionTime::DOMHighResTimeStamp time_stamp)
+    : DOM::Event(event_name, event_init, time_stamp)
+{
+}
+
 RTCDTMFToneChangeEvent::~RTCDTMFToneChangeEvent() = default;
-void RTCDTMFToneChangeEvent::initialize(JS::Realm& realm) { WEB_SET_PROTOTYPE_FOR_INTERFACE(RTCDTMFToneChangeEvent); Base::initialize(realm); }
 
 }

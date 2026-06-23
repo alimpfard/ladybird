@@ -16,7 +16,7 @@ namespace Web::WebRTC {
 
 // https://w3c.github.io/webrtc-encoded-transform/#rtcrtpscripttransformer
 class WEB_API RTCRtpScriptTransformer final : public DOM::EventTarget {
-    WEB_PLATFORM_OBJECT(RTCRtpScriptTransformer, DOM::EventTarget);
+    WEB_WRAPPABLE(RTCRtpScriptTransformer, DOM::EventTarget);
     GC_DECLARE_ALLOCATOR(RTCRtpScriptTransformer);
 
 public:
@@ -34,6 +34,9 @@ public:
     GC::Ref<Streams::WritableStream> writable() const { return *m_writable; }
     JS::Value options() const { return m_options; }
 
+    JS::Realm& relevant_realm() const;
+    virtual GC::Ptr<Bindings::Wrappable> relevant_global_impl() const override { return m_global_object; }
+
     // Configure the action to run when the worker writes a transformed frame to
     // [[writable]]. This represents the [[frameSource]]'s "consume the transformed
     // frame" entry point. Per spec [[frameSource]] is set by the host before the
@@ -49,10 +52,12 @@ public:
     WebIDL::CallbackType* onkeyframerequest();
 
 private:
-    explicit RTCRtpScriptTransformer(JS::Realm&);
-    virtual void initialize(JS::Realm&) override;
+    explicit RTCRtpScriptTransformer(GC::Ref<DOM::EventTarget> relevant_global_object);
     virtual void visit_edges(Cell::Visitor&) override;
 
+    // The worker global this transformer was created for; used to recover the
+    // realm at the bindings/streams edge.
+    GC::Ref<DOM::EventTarget> m_global_object;
     // [[frameSource]] — modeled as an indirection to the spec algorithm that
     // "hands the frame to the next pipeline stage". undefined per spec until the
     // host wires it.

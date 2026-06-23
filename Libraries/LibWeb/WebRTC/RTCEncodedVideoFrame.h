@@ -6,24 +6,23 @@
 
 #pragma once
 
-#include <LibWeb/Bindings/PlatformObject.h>
 #include <LibWeb/Bindings/RTCEncodedVideoFrame.h>
+#include <LibWeb/Bindings/Wrappable.h>
 #include <LibWeb/WebIDL/ExceptionOr.h>
 
 namespace Web::WebRTC {
 
-class RTCEncodedVideoFrame final : public Bindings::PlatformObject {
-    WEB_PLATFORM_OBJECT(RTCEncodedVideoFrame, Bindings::PlatformObject);
+class RTCEncodedVideoFrame final : public Bindings::GCAllocatedWrappable {
+    WEB_WRAPPABLE(RTCEncodedVideoFrame, Bindings::GCAllocatedWrappable);
     GC_DECLARE_ALLOCATOR(RTCEncodedVideoFrame);
 
 public:
-    static GC::Ref<RTCEncodedVideoFrame> create(JS::Realm&);
-    static WebIDL::ExceptionOr<GC::Ref<RTCEncodedVideoFrame>> construct_impl(JS::Realm&, GC::Ref<RTCEncodedVideoFrame> original_frame, Bindings::RTCEncodedVideoFrameOptions const& = {});
+    static GC::Ref<RTCEncodedVideoFrame> create();
+    static WebIDL::ExceptionOr<GC::Ref<RTCEncodedVideoFrame>> construct_impl(GC::Ref<RTCEncodedVideoFrame> original_frame, Bindings::RTCEncodedVideoFrameOptions const& = {});
     virtual ~RTCEncodedVideoFrame() override;
 
 private:
-    explicit RTCEncodedVideoFrame(JS::Realm&);
-    virtual void initialize(JS::Realm&) override;
+    explicit RTCEncodedVideoFrame();
 };
 
 }

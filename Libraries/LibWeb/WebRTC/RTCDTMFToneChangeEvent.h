@@ -6,21 +6,24 @@
 
 #pragma once
 
+#include <LibJS/Forward.h>
+#include <LibWeb/Bindings/RTCDTMFToneChangeEvent.h>
 #include <LibWeb/DOM/Event.h>
 
 namespace Web::WebRTC {
 
+using RTCDTMFToneChangeEventInit = Bindings::RTCDTMFToneChangeEventInit;
+
 class RTCDTMFToneChangeEvent final : public DOM::Event {
-    WEB_PLATFORM_OBJECT(RTCDTMFToneChangeEvent, DOM::Event);
+    WEB_WRAPPABLE(RTCDTMFToneChangeEvent, DOM::Event);
     GC_DECLARE_ALLOCATOR(RTCDTMFToneChangeEvent);
 
 public:
-    static GC::Ref<RTCDTMFToneChangeEvent> create(JS::Realm&, FlyString const& event_name);
+    [[nodiscard]] static GC::Ref<RTCDTMFToneChangeEvent> create(Utf16FlyString const& event_name, RTCDTMFToneChangeEventInit const&, HighResolutionTime::DOMHighResTimeStamp);
     virtual ~RTCDTMFToneChangeEvent() override;
 
 private:
-    RTCDTMFToneChangeEvent(JS::Realm&, FlyString const&);
-    virtual void initialize(JS::Realm&) override;
+    RTCDTMFToneChangeEvent(Utf16FlyString const& event_name, RTCDTMFToneChangeEventInit const&, HighResolutionTime::DOMHighResTimeStamp);
 };
 
 }

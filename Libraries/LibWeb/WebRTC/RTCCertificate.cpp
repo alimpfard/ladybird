@@ -4,17 +4,15 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibWeb/Bindings/Intrinsics.h>
-#include <LibWeb/Bindings/RTCCertificate.h>
+#include <LibGC/Heap.h>
 #include <LibWeb/WebRTC/RTCCertificate.h>
 
 namespace Web::WebRTC {
 
 GC_DEFINE_ALLOCATOR(RTCCertificate);
 
-GC::Ref<RTCCertificate> RTCCertificate::create(JS::Realm& realm) { return realm.create<RTCCertificate>(realm); }
-RTCCertificate::RTCCertificate(JS::Realm& realm) : Bindings::PlatformObject(realm) { }
+GC::Ref<RTCCertificate> RTCCertificate::create() { return GC::Heap::the().allocate<RTCCertificate>(); }
+RTCCertificate::RTCCertificate() = default;
 RTCCertificate::~RTCCertificate() = default;
-void RTCCertificate::initialize(JS::Realm& realm) { WEB_SET_PROTOTYPE_FOR_INTERFACE(RTCCertificate); Base::initialize(realm); }
 
 }

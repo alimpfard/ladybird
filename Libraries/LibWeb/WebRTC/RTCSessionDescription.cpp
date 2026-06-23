@@ -4,38 +4,29 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibWeb/Bindings/Intrinsics.h>
-#include <LibWeb/Bindings/RTCSessionDescription.h>
-#include <LibWeb/WebIDL/ExceptionOr.h>
+#include <LibGC/Heap.h>
 #include <LibWeb/WebRTC/RTCSessionDescription.h>
 
 namespace Web::WebRTC {
 
 GC_DEFINE_ALLOCATOR(RTCSessionDescription);
 
-GC::Ref<RTCSessionDescription> RTCSessionDescription::create(JS::Realm& realm, RTCSessionDescriptionInit const& init)
+GC::Ref<RTCSessionDescription> RTCSessionDescription::create(RTCSessionDescriptionInit const& init)
 {
-    return realm.create<RTCSessionDescription>(realm, init.type, init.sdp);
+    return GC::Heap::the().allocate<RTCSessionDescription>(init.type, init.sdp);
 }
 
-WebIDL::ExceptionOr<GC::Ref<RTCSessionDescription>> RTCSessionDescription::construct_impl(JS::Realm& realm, RTCSessionDescriptionInit const& init)
+WebIDL::ExceptionOr<GC::Ref<RTCSessionDescription>> RTCSessionDescription::construct_impl(RTCSessionDescriptionInit const& init)
 {
-    return create(realm, init);
+    return create(init);
 }
 
-RTCSessionDescription::RTCSessionDescription(JS::Realm& realm, Bindings::RTCSdpType type, String sdp)
-    : Bindings::PlatformObject(realm)
-    , m_type(type)
+RTCSessionDescription::RTCSessionDescription(Bindings::RTCSdpType type, Utf16String sdp)
+    : m_type(type)
     , m_sdp(move(sdp))
 {
 }
 
 RTCSessionDescription::~RTCSessionDescription() = default;
-
-void RTCSessionDescription::initialize(JS::Realm& realm)
-{
-    WEB_SET_PROTOTYPE_FOR_INTERFACE(RTCSessionDescription);
-    Base::initialize(realm);
-}
 
 }

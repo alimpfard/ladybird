@@ -4,8 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibWeb/Bindings/Intrinsics.h>
-#include <LibWeb/Bindings/RTCRtpReceiver.h>
+#include <LibGC/Heap.h>
 #include <LibWeb/MediaCapture/MediaStream.h>
 #include <LibWeb/MediaCapture/MediaStreamTrack.h>
 #include <LibWeb/WebRTC/RTCRtpReceiver.h>
@@ -16,21 +15,18 @@ namespace Web::WebRTC {
 
 GC_DEFINE_ALLOCATOR(RTCRtpReceiver);
 
-GC::Ref<RTCRtpReceiver> RTCRtpReceiver::create(JS::Realm& realm, Bindings::MediaStreamTrackKind kind)
+GC::Ref<RTCRtpReceiver> RTCRtpReceiver::create(Bindings::MediaStreamTrackKind kind)
 {
-    auto track = MediaCapture::MediaStreamTrack::create(realm, kind);
-    return realm.create<RTCRtpReceiver>(realm, track);
+    auto track = MediaCapture::MediaStreamTrack::create(kind);
+    return GC::Heap::the().allocate<RTCRtpReceiver>(track);
 }
 
-RTCRtpReceiver::RTCRtpReceiver(JS::Realm& realm, GC::Ref<MediaCapture::MediaStreamTrack> track)
-    : Bindings::PlatformObject(realm)
-    , m_track(track)
+RTCRtpReceiver::RTCRtpReceiver(GC::Ref<MediaCapture::MediaStreamTrack> track)
+    : m_track(track)
 {
 }
 
 RTCRtpReceiver::~RTCRtpReceiver() = default;
-
-void RTCRtpReceiver::initialize(JS::Realm& realm) { WEB_SET_PROTOTYPE_FOR_INTERFACE(RTCRtpReceiver); Base::initialize(realm); }
 
 GC::Ref<MediaCapture::MediaStreamTrack> RTCRtpReceiver::track() const { return m_track; }
 
@@ -62,10 +58,10 @@ RTCRtpReceiverTransform RTCRtpReceiver::transform() const
 void RTCRtpReceiver::set_transform(RTCRtpReceiverTransform value)
 {
     m_transform = value.visit(
-        [](Empty) -> GC::Ptr<JS::Object> { return nullptr; },
-        [](GC::Ref<RTCSFrameReceiverTransform> const& t) -> GC::Ptr<JS::Object> { return t.ptr(); },
-        [](GC::Ref<RTCRtpScriptTransform> const& t) -> GC::Ptr<JS::Object> { return t.ptr(); });
-    dbgln("RTCRtpReceiver::set_transform: transform set, kind={}", m_transform ? m_transform->class_name() : "null"sv);
+        [](Empty) -> GC::Ptr<Bindings::Wrappable> { return nullptr; },
+        [](GC::Ref<RTCSFrameReceiverTransform> const& t) -> GC::Ptr<Bindings::Wrappable> { return t.ptr(); },
+        [](GC::Ref<RTCRtpScriptTransform> const& t) -> GC::Ptr<Bindings::Wrappable> { return t.ptr(); });
+    dbgln("RTCRtpReceiver::set_transform: transform set={}", m_transform != nullptr);
 }
 
 }

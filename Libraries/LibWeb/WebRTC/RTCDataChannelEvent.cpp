@@ -4,21 +4,24 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibWeb/Bindings/Intrinsics.h>
-#include <LibWeb/Bindings/RTCDataChannelEvent.h>
+#include <LibGC/Heap.h>
 #include <LibWeb/WebRTC/RTCDataChannelEvent.h>
 
 namespace Web::WebRTC {
 
 GC_DEFINE_ALLOCATOR(RTCDataChannelEvent);
 
-GC::Ref<RTCDataChannelEvent> RTCDataChannelEvent::create(JS::Realm& realm, FlyString const& event_name)
+GC::Ref<RTCDataChannelEvent> RTCDataChannelEvent::create(Utf16FlyString const& event_name, RTCDataChannelEventInit const& event_init, HighResolutionTime::DOMHighResTimeStamp time_stamp)
 {
-    return realm.create<RTCDataChannelEvent>(realm, event_name);
+    return GC::Heap::the().allocate<RTCDataChannelEvent>(event_name, event_init, time_stamp);
 }
 
-RTCDataChannelEvent::RTCDataChannelEvent(JS::Realm& realm, FlyString const& event_name) : DOM::Event(realm, event_name) { }
+// FIXME: RTCDataChannelEvent is a stub — store the channel once the attribute is implemented.
+RTCDataChannelEvent::RTCDataChannelEvent(Utf16FlyString const& event_name, RTCDataChannelEventInit const& event_init, HighResolutionTime::DOMHighResTimeStamp time_stamp)
+    : DOM::Event(event_name, event_init, time_stamp)
+{
+}
+
 RTCDataChannelEvent::~RTCDataChannelEvent() = default;
-void RTCDataChannelEvent::initialize(JS::Realm& realm) { WEB_SET_PROTOTYPE_FOR_INTERFACE(RTCDataChannelEvent); Base::initialize(realm); }
 
 }

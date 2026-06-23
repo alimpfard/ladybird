@@ -7,8 +7,8 @@
 #pragma once
 
 #include <LibWeb/Bindings/MediaStreamTrack.h>
-#include <LibWeb/Bindings/PlatformObject.h>
 #include <LibWeb/Bindings/RTCRtpTransceiver.h>
+#include <LibWeb/Bindings/Wrappable.h>
 #include <LibWeb/WebIDL/ExceptionOr.h>
 
 namespace Web::WebRTC {
@@ -17,12 +17,12 @@ class RTCPeerConnection;
 class RTCRtpReceiver;
 class RTCRtpSender;
 
-class RTCRtpTransceiver final : public Bindings::PlatformObject {
-    WEB_PLATFORM_OBJECT(RTCRtpTransceiver, Bindings::PlatformObject);
+class RTCRtpTransceiver final : public Bindings::GCAllocatedWrappable {
+    WEB_WRAPPABLE(RTCRtpTransceiver, Bindings::GCAllocatedWrappable);
     GC_DECLARE_ALLOCATOR(RTCRtpTransceiver);
 
 public:
-    static GC::Ref<RTCRtpTransceiver> create(JS::Realm&, RTCPeerConnection&, GC::Ref<RTCRtpSender>, GC::Ref<RTCRtpReceiver>, Bindings::RTCRtpTransceiverDirection, Bindings::MediaStreamTrackKind);
+    static GC::Ref<RTCRtpTransceiver> create(RTCPeerConnection&, GC::Ref<RTCRtpSender>, GC::Ref<RTCRtpReceiver>, Bindings::RTCRtpTransceiverDirection, Bindings::MediaStreamTrackKind);
     virtual ~RTCRtpTransceiver() override;
 
     GC::Ref<RTCRtpSender> sender() const { return m_sender; }
@@ -49,8 +49,7 @@ public:
     void stop(bool disappear = false);
 
 private:
-    explicit RTCRtpTransceiver(JS::Realm&, RTCPeerConnection&, GC::Ref<RTCRtpSender>, GC::Ref<RTCRtpReceiver>, Bindings::RTCRtpTransceiverDirection, Bindings::MediaStreamTrackKind);
-    virtual void initialize(JS::Realm&) override;
+    explicit RTCRtpTransceiver(RTCPeerConnection&, GC::Ref<RTCRtpSender>, GC::Ref<RTCRtpReceiver>, Bindings::RTCRtpTransceiverDirection, Bindings::MediaStreamTrackKind);
     virtual void visit_edges(JS::Cell::Visitor&) override;
 
     // [[Connection]]

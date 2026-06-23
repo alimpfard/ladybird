@@ -11,11 +11,11 @@
 namespace Web::WebRTC {
 
 class RTCDtlsTransport final : public DOM::EventTarget {
-    WEB_PLATFORM_OBJECT(RTCDtlsTransport, DOM::EventTarget);
+    WEB_WRAPPABLE(RTCDtlsTransport, DOM::EventTarget);
     GC_DECLARE_ALLOCATOR(RTCDtlsTransport);
 
 public:
-    static GC::Ref<RTCDtlsTransport> create(JS::Realm&);
+    [[nodiscard]] static GC::Ref<RTCDtlsTransport> create();
     virtual ~RTCDtlsTransport() override;
 
     void set_onstatechange(WebIDL::CallbackType*);
@@ -24,8 +24,7 @@ public:
     WebIDL::CallbackType* onerror();
 
 private:
-    explicit RTCDtlsTransport(JS::Realm&);
-    virtual void initialize(JS::Realm&) override;
+    RTCDtlsTransport();
 };
 
 }

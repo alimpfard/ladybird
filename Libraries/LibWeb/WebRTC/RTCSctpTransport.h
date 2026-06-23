@@ -11,19 +11,18 @@
 namespace Web::WebRTC {
 
 class RTCSctpTransport final : public DOM::EventTarget {
-    WEB_PLATFORM_OBJECT(RTCSctpTransport, DOM::EventTarget);
+    WEB_WRAPPABLE(RTCSctpTransport, DOM::EventTarget);
     GC_DECLARE_ALLOCATOR(RTCSctpTransport);
 
 public:
-    static GC::Ref<RTCSctpTransport> create(JS::Realm&);
+    [[nodiscard]] static GC::Ref<RTCSctpTransport> create();
     virtual ~RTCSctpTransport() override;
 
     void set_onstatechange(WebIDL::CallbackType*);
     WebIDL::CallbackType* onstatechange();
 
 private:
-    explicit RTCSctpTransport(JS::Realm&);
-    virtual void initialize(JS::Realm&) override;
+    RTCSctpTransport();
 };
 
 }

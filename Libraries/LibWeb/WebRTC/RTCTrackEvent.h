@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include <LibJS/Forward.h>
+#include <LibWeb/Bindings/RTCTrackEvent.h>
 #include <LibWeb/DOM/Event.h>
 #include <LibWeb/Forward.h>
 
@@ -14,15 +16,19 @@ namespace Web::WebRTC {
 class RTCRtpReceiver;
 class RTCRtpTransceiver;
 
+using RTCTrackEventInit = Bindings::RTCTrackEventInit;
+
 class RTCTrackEvent final : public DOM::Event {
-    WEB_PLATFORM_OBJECT(RTCTrackEvent, DOM::Event);
+    WEB_WRAPPABLE(RTCTrackEvent, DOM::Event);
     GC_DECLARE_ALLOCATOR(RTCTrackEvent);
 
 public:
-    static GC::Ref<RTCTrackEvent> create(JS::Realm&, FlyString const& event_name,
+    [[nodiscard]] static GC::Ref<RTCTrackEvent> create(Utf16FlyString const& event_name,
         GC::Ref<RTCRtpReceiver>, GC::Ref<MediaCapture::MediaStreamTrack>,
         Vector<GC::Ref<MediaCapture::MediaStream>> streams,
-        GC::Ref<RTCRtpTransceiver>);
+        GC::Ref<RTCRtpTransceiver>,
+        HighResolutionTime::DOMHighResTimeStamp);
+    static WebIDL::ExceptionOr<GC::Ref<RTCTrackEvent>> construct_impl(Utf16String const& type, RTCTrackEventInit const&);
     virtual ~RTCTrackEvent() override;
 
     GC::Ref<RTCRtpReceiver> receiver() const;
@@ -31,12 +37,13 @@ public:
     Vector<GC::Ref<MediaCapture::MediaStream>> streams() const { return m_streams; }
 
 private:
-    RTCTrackEvent(JS::Realm&, FlyString const&,
+    RTCTrackEvent(Utf16FlyString const& event_name,
         GC::Ref<RTCRtpReceiver>, GC::Ref<MediaCapture::MediaStreamTrack>,
         Vector<GC::Ref<MediaCapture::MediaStream>> streams,
-        GC::Ref<RTCRtpTransceiver>);
-    virtual void initialize(JS::Realm&) override;
-    virtual void visit_edges(JS::Cell::Visitor&) override;
+        GC::Ref<RTCRtpTransceiver>,
+        HighResolutionTime::DOMHighResTimeStamp);
+
+    virtual void visit_edges(GC::Cell::Visitor&) override;
 
     GC::Ref<RTCRtpReceiver> m_receiver;
     GC::Ref<MediaCapture::MediaStreamTrack> m_track;

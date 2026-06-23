@@ -4,8 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibWeb/Bindings/Intrinsics.h>
-#include <LibWeb/Bindings/RTCTransformEvent.h>
+#include <LibGC/Heap.h>
 #include <LibWeb/WebRTC/RTCRtpScriptTransformer.h>
 #include <LibWeb/WebRTC/RTCTransformEvent.h>
 
@@ -13,24 +12,18 @@ namespace Web::WebRTC {
 
 GC_DEFINE_ALLOCATOR(RTCTransformEvent);
 
-GC::Ref<RTCTransformEvent> RTCTransformEvent::create(JS::Realm& realm, FlyString const& event_name, GC::Ref<RTCRtpScriptTransformer> transformer)
+GC::Ref<RTCTransformEvent> RTCTransformEvent::create(Utf16FlyString const& event_name, GC::Ref<RTCRtpScriptTransformer> transformer, HighResolutionTime::DOMHighResTimeStamp time_stamp)
 {
-    return realm.create<RTCTransformEvent>(realm, event_name, transformer);
+    return GC::Heap::the().allocate<RTCTransformEvent>(event_name, transformer, time_stamp);
 }
 
-RTCTransformEvent::RTCTransformEvent(JS::Realm& realm, FlyString const& event_name, GC::Ref<RTCRtpScriptTransformer> transformer)
-    : DOM::Event(realm, event_name)
+RTCTransformEvent::RTCTransformEvent(Utf16FlyString const& event_name, GC::Ref<RTCRtpScriptTransformer> transformer, HighResolutionTime::DOMHighResTimeStamp time_stamp)
+    : DOM::Event(event_name, time_stamp)
     , m_transformer(transformer)
 {
 }
 
 RTCTransformEvent::~RTCTransformEvent() = default;
-
-void RTCTransformEvent::initialize(JS::Realm& realm)
-{
-    WEB_SET_PROTOTYPE_FOR_INTERFACE(RTCTransformEvent);
-    Base::initialize(realm);
-}
 
 void RTCTransformEvent::visit_edges(Cell::Visitor& visitor)
 {

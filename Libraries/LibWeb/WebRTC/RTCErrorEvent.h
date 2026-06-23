@@ -6,21 +6,24 @@
 
 #pragma once
 
+#include <LibJS/Forward.h>
+#include <LibWeb/Bindings/RTCErrorEvent.h>
 #include <LibWeb/DOM/Event.h>
 
 namespace Web::WebRTC {
 
+using RTCErrorEventInit = Bindings::RTCErrorEventInit;
+
 class RTCErrorEvent final : public DOM::Event {
-    WEB_PLATFORM_OBJECT(RTCErrorEvent, DOM::Event);
+    WEB_WRAPPABLE(RTCErrorEvent, DOM::Event);
     GC_DECLARE_ALLOCATOR(RTCErrorEvent);
 
 public:
-    static GC::Ref<RTCErrorEvent> create(JS::Realm&, FlyString const& event_name);
+    [[nodiscard]] static GC::Ref<RTCErrorEvent> create(Utf16FlyString const& event_name, RTCErrorEventInit const&, HighResolutionTime::DOMHighResTimeStamp);
     virtual ~RTCErrorEvent() override;
 
 private:
-    RTCErrorEvent(JS::Realm&, FlyString const&);
-    virtual void initialize(JS::Realm&) override;
+    RTCErrorEvent(Utf16FlyString const& event_name, RTCErrorEventInit const&, HighResolutionTime::DOMHighResTimeStamp);
 };
 
 }

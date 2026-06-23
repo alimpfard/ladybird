@@ -11,11 +11,11 @@
 namespace Web::WebRTC {
 
 class RTCIceTransport final : public DOM::EventTarget {
-    WEB_PLATFORM_OBJECT(RTCIceTransport, DOM::EventTarget);
+    WEB_WRAPPABLE(RTCIceTransport, DOM::EventTarget);
     GC_DECLARE_ALLOCATOR(RTCIceTransport);
 
 public:
-    static GC::Ref<RTCIceTransport> create(JS::Realm&);
+    [[nodiscard]] static GC::Ref<RTCIceTransport> create();
     virtual ~RTCIceTransport() override;
 
     void set_onstatechange(WebIDL::CallbackType*);
@@ -26,8 +26,7 @@ public:
     WebIDL::CallbackType* onselectedcandidatepairchange();
 
 private:
-    explicit RTCIceTransport(JS::Realm&);
-    virtual void initialize(JS::Realm&) override;
+    RTCIceTransport();
 };
 
 }

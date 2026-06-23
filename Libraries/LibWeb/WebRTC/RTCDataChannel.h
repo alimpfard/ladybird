@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <AK/Utf16String.h>
 #include <LibJS/Forward.h>
 #include <LibWeb/Bindings/RTCDataChannel.h>
 #include <LibWeb/DOM/EventTarget.h>
@@ -19,7 +20,7 @@ namespace Web::WebRTC {
 // The IDL `(USVString or Blob or BufferSource)` union the bindings generator expands BufferSource
 // into each concrete ArrayBuffer/ArrayBufferView type, so the send() argument must match exactly.
 using RTCDataChannelSendData = Variant<
-    String,
+    Utf16String,
     GC::Ref<FileAPI::Blob>,
     GC::Ref<JS::Int8Array>,
     GC::Ref<JS::Int16Array>,
@@ -39,18 +40,22 @@ using RTCDataChannelSendData = Variant<
 using Bindings::RTCDataChannelInit;
 
 class RTCDataChannel final : public DOM::EventTarget {
-    WEB_PLATFORM_OBJECT(RTCDataChannel, DOM::EventTarget);
+    WEB_WRAPPABLE(RTCDataChannel, DOM::EventTarget);
     GC_DECLARE_ALLOCATOR(RTCDataChannel);
 
 public:
-    static GC::Ref<RTCDataChannel> create(JS::Realm&);
+    static GC::Ref<RTCDataChannel> create(GC::Ref<DOM::EventTarget> relevant_global_object);
     virtual ~RTCDataChannel() override;
 
-    void set_label(String label) { m_label = move(label); }
+    JS::Realm& relevant_realm() const;
+    JS::Object& relevant_global_object() const;
+    virtual GC::Ptr<Bindings::Wrappable> relevant_global_impl() const override { return m_global_object; }
+
+    void set_label(Utf16String label) { m_label = move(label); }
     void set_max_packet_life_time(Optional<u16> v) { m_max_packet_life_time = v; }
     void set_max_retransmits(Optional<u16> v) { m_max_retransmits = v; }
     void set_ordered(bool v) { m_ordered = v; }
-    void set_protocol(String v) { m_protocol = move(v); }
+    void set_protocol(Utf16String v) { m_protocol = move(v); }
     void set_negotiated(bool v) { m_negotiated = v; }
     void set_id(Optional<u16> v) { m_id = v; }
     void set_channel_id(u64 v) { m_channel_id = v; }
@@ -77,11 +82,15 @@ public:
     WebIDL::CallbackType* onmessage();
 
 private:
-    explicit RTCDataChannel(JS::Realm&);
-    virtual void initialize(JS::Realm&) override;
+    explicit RTCDataChannel(GC::Ref<DOM::EventTarget> relevant_global_object);
+    virtual void visit_edges(JS::Cell::Visitor&) override;
+
+    // The global this channel was created for; used to recover the realm when
+    // dispatching IPC-driven events.
+    GC::Ref<DOM::EventTarget> m_global_object;
 
     // [[DataChannelLabel]]
-    String m_label;
+    Utf16String m_label;
     // [[MaxPacketLifeTime]]
     Optional<u16> m_max_packet_life_time;
     // [[MaxRetransmits]]
@@ -89,7 +98,7 @@ private:
     // [[Ordered]]
     bool m_ordered { true };
     // [[DataChannelProtocol]]
-    String m_protocol;
+    Utf16String m_protocol;
     // [[Negotiated]]
     bool m_negotiated { false };
     // [[DataChannelId]]

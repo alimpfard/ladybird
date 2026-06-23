@@ -4,8 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibWeb/Bindings/Intrinsics.h>
-#include <LibWeb/Bindings/RTCDTMFSender.h>
+#include <LibGC/Heap.h>
 #include <LibWeb/HTML/EventNames.h>
 #include <LibWeb/WebRTC/RTCDTMFSender.h>
 
@@ -13,10 +12,9 @@ namespace Web::WebRTC {
 
 GC_DEFINE_ALLOCATOR(RTCDTMFSender);
 
-GC::Ref<RTCDTMFSender> RTCDTMFSender::create(JS::Realm& realm) { return realm.create<RTCDTMFSender>(realm); }
-RTCDTMFSender::RTCDTMFSender(JS::Realm& realm) : DOM::EventTarget(realm) { }
+GC::Ref<RTCDTMFSender> RTCDTMFSender::create() { return GC::Heap::the().allocate<RTCDTMFSender>(); }
+RTCDTMFSender::RTCDTMFSender() = default;
 RTCDTMFSender::~RTCDTMFSender() = default;
-void RTCDTMFSender::initialize(JS::Realm& realm) { WEB_SET_PROTOTYPE_FOR_INTERFACE(RTCDTMFSender); Base::initialize(realm); }
 void RTCDTMFSender::set_ontonechange(WebIDL::CallbackType* cb) { set_event_handler_attribute(HTML::EventNames::tonechange, cb); }
 WebIDL::CallbackType* RTCDTMFSender::ontonechange() { return event_handler_attribute(HTML::EventNames::tonechange); }
 

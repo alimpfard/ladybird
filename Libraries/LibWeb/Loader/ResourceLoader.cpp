@@ -451,7 +451,7 @@ RefPtr<Requests::Request> ResourceLoader::load(LoadRequest& request, GC::Root<On
         // FIXME: synthesize Content-Type / Content-Length headers from the Blob.
         Requests::RequestTimingInfo fixme_timing {};
         log_success(request);
-        on_headers_received->function()(*HTTP::HeaderList::create(), 200, "OK"_string, {}, {});
+        on_headers_received->function()(nullptr, *HTTP::HeaderList::create(), 200, "OK"_string, {}, {}, Requests::CameFromCache::No);
         on_data_received->function()(Requests::ResponseData::from_bytes(bytes));
         on_complete->function()(true, fixme_timing, {});
         return nullptr;

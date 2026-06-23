@@ -161,51 +161,51 @@ void WebRTCAgent::wire_event_handlers()
 
     m_client->on_data_channel_open_event = [this](u64 channel_id) {
         if (auto channel = m_data_channels.get(channel_id); channel.has_value()) {
-            HTML::TemporaryExecutionContext context((*channel)->realm());
+            HTML::TemporaryExecutionContext context((*channel)->relevant_realm());
             (*channel)->set_ready_state(Bindings::RTCDataChannelState::Open);
-            (*channel)->dispatch_event(DOM::Event::create((*channel)->realm(), HTML::EventNames::open));
+            (*channel)->dispatch_event(DOM::Event::create((*channel)->relevant_global_object(), HTML::EventNames::open));
         }
     };
     m_client->on_data_channel_closing_event = [this](u64 channel_id) {
         if (auto channel = m_data_channels.get(channel_id); channel.has_value()) {
-            HTML::TemporaryExecutionContext context((*channel)->realm());
+            HTML::TemporaryExecutionContext context((*channel)->relevant_realm());
             (*channel)->set_ready_state(Bindings::RTCDataChannelState::Closing);
-            (*channel)->dispatch_event(DOM::Event::create((*channel)->realm(), HTML::EventNames::closing));
+            (*channel)->dispatch_event(DOM::Event::create((*channel)->relevant_global_object(), HTML::EventNames::closing));
         }
     };
     m_client->on_data_channel_closed_event = [this](u64 channel_id) {
         if (auto channel = m_data_channels.get(channel_id); channel.has_value()) {
-            HTML::TemporaryExecutionContext context((*channel)->realm());
+            HTML::TemporaryExecutionContext context((*channel)->relevant_realm());
             (*channel)->set_ready_state(Bindings::RTCDataChannelState::Closed);
-            (*channel)->dispatch_event(DOM::Event::create((*channel)->realm(), HTML::EventNames::close));
+            (*channel)->dispatch_event(DOM::Event::create((*channel)->relevant_global_object(), HTML::EventNames::close));
         }
         m_data_channels.remove(channel_id);
     };
     m_client->on_data_channel_error_event = [this](u64 channel_id, String) {
         if (auto channel = m_data_channels.get(channel_id); channel.has_value()) {
-            HTML::TemporaryExecutionContext context((*channel)->realm());
+            HTML::TemporaryExecutionContext context((*channel)->relevant_realm());
             // FIXME: dispatch RTCErrorEvent("error") with the error detail; bare Event for now.
-            (*channel)->dispatch_event(DOM::Event::create((*channel)->realm(), HTML::EventNames::error));
+            (*channel)->dispatch_event(DOM::Event::create((*channel)->relevant_global_object(), HTML::EventNames::error));
         }
     };
     m_client->on_data_channel_buffered_amount_low_event = [this](u64 channel_id) {
         if (auto channel = m_data_channels.get(channel_id); channel.has_value()) {
-            HTML::TemporaryExecutionContext context((*channel)->realm());
-            (*channel)->dispatch_event(DOM::Event::create((*channel)->realm(), HTML::EventNames::bufferedamountlow));
+            HTML::TemporaryExecutionContext context((*channel)->relevant_realm());
+            (*channel)->dispatch_event(DOM::Event::create((*channel)->relevant_global_object(), HTML::EventNames::bufferedamountlow));
         }
     };
     m_client->on_data_channel_message_text_event = [this](u64 channel_id, String) {
         if (auto channel = m_data_channels.get(channel_id); channel.has_value()) {
-            HTML::TemporaryExecutionContext context((*channel)->realm());
+            HTML::TemporaryExecutionContext context((*channel)->relevant_realm());
             // FIXME: dispatch a MessageEvent("message") carrying the string payload; bare Event for now.
-            (*channel)->dispatch_event(DOM::Event::create((*channel)->realm(), HTML::EventNames::message));
+            (*channel)->dispatch_event(DOM::Event::create((*channel)->relevant_global_object(), HTML::EventNames::message));
         }
     };
     m_client->on_data_channel_message_binary_event = [this](u64 channel_id, ByteBuffer) {
         if (auto channel = m_data_channels.get(channel_id); channel.has_value()) {
-            HTML::TemporaryExecutionContext context((*channel)->realm());
+            HTML::TemporaryExecutionContext context((*channel)->relevant_realm());
             // FIXME: dispatch a MessageEvent("message") carrying an ArrayBuffer/Blob payload; bare Event for now.
-            (*channel)->dispatch_event(DOM::Event::create((*channel)->realm(), HTML::EventNames::message));
+            (*channel)->dispatch_event(DOM::Event::create((*channel)->relevant_global_object(), HTML::EventNames::message));
         }
     };
 }

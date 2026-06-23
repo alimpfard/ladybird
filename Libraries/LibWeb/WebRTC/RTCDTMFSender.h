@@ -11,19 +11,18 @@
 namespace Web::WebRTC {
 
 class RTCDTMFSender final : public DOM::EventTarget {
-    WEB_PLATFORM_OBJECT(RTCDTMFSender, DOM::EventTarget);
+    WEB_WRAPPABLE(RTCDTMFSender, DOM::EventTarget);
     GC_DECLARE_ALLOCATOR(RTCDTMFSender);
 
 public:
-    static GC::Ref<RTCDTMFSender> create(JS::Realm&);
+    [[nodiscard]] static GC::Ref<RTCDTMFSender> create();
     virtual ~RTCDTMFSender() override;
 
     void set_ontonechange(WebIDL::CallbackType*);
     WebIDL::CallbackType* ontonechange();
 
 private:
-    explicit RTCDTMFSender(JS::Realm&);
-    virtual void initialize(JS::Realm&) override;
+    RTCDTMFSender();
 };
 
 }

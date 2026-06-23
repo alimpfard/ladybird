@@ -4,8 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibWeb/Bindings/Intrinsics.h>
-#include <LibWeb/Bindings/RTCRtpScriptTransform.h>
+#include <LibGC/Heap.h>
 #include <LibWeb/DOM/EventTarget.h>
 #include <LibWeb/HTML/EventLoop/EventLoop.h>
 #include <LibWeb/HTML/EventNames.h>
@@ -45,7 +44,7 @@ WebIDL::ExceptionOr<GC::Ref<RTCRtpScriptTransform>> RTCRtpScriptTransform::const
             use_sframe = wap.type == Bindings::RTCRtpScriptTransformType::Sframe;
         });
 
-    auto transform = realm.create<RTCRtpScriptTransform>(realm);
+    auto transform = GC::Heap::the().allocate<RTCRtpScriptTransform>();
     // 5. Initialize this's internal slot as follows: [[worker]] worker
     transform->m_worker = worker;
     // 6. Initialize this.[[useSFrame]] to useSFrame.
@@ -57,7 +56,7 @@ WebIDL::ExceptionOr<GC::Ref<RTCRtpScriptTransform>> RTCRtpScriptTransform::const
         for (auto const& object : *transfer)
             transfer_objects.append(object);
     }
-    auto serialized_options = TRY(HTML::structured_serialize_with_transfer(realm.vm(), options.value_or(JS::js_undefined()), transfer_objects));
+    auto serialized_options = TRY(HTML::structured_serialize_with_transfer(realm, options.value_or(JS::js_undefined()), transfer_objects));
 
     // 8. Queue a global task on the DOM manipulation task source with worker's WorkerGlobalScope to:
     //    8.1. Deserialize serializedOptions.
@@ -76,18 +75,9 @@ WebIDL::ExceptionOr<GC::Ref<RTCRtpScriptTransform>> RTCRtpScriptTransform::const
     return transform;
 }
 
-RTCRtpScriptTransform::RTCRtpScriptTransform(JS::Realm& realm)
-    : Bindings::PlatformObject(realm)
-{
-}
+RTCRtpScriptTransform::RTCRtpScriptTransform() = default;
 
 RTCRtpScriptTransform::~RTCRtpScriptTransform() = default;
-
-void RTCRtpScriptTransform::initialize(JS::Realm& realm)
-{
-    WEB_SET_PROTOTYPE_FOR_INTERFACE(RTCRtpScriptTransform);
-    Base::initialize(realm);
-}
 
 void RTCRtpScriptTransform::visit_edges(Cell::Visitor& visitor)
 {

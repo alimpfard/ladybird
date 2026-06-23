@@ -9,24 +9,24 @@
 #include <LibWeb/DOM/Event.h>
 #include <LibWeb/Export.h>
 #include <LibWeb/Forward.h>
+#include <LibWeb/HighResolutionTime/DOMHighResTimeStamp.h>
 
 namespace Web::WebRTC {
 
 class RTCRtpScriptTransformer;
 
 class WEB_API RTCTransformEvent final : public DOM::Event {
-    WEB_PLATFORM_OBJECT(RTCTransformEvent, DOM::Event);
+    WEB_WRAPPABLE(RTCTransformEvent, DOM::Event);
     GC_DECLARE_ALLOCATOR(RTCTransformEvent);
 
 public:
-    static GC::Ref<RTCTransformEvent> create(JS::Realm&, FlyString const& event_name, GC::Ref<RTCRtpScriptTransformer>);
+    static GC::Ref<RTCTransformEvent> create(Utf16FlyString const& event_name, GC::Ref<RTCRtpScriptTransformer>, HighResolutionTime::DOMHighResTimeStamp);
     virtual ~RTCTransformEvent() override;
 
     GC::Ref<RTCRtpScriptTransformer> transformer() const;
 
 private:
-    RTCTransformEvent(JS::Realm&, FlyString const&, GC::Ref<RTCRtpScriptTransformer>);
-    virtual void initialize(JS::Realm&) override;
+    RTCTransformEvent(Utf16FlyString const&, GC::Ref<RTCRtpScriptTransformer>, HighResolutionTime::DOMHighResTimeStamp);
     virtual void visit_edges(Cell::Visitor&) override;
 
     GC::Ref<RTCRtpScriptTransformer> m_transformer;

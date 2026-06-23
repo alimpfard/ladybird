@@ -4,8 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibWeb/Bindings/Intrinsics.h>
-#include <LibWeb/Bindings/RTCRtpSender.h>
+#include <LibGC/Heap.h>
 #include <LibWeb/HTML/EventLoop/EventLoop.h>
 #include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
 #include <LibWeb/MediaCapture/MediaStreamTrack.h>
@@ -19,14 +18,13 @@ namespace Web::WebRTC {
 
 GC_DEFINE_ALLOCATOR(RTCRtpSender);
 
-GC::Ref<RTCRtpSender> RTCRtpSender::create(JS::Realm& realm, GC::Ref<RTCPeerConnection> connection, u64 sender_id, u32 ssrc)
+GC::Ref<RTCRtpSender> RTCRtpSender::create(GC::Ref<RTCPeerConnection> connection, u64 sender_id, u32 ssrc)
 {
-    return realm.create<RTCRtpSender>(realm, connection, sender_id, ssrc);
+    return GC::Heap::the().allocate<RTCRtpSender>(connection, sender_id, ssrc);
 }
 
-RTCRtpSender::RTCRtpSender(JS::Realm& realm, GC::Ref<RTCPeerConnection> connection, u64 sender_id, u32 ssrc)
-    : Bindings::PlatformObject(realm)
-    , m_connection(connection)
+RTCRtpSender::RTCRtpSender(GC::Ref<RTCPeerConnection> connection, u64 sender_id, u32 ssrc)
+    : m_connection(connection)
     , m_sender_id(sender_id)
     , m_ssrc(ssrc)
 {
@@ -48,7 +46,11 @@ void RTCRtpSender::set_ssrc(u32 ssrc)
 }
 
 RTCRtpSender::~RTCRtpSender() = default;
-void RTCRtpSender::initialize(JS::Realm& realm) { WEB_SET_PROTOTYPE_FOR_INTERFACE(RTCRtpSender); Base::initialize(realm); }
+
+JS::Realm& RTCRtpSender::relevant_realm() const
+{
+    return m_connection->relevant_realm();
+}
 
 void RTCRtpSender::visit_edges(JS::Cell::Visitor& visitor)
 {
@@ -85,10 +87,10 @@ GC::Ptr<RTCRtpScriptTransform> RTCRtpSender::script_transform()
 void RTCRtpSender::set_transform(RTCRtpSenderTransform value)
 {
     m_transform = value.visit(
-        [](Empty) -> GC::Ptr<JS::Object> { return nullptr; },
-        [](GC::Ref<RTCSFrameSenderTransform> const& t) -> GC::Ptr<JS::Object> { return t.ptr(); },
-        [](GC::Ref<RTCRtpScriptTransform> const& t) -> GC::Ptr<JS::Object> { return t.ptr(); });
-    dbgln("RTCRtpSender::set_transform: transform set, kind={}", m_transform ? m_transform->class_name() : "null"sv);
+        [](Empty) -> GC::Ptr<Bindings::Wrappable> { return nullptr; },
+        [](GC::Ref<RTCSFrameSenderTransform> const& t) -> GC::Ptr<Bindings::Wrappable> { return t.ptr(); },
+        [](GC::Ref<RTCRtpScriptTransform> const& t) -> GC::Ptr<Bindings::Wrappable> { return t.ptr(); });
+    dbgln("RTCRtpSender::set_transform: transform set={}", m_transform != nullptr);
     m_connection->on_sender_transform_changed(*this);
 }
 
@@ -96,8 +98,9 @@ GC::Ref<WebIDL::Promise> RTCRtpSender::replace_track(GC::Ptr<MediaCapture::Media
 {
     // FIXME: Implement the full spec algorithm. For now, swap the track and resolve.
     set_track(with_track);
-    auto promise = WebIDL::create_promise(realm());
-    WebIDL::resolve_promise(realm(), promise, JS::js_undefined());
+    auto& realm = relevant_realm();
+    auto promise = WebIDL::create_promise(realm);
+    WebIDL::resolve_promise(realm, promise, JS::js_undefined());
     return promise;
 }
 
@@ -115,48 +118,25 @@ GC::Ref<WebIDL::Promise> RTCRtpSender::set_parameters(RTCRtpSendParameters const
     //        enforce that yet because some apps (e.g. Discord's setTransceiverEncodingParameters) call
     //        setParameters early in setup before any getParameters.
 
-    // FIXME: 6. Validate parameters by running the following setParameters validation steps:
-    //          6.1. Let encodings be parameters.encodings.
-    //          6.2. Let codecs be parameters.codecs.
-    //          6.3. Let choosableCodecs be codecs.
-    //          6.4. If choosableCodecs is an empty list, set choosableCodecs to the list of implemented send codecs for transceiver's kind.
-    //          6.5. Let N be the number of RTCRtpEncodingParameters stored in sender.[[SendEncodings]].
-    //          6.6. If any of the following conditions are met, return a promise rejected with a newly created InvalidModificationError:
-    //                  encodings.length is different from N.
-    //                  encodings has been re-ordered.
-    //                  Any parameter in parameters is marked as a Read-only parameter (such as RID) and has a value
-    //                      that is different from the corresponding parameter value in sender.[[LastReturnedParameters]].
-    //                      Note that this also applies to transactionId.
-    //                  Any encoding in encodings contains a codec not found in choosableCodecs, using the codec
-    //                      dictionary match algorithm with ignoreAsymmetricalParameters set to true.
-    //          6.7. If transceiver kind is "audio", remove the scaleResolutionDownBy and maxFramerate members from
-    //               all encodings that contain any of them.
-    //          6.8. If transceiver kind is "video", then for each encoding in encodings that doesn't contain a
-    //               scaleResolutionDownBy member, add a scaleResolutionDownBy member with the value 1.0.
-    //          6.9. If transceiver kind is "video", and any encoding in encodings contains a scaleResolutionDownBy
-    //               member whose value is less than 1.0, return a promise rejected with a newly created RangeError.
-    //          6.10. Verify that each encoding in encodings has a maxFramerate member whose value is greater than
-    //                or equal to 0.0. If one of the maxFramerate values does not meet this requirement, return a
-    //                promise rejected with a newly created RangeError.
-    //          6.11. If the user agent does not support setting the codec for any encoding or mixing different
-    //                codec values on the different encodings, return a promise rejected with a newly created OperationError.
+    // FIXME: 6. Validate parameters by running the setParameters validation steps.
 
     // 7. Let p be a new promise.
-    auto p = WebIDL::create_promise(realm());
+    auto p = WebIDL::create_promise(relevant_realm());
 
     // 8. In parallel, configure the media stack to use parameters to transmit sender.[[SenderTrack]].
     //    FIXME: actually wire `parameters` into the media stack (bitrate caps, encoding rid, etc).
-    HTML::queue_a_task(HTML::Task::Source::Networking, nullptr, nullptr, GC::create_function(realm().heap(), [this, p, parameters] {
+    HTML::queue_a_task(HTML::Task::Source::Networking, nullptr, nullptr, GC::create_function(heap(), [this, p, parameters] {
         // Promise resolution calls into JS and needs a running execution context on the VM stack; tasks don't
         // come with one by default.
-        HTML::TemporaryExecutionContext context(realm());
+        auto& realm = relevant_realm();
+        HTML::TemporaryExecutionContext context(realm);
         // 8.1. If the media stack is successfully configured with parameters, queue a task to run the following steps:
         //   8.1.1. Set sender.[[LastReturnedParameters]] to null.
         m_last_returned_parameters = {};
         //   8.1.2. Set sender.[[SendEncodings]] to parameters.encodings.
         m_send_encodings = parameters.encodings;
         //   8.1.3. Resolve p with undefined.
-        WebIDL::resolve_promise(realm(), p, JS::js_undefined());
+        WebIDL::resolve_promise(realm, p, JS::js_undefined());
         // 8.2. If any error occurred while configuring the media stack, queue a task to run the following steps:
         //   8.2.1. If an error occurred due to hardware resources not being available, reject p with a newly
         //          created RTCError whose errorDetail is set to "hardware-encoder-not-available" and abort
@@ -198,7 +178,7 @@ RTCRtpSendParameters RTCRtpSender::get_parameters()
     m_last_returned_parameters = result;
 
     // 5. Queue a task that sets sender.[[LastReturnedParameters]] to null.
-    HTML::queue_a_task(HTML::Task::Source::Networking, nullptr, nullptr, GC::create_function(realm().heap(), [this] {
+    HTML::queue_a_task(HTML::Task::Source::Networking, nullptr, nullptr, GC::create_function(heap(), [this] {
         m_last_returned_parameters = {};
     }));
 

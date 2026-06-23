@@ -6,21 +6,20 @@
 
 #pragma once
 
-#include <LibWeb/Bindings/PlatformObject.h>
+#include <LibWeb/Bindings/Wrappable.h>
 
 namespace Web::WebRTC {
 
-class RTCCertificate final : public Bindings::PlatformObject {
-    WEB_PLATFORM_OBJECT(RTCCertificate, Bindings::PlatformObject);
+class RTCCertificate final : public Bindings::GCAllocatedWrappable {
+    WEB_WRAPPABLE(RTCCertificate, Bindings::GCAllocatedWrappable);
     GC_DECLARE_ALLOCATOR(RTCCertificate);
 
 public:
-    static GC::Ref<RTCCertificate> create(JS::Realm&);
+    [[nodiscard]] static GC::Ref<RTCCertificate> create();
     virtual ~RTCCertificate() override;
 
 private:
-    explicit RTCCertificate(JS::Realm&);
-    virtual void initialize(JS::Realm&) override;
+    RTCCertificate();
 };
 
 }

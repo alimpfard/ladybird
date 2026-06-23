@@ -13,17 +13,16 @@
 namespace Web::WebRTC {
 
 class RTCSFrameReceiverTransform final : public DOM::EventTarget {
-    WEB_PLATFORM_OBJECT(RTCSFrameReceiverTransform, DOM::EventTarget);
+    WEB_WRAPPABLE(RTCSFrameReceiverTransform, DOM::EventTarget);
     GC_DECLARE_ALLOCATOR(RTCSFrameReceiverTransform);
 
 public:
-    static GC::Ref<RTCSFrameReceiverTransform> create(JS::Realm&);
-    static WebIDL::ExceptionOr<GC::Ref<RTCSFrameReceiverTransform>> construct_impl(JS::Realm&, Bindings::SFrameTransformOptions const&);
+    static GC::Ref<RTCSFrameReceiverTransform> create();
+    static WebIDL::ExceptionOr<GC::Ref<RTCSFrameReceiverTransform>> construct_impl(Bindings::SFrameTransformOptions const&);
     virtual ~RTCSFrameReceiverTransform() override;
 
 private:
-    explicit RTCSFrameReceiverTransform(JS::Realm&);
-    virtual void initialize(JS::Realm&) override;
+    explicit RTCSFrameReceiverTransform();
 };
 
 }
