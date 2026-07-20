@@ -39,6 +39,10 @@
 #if !defined(AK_OS_WINDOWS)
 #    include <unistd.h>
 #endif
+#if !defined(AK_OS_WINDOWS) && !defined(AK_OS_ANDROID)
+#    include <sys/ioctl.h>
+#    include <termios.h>
+#endif
 
 static OwnPtr<Stream> g_stdout {};
 static OwnPtr<Wasm::Printer> g_printer {};
@@ -311,6 +315,673 @@ static ErrorOr<T, Wasm::Result> trap_for_js_exception(JS::VM& vm, JS::ThrowCompl
     return Wasm::Trap { ByteString("JS exception") };
 }
 
+#if !defined(AK_OS_WINDOWS) && !defined(AK_OS_ANDROID)
+static ByteString format_function_type(Wasm::FunctionType const& type)
+{
+    StringBuilder sb;
+    sb.append('(');
+    for (size_t i = 0; i < type.parameters().size(); ++i) {
+        if (i > 0)
+            sb.append(", "sv);
+        sb.append(type.parameters()[i].kind_name());
+    }
+    sb.append(") -> ("sv);
+    for (size_t i = 0; i < type.results().size(); ++i) {
+        if (i > 0)
+            sb.append(", "sv);
+        sb.append(type.results()[i].kind_name());
+    }
+    sb.append(')');
+    return sb.to_byte_string();
+}
+
+static Vector<ByteString> disassemble_native(Wasm::WasmFunction const& func)
+{
+    auto& ci = func.code().func().body().compiled_instructions;
+    if (!ci.cranelift_compiled || ci.cranelift_code_size == 0)
+        return {};
+
+    auto entry = Wasm::cranelift_entry_acquire(ci);
+    if (!entry)
+        return {};
+    auto const* code_ptr = bit_cast<u8 const*>(entry);
+    auto code_size = ci.cranelift_code_size;
+
+    char tmp_path[] = "/tmp/wasm-native-XXXXXX";
+    int fd = mkstemp(tmp_path);
+    if (fd < 0)
+        return {};
+
+    {
+        auto tmp_file = MUST(Core::File::adopt_fd(fd, Core::File::OpenMode::Write));
+#if ARCH(AARCH64) && defined(AK_OS_MACOS)
+        struct [[gnu::packed]] {
+            u32 magic = 0xFEEDFACF;
+            u32 cputype = 0x0100000C;
+            u32 cpusubtype = 0;
+            u32 filetype = 1;
+            u32 ncmds = 1;
+            u32 sizeofcmds = 72 + 80;
+            u32 flags = 0;
+            u32 reserved = 0;
+        } mach_header;
+        struct [[gnu::packed]] {
+            u32 cmd = 0x19;
+            u32 cmdsize = 72 + 80;
+            char segname[16] = {};
+            u64 vmaddr = 0;
+            u64 vmsize;
+            u64 fileoff;
+            u64 filesize;
+            u32 maxprot = 7;
+            u32 initprot = 7;
+            u32 nsects = 1;
+            u32 flags = 0;
+        } segment;
+        segment.vmsize = code_size;
+        segment.fileoff = sizeof(mach_header) + sizeof(segment) + 80;
+        segment.filesize = code_size;
+        struct [[gnu::packed]] {
+            char sectname[16] = "__text";
+            char segname[16] = "__TEXT";
+            u64 addr = 0;
+            u64 size;
+            u32 offset;
+            u32 align = 2;
+            u32 reloff = 0;
+            u32 nreloc = 0;
+            u32 flags = 0x80000400;
+            u32 reserved1 = 0;
+            u32 reserved2 = 0;
+            u32 reserved3 = 0;
+        } section;
+        section.size = code_size;
+        section.offset = static_cast<u32>(segment.fileoff);
+        (void)tmp_file->write_until_depleted({ &mach_header, sizeof(mach_header) });
+        (void)tmp_file->write_until_depleted({ &segment, sizeof(segment) });
+        (void)tmp_file->write_until_depleted({ &section, sizeof(section) });
+#endif
+        (void)tmp_file->write_until_depleted({ code_ptr, code_size });
+    }
+
+#if defined(AK_OS_MACOS)
+    auto cmd = ByteString::formatted("/usr/bin/objdump -d {} 2>/dev/null | tail -n +7", tmp_path);
+#elif ARCH(X86_64)
+    auto cmd = ByteString::formatted("/usr/bin/objdump -D -b binary -m i386:x86-64 {} 2>/dev/null | tail -n +8", tmp_path);
+#elif ARCH(AARCH64)
+    auto cmd = ByteString::formatted("/usr/bin/objdump -D -b binary -m aarch64 {} 2>/dev/null | tail -n +8", tmp_path);
+#else
+    auto cmd = ByteString::formatted("/usr/bin/objdump -D -b binary {} 2>/dev/null | tail -n +8", tmp_path);
+#endif
+
+    Vector<ByteString> lines;
+    FILE* pipe = popen(cmd.characters(), "r");
+    if (pipe) {
+        char buf[1024];
+        while (fgets(buf, sizeof(buf), pipe))
+            lines.append(StringView(buf, strlen(buf)).trim("\n\r"sv));
+        pclose(pipe);
+    }
+    unlink(tmp_path);
+    return lines;
+}
+
+static void tui_run(Wasm::AbstractMachine& machine, Wasm::Module const& module, Wasm::ModuleInstance& instance, StringView filename)
+{
+    if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO)) {
+        warnln("--tui requires an interactive terminal");
+        return;
+    }
+
+    auto write_raw = [](StringView s) {
+        (void)!write(STDOUT_FILENO, s.characters_without_null_termination(), s.length());
+    };
+
+    module.wait_for_cranelift_compilation();
+
+    // -- Section item data --
+    struct Item {
+        ByteString text;
+        enum class Detail { None, Function, Memory } detail = Detail::None;
+        size_t detail_idx = 0;
+    };
+
+    static constexpr size_t SEC_COUNT = 8;
+    char const* sec_names[] = { "Exports", "Imports", "Types", "Functions", "Globals", "Tables", "Memories", "Custom Sections" };
+    Vector<Item> sec_items[SEC_COUNT];
+    bool sec_expanded[SEC_COUNT] = {};
+
+    auto fn_is_native = [&](Wasm::FunctionAddress addr) -> bool {
+        auto* fn = machine.store().get(addr);
+        if (!fn || !fn->has<Wasm::WasmFunction>())
+            return false;
+        auto& ci = fn->get<Wasm::WasmFunction>().code().func().body().compiled_instructions;
+        return ci.cranelift_compiled && ci.cranelift_code_size > 0;
+    };
+
+    auto fn_type_str = [&](Wasm::FunctionInstance* fn) -> ByteString {
+        return fn->visit(
+            [](Wasm::WasmFunction const& f) { return format_function_type(f.type()); },
+            [](Wasm::HostFunction const& f) { return format_function_type(f.type()); });
+    };
+
+    // Exports
+    for (auto& entry : instance.exports()) {
+        Item item;
+        entry.value().visit(
+            [&](Wasm::FunctionAddress const& addr) {
+                auto* fn = machine.store().get(addr);
+                auto sig = fn ? fn_type_str(fn) : ByteString("(?)");
+                auto native = fn_is_native(addr) ? " [native]" : "";
+                item.text = ByteString::formatted("{:30s}  func {}{}", entry.name(), sig, native);
+                item.detail = Item::Detail::Function;
+                item.detail_idx = addr.value();
+            },
+            [&](Wasm::TableAddress const&) { item.text = ByteString::formatted("{:30s}  table", entry.name()); },
+            [&](Wasm::MemoryAddress const&) { item.text = ByteString::formatted("{:30s}  memory", entry.name()); },
+            [&](Wasm::GlobalAddress const& addr) {
+                auto* g = machine.store().get(addr);
+                item.text = g ? ByteString::formatted("{:30s}  global {} {}", entry.name(), g->type().type().kind_name(), g->is_mutable() ? "mut" : "const")
+                              : ByteString::formatted("{:30s}  global", entry.name());
+            },
+            [&](Wasm::TagAddress const&) { item.text = ByteString::formatted("{:30s}  tag", entry.name()); });
+        sec_items[0].append(move(item));
+    }
+
+    // Imports
+    for (auto& imp : module.import_section().imports()) {
+        ByteString kind;
+        imp.description().visit(
+            [&](Wasm::TypeIndex const& idx) {
+                if (idx.value() < module.type_section().types().size() && module.type_section().types()[idx.value()].is_function())
+                    kind = ByteString::formatted("func {}", format_function_type(module.type_section().types()[idx.value()].function()));
+                else
+                    kind = ByteString::formatted("type #{}", idx.value());
+            },
+            [&](Wasm::FunctionType const& ft) { kind = ByteString::formatted("func {}", format_function_type(ft)); },
+            [&](Wasm::TableType const& t) { kind = ByteString::formatted("table {}", t.element_type().kind_name()); },
+            [&](Wasm::MemoryType const&) { kind = "memory"; },
+            [&](Wasm::GlobalType const& g) { kind = ByteString::formatted("global {} {}", g.type().kind_name(), g.is_mutable() ? "mut" : "const"); },
+            [&](Wasm::TagType const&) { kind = "tag"; });
+        sec_items[1].append({ ByteString::formatted("{}.{}  {}", imp.module(), imp.name(), kind) });
+    }
+
+    // Types
+    for (size_t i = 0; i < module.type_section().types().size(); ++i) {
+        ByteString desc;
+        module.type_section().types()[i].description().visit(
+            [&](Wasm::FunctionType const& ft) { desc = ByteString::formatted("func {}", format_function_type(ft)); },
+            [&](Wasm::StructType const& st) {
+                StringBuilder sb;
+                sb.append("struct {"sv);
+                for (size_t j = 0; j < st.fields().size(); ++j) {
+                    if (j)
+                        sb.append(", "sv);
+                    sb.append(st.fields()[j].type().kind_name());
+                }
+                sb.append('}');
+                desc = sb.to_byte_string();
+            },
+            [&](Wasm::ArrayType const& at) { desc = ByteString::formatted("array {}", at.type().type().kind_name()); });
+        sec_items[2].append({ ByteString::formatted("[{}] {}", i, desc) });
+    }
+
+    // Functions
+    for (size_t i = 0; i < instance.functions().size(); ++i) {
+        auto addr = instance.functions()[i];
+        auto* fn = machine.store().get(addr);
+        if (!fn)
+            continue;
+        ByteString export_name;
+        for (auto& entry : instance.exports())
+            if (auto* a = entry.value().get_pointer<Wasm::FunctionAddress>(); a && *a == addr) {
+                export_name = ByteString::formatted("  '{}'", entry.name());
+                break;
+            }
+        auto native_tag = fn_is_native(addr) ? " [native]" : "";
+        ByteString text;
+        fn->visit(
+            [&](Wasm::WasmFunction const& f) { text = ByteString::formatted("[{}] {}{}{}", i, format_function_type(f.type()), export_name, native_tag); },
+            [&](Wasm::HostFunction const& f) { text = ByteString::formatted("[{}] {} (host){}", i, format_function_type(f.type()), export_name); });
+        sec_items[3].append({ text, Item::Detail::Function, addr.value() });
+    }
+
+    // Globals
+    for (size_t i = 0; i < instance.globals().size(); ++i) {
+        auto* g = machine.store().get(instance.globals()[i]);
+        if (!g)
+            continue;
+        ByteString export_name;
+        for (auto& entry : instance.exports())
+            if (auto* a = entry.value().get_pointer<Wasm::GlobalAddress>(); a && *a == instance.globals()[i]) {
+                export_name = ByteString::formatted("  '{}'", entry.name());
+                break;
+            }
+        AllocatingMemoryStream vs;
+        Wasm::Printer pr { vs };
+        pr.print(g->value(), g->type().type());
+        auto vb = MUST(ByteBuffer::create_uninitialized(vs.used_buffer_size()));
+        MUST(vs.read_until_filled(vb));
+        sec_items[4].append({ ByteString::formatted("[{}] {} {} = {}{}", i, g->type().type().kind_name(),
+            g->is_mutable() ? "mut" : "const", StringView(vb).trim_whitespace(), export_name) });
+    }
+
+    // Tables
+    for (size_t i = 0; i < instance.tables().size(); ++i) {
+        auto* t = machine.store().get(instance.tables()[i]);
+        if (!t)
+            continue;
+        sec_items[5].append({ ByteString::formatted("[{}] {} elements={} min={} max={}", i,
+            t->type().element_type().kind_name(), t->elements().size(), t->type().limits().min(),
+            t->type().limits().max().has_value() ? ByteString::number(*t->type().limits().max()) : ByteString("inf")) });
+    }
+
+    // Memories
+    for (size_t i = 0; i < instance.memories().size(); ++i) {
+        auto* m = machine.store().get(instance.memories()[i]);
+        if (!m)
+            continue;
+        sec_items[6].append({ ByteString::formatted("[{}] {} bytes ({} pages, max {})", i, m->size(), m->type().limits().min(),
+            m->type().limits().max().has_value() ? ByteString::number(*m->type().limits().max()) : ByteString("inf")),
+            Item::Detail::Memory, i });
+    }
+
+    // Custom Sections
+    for (auto& s : module.custom_sections())
+        sec_items[7].append({ ByteString::formatted("'{}' ({} bytes)", s.name(), s.contents().size()) });
+
+    // -- Terminal raw mode --
+    struct termios orig_termios;
+    tcgetattr(STDIN_FILENO, &orig_termios);
+    {
+        struct termios raw = orig_termios;
+        raw.c_lflag &= ~(unsigned)(ECHO | ICANON | ISIG | IEXTEN);
+        raw.c_iflag &= ~(unsigned)(IXON | ICRNL | BRKINT);
+        raw.c_cc[VMIN] = 1;
+        raw.c_cc[VTIME] = 0;
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
+    }
+    write_raw("\033[?1049h\033[?25l\033[?7l"sv);
+
+    auto restore_term = [&] {
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios);
+        write_raw("\033[?7h\033[?25h\033[?1049l\033[0m"sv);
+    };
+
+    // -- Key input --
+    enum class Key { None, Up, Down, Left, Right, Enter, Escape, PageUp, PageDown, Home, End, Quit, Tab };
+    auto read_key = []() -> Key {
+        char c;
+        if (read(STDIN_FILENO, &c, 1) != 1)
+            return Key::None;
+        switch (c) {
+        case 'q':
+        case 3:
+            return Key::Quit;
+        case '\r':
+            return Key::Enter;
+        case 'k':
+            return Key::Up;
+        case 'j':
+            return Key::Down;
+        case 'h':
+            return Key::Left;
+        case 'l':
+            return Key::Right;
+        case 'g':
+            return Key::Home;
+        case 'G':
+            return Key::End;
+        case ' ':
+            return Key::PageDown;
+        case 'b':
+            return Key::PageUp;
+        case '\t':
+        case 'd':
+            return Key::Tab;
+        case 27: {
+            char s[2];
+            if (read(STDIN_FILENO, &s[0], 1) != 1)
+                return Key::Escape;
+            if (s[0] != '[')
+                return Key::Escape;
+            if (read(STDIN_FILENO, &s[1], 1) != 1)
+                return Key::Escape;
+            switch (s[1]) {
+            case 'A':
+                return Key::Up;
+            case 'B':
+                return Key::Down;
+            case 'C':
+                return Key::Right;
+            case 'D':
+                return Key::Left;
+            case 'H':
+                return Key::Home;
+            case 'F':
+                return Key::End;
+            case '5': {
+                char t;
+                (void)read(STDIN_FILENO, &t, 1);
+                return Key::PageUp;
+            }
+            case '6': {
+                char t;
+                (void)read(STDIN_FILENO, &t, 1);
+                return Key::PageDown;
+            }
+            }
+            return Key::None;
+        }
+        }
+        return Key::None;
+    };
+
+    // -- Render helpers --
+    struct TermSize {
+        int rows, cols;
+    };
+    auto get_size = []() -> TermSize {
+        struct winsize ws;
+        if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0)
+            return { ws.ws_row, ws.ws_col };
+        return { 24, 80 };
+    };
+
+    auto render_separator = [](StringBuilder& scr, int cols) {
+        scr.append("\033[2m  "sv);
+        for (int i = 0; i < cols - 4; ++i)
+            scr.append("\xe2\x94\x80"sv);
+        scr.append("\033[0m\033[K"sv);
+    };
+
+    // -- Scrollable detail view (reused for bytecode, native disasm, hex dump) --
+    auto show_detail = [&](ByteString const& title, auto const& get_line, size_t line_count, ByteString const& extra_status) {
+        size_t dscroll = 0;
+        for (;;) {
+            auto [rows, cols] = get_size();
+            int vp = max(1, rows - 3);
+            if (line_count <= (size_t)vp)
+                dscroll = 0;
+            else if (dscroll + vp > line_count)
+                dscroll = line_count - vp;
+
+            StringBuilder scr;
+            scr.appendff("\033[1;1H\033[1m  {}\033[0m\033[K", title);
+            scr.append("\033[2;1H"sv);
+            render_separator(scr, cols);
+            for (int r = 0; r < vp; ++r) {
+                scr.appendff("\033[{};1H", r + 3);
+                size_t idx = dscroll + r;
+                if (idx < line_count)
+                    scr.appendff("  {}\033[K", get_line(idx));
+                else
+                    scr.append("\033[K"sv);
+            }
+            scr.appendff("\033[{};1H\033[7m  j/k scroll  q back  {}{}\033[0m\033[K",
+                rows, extra_status,
+                line_count > 0 ? ByteString::formatted("  {}/{}", min(dscroll + 1, line_count), line_count) : ByteString(""));
+            write_raw(scr.string_view());
+
+            auto key = read_key();
+            switch (key) {
+            case Key::Quit:
+            case Key::Escape:
+            case Key::Left:
+                return key;
+            case Key::Up:
+                if (dscroll > 0)
+                    --dscroll;
+                break;
+            case Key::Down:
+                if (dscroll + vp < line_count)
+                    ++dscroll;
+                break;
+            case Key::PageUp:
+                dscroll = dscroll > (size_t)vp ? dscroll - vp : 0;
+                break;
+            case Key::PageDown:
+                if (line_count > (size_t)vp)
+                    dscroll = min(dscroll + vp, line_count - vp);
+                break;
+            case Key::Home:
+                dscroll = 0;
+                break;
+            case Key::End:
+                if (line_count > (size_t)vp)
+                    dscroll = line_count - vp;
+                break;
+            case Key::Tab:
+                return Key::Tab;
+            default:
+                break;
+            }
+        }
+    };
+
+    // -- Visible row for main tree view --
+    struct VisRow {
+        StringView text;
+        bool is_section;
+        size_t section_idx;
+        Item::Detail detail;
+        size_t detail_idx;
+    };
+
+    ByteString sec_hdrs[SEC_COUNT];
+    auto build_visible = [&]() -> Vector<VisRow> {
+        for (size_t s = 0; s < SEC_COUNT; ++s)
+            sec_hdrs[s] = ByteString::formatted("{} {} ({})",
+                sec_expanded[s] ? "\xe2\x96\xbc" : "\xe2\x96\xb6", sec_names[s], sec_items[s].size());
+        Vector<VisRow> v;
+        for (size_t s = 0; s < SEC_COUNT; ++s) {
+            v.append({ sec_hdrs[s], true, s, Item::Detail::None, 0 });
+            if (sec_expanded[s])
+                for (auto& item : sec_items[s])
+                    v.append({ item.text, false, s, item.detail, item.detail_idx });
+        }
+        return v;
+    };
+
+    // -- Main loop --
+    size_t cursor = 0, scroll = 0;
+    for (;;) {
+        auto [rows, cols] = get_size();
+        int vp = max(1, rows - 3);
+
+        auto vis = build_visible();
+        size_t total = vis.size();
+        if (cursor >= total)
+            cursor = total ? total - 1 : 0;
+        if (cursor < scroll)
+            scroll = cursor;
+        if (cursor >= scroll + (size_t)vp)
+            scroll = cursor - vp + 1;
+
+        StringBuilder scr;
+        scr.appendff("\033[1;1H\033[1m  Module: {}\033[0m\033[K", filename);
+        scr.append("\033[2;1H"sv);
+        render_separator(scr, cols);
+
+        for (int r = 0; r < vp; ++r) {
+            scr.appendff("\033[{};1H", r + 3);
+            size_t idx = scroll + r;
+            if (idx < total) {
+                auto& row = vis[idx];
+                if (idx == cursor)
+                    scr.append("\033[7m"sv);
+                if (row.is_section)
+                    scr.append("\033[1m"sv);
+                scr.appendff("  {}\033[0m\033[K", row.text);
+            } else {
+                scr.append("\033[K"sv);
+            }
+        }
+
+        scr.appendff("\033[{};1H\033[7m  j/k navigate  enter open  q quit  {}/{}\033[0m\033[K",
+            rows, cursor + 1, total);
+        write_raw(scr.string_view());
+
+        auto key = read_key();
+        switch (key) {
+        case Key::Quit:
+            restore_term();
+            return;
+        case Key::Up:
+            if (cursor > 0)
+                --cursor;
+            break;
+        case Key::Down:
+            if (cursor + 1 < total)
+                ++cursor;
+            break;
+        case Key::PageUp:
+            cursor = cursor > (size_t)vp ? cursor - vp : 0;
+            break;
+        case Key::PageDown:
+            cursor = min(cursor + (size_t)vp, total - 1);
+            break;
+        case Key::Home:
+            cursor = 0;
+            break;
+        case Key::End:
+            cursor = total ? total - 1 : 0;
+            break;
+        case Key::Left:
+            if (cursor < total) {
+                auto& row = vis[cursor];
+                if (row.is_section && sec_expanded[row.section_idx]) {
+                    sec_expanded[row.section_idx] = false;
+                } else if (!row.is_section) {
+                    sec_expanded[row.section_idx] = false;
+                    for (size_t i = cursor;; --i) {
+                        if (vis[i].is_section && vis[i].section_idx == row.section_idx) {
+                            cursor = i;
+                            break;
+                        }
+                        if (i == 0)
+                            break;
+                    }
+                }
+            }
+            break;
+        case Key::Enter:
+        case Key::Right:
+            if (cursor < total) {
+                auto& row = vis[cursor];
+                if (row.is_section) {
+                    sec_expanded[row.section_idx] = !sec_expanded[row.section_idx];
+                } else if (row.detail == Item::Detail::Function) {
+                    Wasm::FunctionAddress addr(row.detail_idx);
+                    auto* fn = machine.store().get(addr);
+                    if (!fn)
+                        break;
+
+                    ByteString export_name;
+                    for (auto& entry : instance.exports())
+                        if (auto* a = entry.value().get_pointer<Wasm::FunctionAddress>(); a && *a == addr) {
+                            export_name = ByteString::formatted(" '{}'", entry.name());
+                            break;
+                        }
+
+                    fn->visit(
+                        [&](Wasm::WasmFunction const& f) {
+                            bool has_native = fn_is_native(addr);
+
+                            AllocatingMemoryStream stream;
+                            Wasm::Printer printer { stream, 0 };
+                            printer.print(f.code());
+                            auto buf = MUST(ByteBuffer::create_uninitialized(stream.used_buffer_size()));
+                            MUST(stream.read_until_filled(buf));
+                            Vector<ByteString> bytecode_lines;
+                            StringView(buf).for_each_split_view('\n', SplitBehavior::KeepEmpty, [&](auto line) {
+                                bytecode_lines.append(ByteString(line));
+                            });
+                            while (!bytecode_lines.is_empty() && bytecode_lines.last().is_empty())
+                                bytecode_lines.take_last();
+
+                            Vector<ByteString> native_lines;
+                            bool showing_native = false;
+                            bool native_loaded = false;
+
+                            auto bc_title = ByteString::formatted("Function #{}: {}{}", addr.value(), format_function_type(f.type()), export_name);
+                            auto nat_title = ByteString::formatted("Function #{}: {}{} (native disassembly)", addr.value(), format_function_type(f.type()), export_name);
+
+                            for (;;) {
+                                auto& title = showing_native ? nat_title : bc_title;
+                                ByteString extra;
+                                if (has_native)
+                                    extra = showing_native ? "d: bytecode  " : "d: disassembly  ";
+
+                                Key result;
+                                if (showing_native) {
+                                    if (!native_loaded) {
+                                        native_lines = disassemble_native(f);
+                                        if (native_lines.is_empty())
+                                            native_lines.append("(disassembly unavailable - is objdump installed?)");
+                                        native_loaded = true;
+                                    }
+                                    result = show_detail(title, [&](size_t i) -> StringView { return native_lines[i]; }, native_lines.size(), extra);
+                                } else {
+                                    result = show_detail(title, [&](size_t i) -> StringView { return bytecode_lines[i]; }, bytecode_lines.size(), extra);
+                                }
+
+                                if (result == Key::Tab && has_native) {
+                                    showing_native = !showing_native;
+                                    continue;
+                                }
+                                break;
+                            }
+                        },
+                        [&](Wasm::HostFunction const& f) {
+                            Vector<ByteString> lines;
+                            lines.append(ByteString::formatted("Host function: {}", f.name()));
+                            lines.append("(no bytecode available)");
+                            show_detail(
+                                ByteString::formatted("Function #{}: {}{}", addr.value(), format_function_type(f.type()), export_name),
+                                [&](size_t i) -> StringView { return lines[i]; }, lines.size(), ByteString());
+                        });
+                } else if (row.detail == Item::Detail::Memory) {
+                    auto mem_idx = row.detail_idx;
+                    auto* mem = machine.store().get(instance.memories()[mem_idx]);
+                    if (!mem)
+                        break;
+                    auto mem_sz = mem->size();
+                    auto line_count = (mem_sz + 15) / 16;
+                    auto title = ByteString::formatted("Memory [{}]: {} bytes ({} pages)", mem_idx, mem_sz, mem_sz / 65536);
+
+                    auto format_hex = [&](size_t line_idx) -> ByteString {
+                        auto offset = line_idx * 16;
+                        auto end = min(offset + 16, mem_sz);
+                        StringBuilder sb;
+                        sb.appendff("{:08x}  ", offset);
+                        StringBuilder ascii;
+                        for (size_t i = 0; i < 16; ++i) {
+                            if (offset + i < end) {
+                                u8 byte = mem->data()[offset + i];
+                                sb.appendff("{:02x} ", byte);
+                                ascii.append(byte >= 0x20 && byte < 0x7f ? static_cast<char>(byte) : '.');
+                            } else {
+                                sb.append("   "sv);
+                                ascii.append(' ');
+                            }
+                            if (i == 7)
+                                sb.append(' ');
+                        }
+                        sb.appendff(" |{}|", ascii.string_view());
+                        return sb.to_byte_string();
+                    };
+                    show_detail(title, format_hex, line_count, ByteString());
+                }
+            }
+            break;
+        default:
+            break;
+        }
+    }
+}
+#endif
+
 ErrorOr<int> ladybird_main(Main::Arguments arguments)
 {
     StringView filename;
@@ -320,6 +991,7 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
     bool attempt_instantiate = false;
     bool export_all_imports = false;
     [[maybe_unused]] bool wasi = false;
+    [[maybe_unused]] bool tui = false;
     Optional<u64> specific_function_address;
     ByteString exported_function_to_execute;
     Vector<ParsedValue> values_to_push;
@@ -345,6 +1017,9 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
     parser.add_option(export_all_imports, "Export noop functions corresponding to imports", "export-noop");
 #if !defined(AK_OS_WINDOWS)
     parser.add_option(wasi, "Enable WASI", "wasi", 'w');
+#endif
+#if !defined(AK_OS_WINDOWS) && !defined(AK_OS_ANDROID)
+    parser.add_option(tui, "Interactive TUI inspector (implies -i --export-noop)", "tui", 't');
 #endif
     parser.add_option(Core::ArgsParser::Option {
         .argument_mode = Core::ArgsParser::OptionArgumentMode::Required,
@@ -652,6 +1327,13 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
 
     if (!exported_function_to_execute.is_empty())
         attempt_instantiate = true;
+
+#if !defined(AK_OS_WINDOWS) && !defined(AK_OS_ANDROID)
+    if (tui) {
+        attempt_instantiate = true;
+        export_all_imports = true;
+    }
+#endif
 
     auto parse_result = parse(filename);
     if (parse_result.is_null())
@@ -1160,6 +1842,11 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
                 }
             }
         }
+
+#if !defined(AK_OS_WINDOWS) && !defined(AK_OS_ANDROID)
+        if (tui)
+            tui_run(machine, *parse_result, *module_instance, filename);
+#endif
     }
 
     return 0;
