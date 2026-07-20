@@ -1850,6 +1850,24 @@ HANDLE_INSTRUCTION(synthetic_i64_storelocal)
     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
 }
 
+HANDLE_INSTRUCTION(synthetic_v128_copy)
+{
+    LOG_INSN;
+    LOAD_ADDRESSES();
+    if (interpreter.fused_v128_copy(configuration, *instruction, addresses))
+        return Outcome::Return;
+    TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
+}
+
+HANDLE_INSTRUCTION(synthetic_v128_store_const)
+{
+    LOG_INSN;
+    LOAD_ADDRESSES();
+    if (interpreter.fused_v128_store_const(configuration, *instruction, addresses))
+        return Outcome::Return;
+    TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
+}
+
 HANDLE_INSTRUCTION(synthetic_i64_add2local)
 {
     LOG_INSN;
@@ -1990,6 +2008,12 @@ HANDLE_INSTRUCTION(synthetic_local_seti64_const)
 
 HANDLE_INSTRUCTION(synthetic_br_table_cont)
 {
+    VERIFY_NOT_REACHED();
+}
+
+HANDLE_INSTRUCTION(synthetic_interp_region)
+{
+    // Only ever present in the serialized Cranelift stream, never in the dispatch stream.
     VERIFY_NOT_REACHED();
 }
 
@@ -6653,6 +6677,40 @@ VectorType BytecodeInterpreter::pop_vector(Configuration& configuration, size_t 
     return bit_cast<VectorType>(configuration.take_source<SourceAddressMix::Any>(source, addresses.sources).template to<u128>());
 }
 
+// Direct execution of a leaf function (no calls, no exception or GC constructs, at most one
+// non-reference result): the frame borrows the args buffer as its locals instead of moving it
+// onto the owned-locals stack, and the single result is handed back without a results Vector.
+// Returns true if the callee trapped (m_trap is set).
+bool BytecodeInterpreter::execute_direct_leaf_call(Configuration& configuration, WasmFunction const& wasm_function, Vector<Value, ArgumentsStaticSize>& args, Optional<Value>& single_result)
+{
+    auto const& func = wasm_function.code().func();
+    auto const& body = func.body();
+    auto const inlined_locals = body.compiled_instructions.cranelift_inlined_locals;
+    args.ensure_capacity(args.size() + func.total_local_count() + inlined_locals);
+    for (auto const& local : func.locals()) {
+        for (size_t i = 0; i < local.n(); ++i)
+            args.unchecked_append(Value(local.type()));
+    }
+    for (u32 i = 0; i < inlined_locals; ++i)
+        args.unchecked_append(Value(ValueType { ValueType::I32 }));
+
+    auto const arity = wasm_function.type().results().size();
+
+    // Declared before the frame handle so the args buffer outlives the frame borrowing it.
+    ScopeGuard release_args = [&] { configuration.release_arguments_allocation(args); };
+    CallFrameHandle handle { *this, configuration };
+    configuration.set_frame_for_leaf_call(wasm_function.module(), args.data(), body, arity);
+    configuration.ip() = 0;
+    interpret(configuration);
+    if (did_trap())
+        return true;
+    if (arity == 1)
+        single_result = configuration.value_stack().unsafe_take_last();
+    if (configuration.label_stack().size() > configuration.frame().label_index())
+        configuration.label_stack().shrink(configuration.frame().label_index(), true);
+    return false;
+}
+
 Outcome BytecodeInterpreter::call_address(Configuration& configuration, FunctionAddress address, SourcesAndDestination const& addresses, CallAddressSource source, CallType call_type)
 {
     TRAP_IF_NOT(m_stack_info.size_free() >= Constants::minimum_stack_space_to_keep_free, "{}: {}", Constants::stack_exhaustion_message);
@@ -6716,6 +6774,20 @@ Outcome BytecodeInterpreter::call_address(Configuration& configuration, Function
                 return static_cast<Outcome>(0); // Continue from IP 0 in the new frame.
             }
         } else {
+            if (auto const* wasm_function = instance->get_pointer<WasmFunction>();
+                wasm_function && wasm_function->code().func().body().compiled_instructions.leaf_call_eligible) {
+                // Leaf fast path: the callee makes no calls and can only trap, so run it on a
+                // borrowed locals buffer with a lightweight frame and hand the single result
+                // back directly -- no owned-locals traffic, no results Vector, no exception
+                // dispatch.
+                Optional<Value> leaf_result;
+                if (execute_direct_leaf_call(configuration, *wasm_function, args, leaf_result))
+                    return Outcome::Return; // Trapped; m_trap is already set.
+                regs_rollback.clear();
+                if (leaf_result.has_value())
+                    configuration.push_to_destination<SourceAddressMix::Any>(leaf_result.release_value(), addresses.destination);
+                return Outcome::Continue;
+            }
             if (instance->has<WasmFunction>()) {
                 CallFrameHandle handle { *this, configuration };
                 result = configuration.call(*this, address, args);
@@ -6771,6 +6843,33 @@ bool BytecodeInterpreter::binary_numeric_operation(Configuration& configuration,
     dbgln_if(WASM_TRACE_DEBUG, "{} {} {} = {}", lhs, Operator::name(), rhs, result);
     lhs_slot = Value(result);
     return false;
+}
+
+bool BytecodeInterpreter::fused_v128_copy(Configuration& configuration, Instruction const& instruction, SourcesAndDestination const& addresses)
+{
+    auto const& args = instruction.arguments().unsafe_get<Instruction::V128CopyArgs>();
+    auto const src_base = configuration.take_source<SourceAddressMix::Any>(0, addresses.sources);
+    auto const dst_base = configuration.take_source<SourceAddressMix::Any>(1, addresses.sources);
+
+    auto const& address = configuration.frame().module().memories().data()[args.source.memory_index.value()];
+    auto memory = configuration.store().unsafe_get(address);
+    auto const base = memory_base_address(*memory, src_base);
+    Checked<u64> end_address { base };
+    end_address += args.source.offset;
+    end_address += sizeof(u128);
+    if (end_address.has_overflow() || end_address.value() > memory->size()) {
+        m_trap = Trap::from_string("Memory access out of bounds");
+        return true;
+    }
+    auto const value = read_value<u128>({ memory->data().offset_pointer(base + args.source.offset), sizeof(u128) });
+    return store_to_memory(configuration, args.destination, { &value, sizeof(value) }, dst_base);
+}
+
+bool BytecodeInterpreter::fused_v128_store_const(Configuration& configuration, Instruction const& instruction, SourcesAndDestination const& addresses)
+{
+    auto const& args = instruction.arguments().unsafe_get<Instruction::V128StoreConstArgs>();
+    auto const dst_base = configuration.take_source<SourceAddressMix::Any>(0, addresses.sources);
+    return store_to_memory(configuration, args.destination, { &args.value, sizeof(args.value) }, dst_base);
 }
 
 template<typename PopType, typename PushType, typename Operator, SourceAddressMix mix, size_t input_arg, typename... Args>
@@ -6903,9 +7002,51 @@ Instruction& InstructionStorage::append(Instruction instruction)
     return slot.value();
 }
 
-CompiledInstructions try_compile_instructions(Expression const& expression, Span<FunctionType const> functions, Span<CodeSection::Func const* const> callee_bodies, size_t current_function_index, size_t caller_local_count, size_t imported_function_count)
+// Instructions the Cranelift compiler can't lower but that can be extracted into an
+// interpreter-executed region: straight-line, call-free, and safe to run on the shared value
+// stack. Being conservative here is fine in both directions -- marking a supported opcode
+// extractable only costs performance, and missing an unsupported one just means the function
+// is rejected wholesale, as before.
+static bool is_interp_region_op(OpCode opcode)
+{
+    auto const value = opcode.value();
+    if ((value & 0xff000000u) == 0xfd000000u) // SIMD
+        return true;
+    // GC proposal, except its branching instructions (regions must be straight-line).
+    if ((value & 0xff000000u) == 0xfb000000u)
+        return !first_is_one_of(opcode, Instructions::br_on_cast, Instructions::br_on_cast_fail);
+    return first_is_one_of(opcode,
+        Instructions::table_get, Instructions::table_set, Instructions::table_init,
+        Instructions::elem_drop, Instructions::table_copy, Instructions::table_grow,
+        Instructions::table_size, Instructions::table_fill,
+        Instructions::memory_init, Instructions::data_drop,
+        Instructions::ref_null, Instructions::ref_is_null, Instructions::ref_func);
+}
+
+CompiledInstructions try_compile_instructions(Expression const& expression, Span<FunctionType const> functions, Span<CodeSection::Func const* const> callee_bodies, size_t current_function_index, size_t caller_local_count, size_t imported_function_count, Span<ValueType const> local_types)
 {
     CompiledInstructions result;
+
+    // v128-typed locals can't live in the compiled i64 register model, but their accesses can run
+    // inside interpreter regions (which read the full 16-byte frame slot); treat those accesses as
+    // region ops so validation can keep such functions cranelift-eligible.
+    auto is_wide_local = [&](LocalIndex index) {
+        auto const value = index.value() & ~LocalArgumentMarker;
+        return value < local_types.size() && local_types[value].kind() == ValueType::V128;
+    };
+    auto is_region_dispatch = [&](Dispatch const& dispatch) {
+        auto const op = dispatch.instruction->opcode();
+        if (is_interp_region_op(op))
+            return true;
+        if (first_is_one_of(op, Instructions::local_get, Instructions::local_set, Instructions::local_tee,
+                Instructions::synthetic_argument_get, Instructions::synthetic_argument_set, Instructions::synthetic_argument_tee)
+            || (op.value() >= Instructions::synthetic_local_get_0.value() && op.value() <= Instructions::synthetic_local_get_7.value())
+            || (op.value() >= Instructions::synthetic_local_set_0.value() && op.value() <= Instructions::synthetic_local_set_7.value()))
+            return is_wide_local(dispatch.instruction->local_index());
+        if (op == Instructions::synthetic_local_copy)
+            return is_wide_local(dispatch.instruction->local_index()) || is_wide_local(dispatch.instruction->arguments().get<LocalIndex>());
+        return false;
+    };
 
     auto instruction_count = expression.instructions().size();
     result.dispatches.ensure_capacity(instruction_count);
@@ -6945,27 +7086,36 @@ CompiledInstructions try_compile_instructions(Expression const& expression, Span
     };
 
     auto callee_if_inlineable = [&](size_t func_index) -> CodeSection::Func const* {
-        if (func_index >= callee_bodies.size() || func_index >= current_function_index)
-            return nullptr; // import, forward reference, or self (cannot inline)
+        if (func_index >= callee_bodies.size() || func_index == current_function_index)
+            return nullptr; // out of range or self (cannot inline)
 
         auto const* callee = callee_bodies[func_index];
         if (!callee)
-            return nullptr;
-
-        auto const& ci = callee->body().compiled_instructions;
-        if (!ci.cranelift_eligible)
-            return nullptr;
+            return nullptr; // import
 
         if (callee->body().instructions().size() > 96) // Value arbitrarily chosen based on vibes.
             return nullptr;
 
-        if (functions[func_index].results().size() > 1 || functions[func_index].parameters().size() > 8)
+        // A forward-referenced callee hasn't been validated yet, so its compiled_instructions
+        // (including cranelift_eligible) aren't available; check the shape on the raw body and
+        // type instead. v128-typed locals, parameters, and results are rejected because inlined
+        // locals are typed as i64 on the cranelift side.
+        auto const& type = functions[func_index];
+        if (type.results().size() > 1 || type.parameters().size() > 8)
             return nullptr;
+        for (auto const& result : type.results()) {
+            if (result.is_reference() || result.kind() == ValueType::V128)
+                return nullptr;
+        }
+        for (auto const& parameter : type.parameters()) {
+            if (parameter.is_reference() || parameter.kind() == ValueType::V128)
+                return nullptr;
+        }
 
         for (auto const& local : callee->locals()) {
             // Wasm semantics want locals to be zeroed on entry, but we're reusing locals across multiple inlined sites;
             // we can't zero reference-typed locals without potentially dropping a live reference, so reject those callees.
-            if (local.type().is_reference())
+            if (local.type().is_reference() || local.type().kind() == ValueType::V128)
                 return nullptr;
         }
         for (auto& gi : callee->body().instructions()) {
@@ -6973,6 +7123,13 @@ CompiledInstructions try_compile_instructions(Expression const& expression, Span
                     Instructions::call, Instructions::call_indirect,
                     Instructions::return_call, Instructions::return_call_indirect,
                     Instructions::call_ref, Instructions::return_call_ref))
+                return nullptr;
+            // try_table needs end_ip remaps the inliner doesn't perform.
+            if (gi.opcode() == Instructions::try_table)
+                return nullptr;
+            // Type-index block types need the type context to recompute structured meta,
+            // which isn't available here (and isn't filled in yet for forward references).
+            if (auto const* sa = gi.arguments().get_pointer<Instruction::StructuredInstructionArgs>(); sa && sa->block_type.kind() == BlockType::Index)
                 return nullptr;
         }
         return callee;
@@ -7093,7 +7250,14 @@ CompiledInstructions try_compile_instructions(Expression const& expression, Span
                         auto* sa = expanded[pos]->arguments().get_pointer<Instruction::StructuredInstructionArgs>();
                         auto copy = *expanded[pos];
                         auto new_else = sa->else_ip().map([&](InstructionPointer ip) { return g_remap(ip); });
-                        copy.arguments() = Instruction::StructuredInstructionArgs { sa->block_type, g_remap(sa->end_ip), new_else, sa->meta };
+                        // A forward-referenced callee hasn't been validated yet, so sa->meta isn't filled in;
+                        // recompute it from the block type (type-index block types are rejected by callee_if_inlineable).
+                        auto meta = Instruction::StructuredInstructionArgs::Meta {
+                            .arity = sa->block_type.kind() == BlockType::Empty ? 0u : 1u,
+                            .parameter_count = 0,
+                            .tier_up_eligible = sa->meta.tier_up_eligible,
+                        };
+                        copy.arguments() = Instruction::StructuredInstructionArgs { sa->block_type, g_remap(sa->end_ip), new_else, meta };
                         expanded[pos] = &append_extra_instruction(move(copy));
                     }
                 }
@@ -7135,7 +7299,22 @@ CompiledInstructions try_compile_instructions(Expression const& expression, Span
             // Host calls all gather their arguments into a buffer, so reg-calling them is a net perf loss for all of them; force whatever we can to the call record path.
             // Any remaining ones can still go through the regular call path, which is regardless faster than regcalling them.
             bool const is_extern = call_func_index < imported_function_count;
-            if (!is_extern && function.results().size() <= 1 && function.parameters().size() < 4) {
+            // Reference and v128 args or results don't survive the compiled reg-call helpers'
+            // i64 ABI; leave those as plain calls (whose helper moves full values via the stack).
+            bool has_wide_types = false;
+            for (auto const& parameter : function.parameters()) {
+                if (parameter.is_reference() || parameter.kind() == ValueType::V128) {
+                    has_wide_types = true;
+                    break;
+                }
+            }
+            for (auto const& result_type : function.results()) {
+                if (result_type.is_reference() || result_type.kind() == ValueType::V128) {
+                    has_wide_types = true;
+                    break;
+                }
+            }
+            if (!is_extern && !has_wide_types && function.results().size() <= 1 && function.parameters().size() < 4) {
                 pattern_state = InsnPatternState::Nothing;
                 OpCode op { static_cast<OpCode::Type>(Instructions::synthetic_call_00.value() + function.parameters().size() * 2 + function.results().size()) };
                 auto& extra_instruction = append_extra_instruction(op, instruction.arguments());
@@ -7144,6 +7323,35 @@ CompiledInstructions try_compile_instructions(Expression const& expression, Span
             }
 
             calls_in_expression++;
+        }
+
+        // `v128.load ml; v128.store ms` -> `v128.copy` and `v128.const c; v128.store ms` -> `v128.store_const`:
+        // LLVM's inlined memcpy/memset lowers to these pairs constantly, and fusing them means no v128 value
+        // ever materializes, keeping the function eligible for cranelift. Restricted to memory 0 so the
+        // cranelift serialization can pack the arguments (and store_const needs imm3 for its u32 offset).
+        if (instruction.opcode() == Instructions::v128_store && !result.dispatches.is_empty()) {
+            auto const& store_arg = instruction.arguments().get<Instruction::MemoryArgument>();
+            auto const& last = *result.dispatches.last().instruction;
+            if (last.opcode() == Instructions::v128_load && store_arg.memory_index.value() == 0
+                && last.arguments().get<Instruction::MemoryArgument>().memory_index.value() == 0) {
+                set_default_dispatch(nop, result.dispatches.size() - 1);
+                auto& extra_instruction = append_extra_instruction(
+                    Instructions::synthetic_v128_copy,
+                    Instruction::V128CopyArgs { last.arguments().get<Instruction::MemoryArgument>(), store_arg });
+                set_default_dispatch(extra_instruction);
+                pattern_state = InsnPatternState::Nothing;
+                continue;
+            }
+            if (last.opcode() == Instructions::v128_const && store_arg.memory_index.value() == 0
+                && store_arg.offset <= NumericLimits<u32>::max()) {
+                set_default_dispatch(nop, result.dispatches.size() - 1);
+                auto& extra_instruction = append_extra_instruction(
+                    Instructions::synthetic_v128_store_const,
+                    Instruction::V128StoreConstArgs { store_arg, last.arguments().get<u128>() });
+                set_default_dispatch(extra_instruction);
+                pattern_state = InsnPatternState::Nothing;
+                continue;
+            }
         }
 
         switch (pattern_state) {
@@ -7967,6 +8175,21 @@ CompiledInstructions try_compile_instructions(Expression const& expression, Span
                 }
             }
         }
+
+        // Pin the operands of JIT-unsupported instructions to the stack: interpreter-region
+        // extraction replaces such runs with an interpreter call, and values wider than 64 bits
+        // must not round-trip through the compiled register model.
+        if (is_region_dispatch(dispatch)) {
+            for (auto id : input_ids)
+                forced_stack_values.append(id);
+            if (outputs > 0) {
+                forced_stack_values.append(output_id);
+                // Region results may be wider than 64 bits (v128, references); the call-record
+                // transform would truncate them, so disqualify them the same way
+                // polymorphic-stack values are.
+                values.get(output_id).value().was_created_as_a_result_of_polymorphic_stack = true;
+            }
+        }
     }
 
     forced_stack_values.extend(value_stack);
@@ -8491,7 +8714,170 @@ CompiledInstructions try_compile_instructions(Expression const& expression, Span
         }
     }
 
+    // Preliminary leaf-call eligibility: no calls of any kind (so the leaf path can't re-enter the
+    // call machinery), no exception constructs (so the only failure mode is a trap), and no
+    // GC-proposal instructions (so no GC can run while the frame's locals live in an unscanned
+    // buffer). Validation further restricts this based on the function's type.
+    result.leaf_call_eligible = true;
+    for (auto const& dispatch : result.dispatches) {
+        auto const op = dispatch.instruction->opcode();
+        bool const is_call = first_is_one_of(op,
+                                 Instructions::call, Instructions::call_indirect, Instructions::call_ref,
+                                 Instructions::return_call, Instructions::return_call_indirect, Instructions::return_call_ref,
+                                 Instructions::synthetic_call_with_record_0, Instructions::synthetic_call_with_record_1)
+            || (op.value() >= Instructions::synthetic_call_00.value() && op.value() <= Instructions::synthetic_call_31.value());
+        bool const is_exception_construct = first_is_one_of(op, Instructions::try_table, Instructions::throw_, Instructions::throw_ref);
+        bool const is_gc_instruction = (op.value() & 0xff000000u) == 0xfb000000u;
+        if (is_call || is_exception_construct || is_gc_instruction) {
+            result.leaf_call_eligible = false;
+            break;
+        }
+    }
+
+    // Extract contiguous runs of JIT-unsupported instructions into interpreter regions so the rest
+    // of the function can still be compiled; the serializer replaces each run with one
+    // synthetic_interp_region whose helper executes the copies below in the caller's frame.
+    // Skipped when the function contains constructs that reject compilation anyway (tail calls,
+    // exception handling, multi-value blocks), or when a value wider than 64 bits could be
+    // observed by compiled code (plain select alongside SIMD, v128-typed block results).
+    if constexpr (should_try_to_use_direct_threading) {
+        bool has_extractable = false;
+        bool has_plain_select = false;
+        bool blocked = false;
+        for (auto const& dispatch : result.dispatches) {
+            auto const op = dispatch.instruction->opcode();
+            if (is_region_dispatch(dispatch)) {
+                has_extractable = true;
+                continue;
+            }
+            if (op == Instructions::select)
+                has_plain_select = true;
+            if (op == Instructions::select_typed) {
+                // A typed select over references or v128 would read its operands with 64-bit
+                // loads in compiled code; those types only show up alongside region ops.
+                if (auto const* types = dispatch.instruction->arguments().get_pointer<Vector<ValueType>>()) {
+                    for (auto const& type : *types) {
+                        if (type.is_reference() || type.kind() == ValueType::V128) {
+                            blocked = true;
+                            break;
+                        }
+                    }
+                }
+                if (blocked)
+                    break;
+            }
+            if (first_is_one_of(op,
+                    Instructions::return_call, Instructions::return_call_indirect,
+                    Instructions::call_ref, Instructions::return_call_ref,
+                    Instructions::throw_, Instructions::throw_ref, Instructions::try_table,
+                    Instructions::br_on_cast, Instructions::br_on_cast_fail,
+                    Instructions::br_on_null, Instructions::br_on_non_null)) {
+                blocked = true;
+                break;
+            }
+            if (auto const* sa = dispatch.instruction->arguments().get_pointer<Instruction::StructuredInstructionArgs>();
+                sa && (sa->meta.arity > 1 || (sa->block_type.kind() == BlockType::Type && sa->block_type.value_type().kind() == ValueType::V128))) {
+                blocked = true;
+                break;
+            }
+        }
+        // A plain select is compiled with 64-bit operand reads, which would corrupt a v128 or
+        // reference value sitting on the shared stack. Track, per basic block, which stack slots
+        // definitely hold 64-bit-safe values (using the mapped stack effects -- register and
+        // call-record operands don't touch the stack), and only block extraction when a select's
+        // value operand could be wide. Wide values only ever come from region dispatches: wide
+        // locals/params/results and wide globals are excluded from eligibility separately, and
+        // reg-calls with wide signatures are never formed.
+        if (has_extractable && !blocked && has_plain_select) {
+            Vector<bool> narrow_stack;
+            for (size_t i = 0; i < result.dispatches.size() && !blocked; ++i) {
+                auto const& dispatch = result.dispatches[i];
+                auto const op = dispatch.instruction->opcode();
+                auto const [ins, outs] = instruction_operand_counts(op);
+                if (ins < 0 || outs < 0 || first_is_one_of(op, Instructions::call, Instructions::call_indirect, Instructions::unreachable)) {
+                    narrow_stack.clear(); // Control flow or unknown stack effect: forget everything.
+                    continue;
+                }
+                auto const& addr = result.src_dst_mappings[i];
+                if (op == Instructions::select) {
+                    size_t depth = 0;
+                    for (ssize_t j = 0; j < ins; ++j) {
+                        if (addr.sources[j] != Dispatch::Stack)
+                            continue; // Register operands are always narrow (wide values are pinned to the stack).
+                        bool const narrow = depth < narrow_stack.size() && narrow_stack[narrow_stack.size() - 1 - depth];
+                        ++depth;
+                        if (j > 0 && !narrow) { // Source 0 is the (always-i32) condition.
+                            blocked = true;
+                            break;
+                        }
+                    }
+                    if (blocked)
+                        break;
+                }
+                for (ssize_t j = 0; j < ins; ++j) {
+                    if (addr.sources[j] == Dispatch::Stack && !narrow_stack.is_empty())
+                        narrow_stack.take_last();
+                }
+                if (outs == 1 && addr.destination == Dispatch::Stack)
+                    narrow_stack.append(!is_region_dispatch(dispatch));
+            }
+        }
+
+        if (has_extractable && !blocked) {
+            // The regalloc pinned operands of extractable instructions to the stack; verify that
+            // held (bailing out is always safe -- the function just stays interpreted).
+            bool all_stack = true;
+            for (size_t i = 0; i < result.dispatches.size() && all_stack; ++i) {
+                if (!is_region_dispatch(result.dispatches[i]))
+                    continue;
+                auto const& addr = result.src_dst_mappings[i];
+                auto [in_count, out_count] = instruction_operand_counts(result.dispatches[i].instruction->opcode());
+                for (ssize_t j = 0; j < in_count; ++j)
+                    all_stack &= addr.sources[j] == Dispatch::Stack;
+                if (out_count == 1)
+                    all_stack &= addr.destination == Dispatch::Stack;
+            }
+
+            if (all_stack) {
+                static auto& region_end_instruction = *new Instruction { Instructions::synthetic_end_expression };
+                auto const region_end_handler = bit_cast<FlatPtr>(&InstructionHandler<Instructions::synthetic_end_expression.value()>::template operator()<false, Continue, SourceAddressMix::AllRegisters>);
+                for (size_t i = 0; i < result.dispatches.size();) {
+                    if (!is_region_dispatch(result.dispatches[i])) {
+                        ++i;
+                        continue;
+                    }
+                    size_t end = i;
+                    while (end < result.dispatches.size() && is_region_dispatch(result.dispatches[end]))
+                        ++end;
+
+                    CompiledInstructions::InterpRegion region;
+                    region.start = static_cast<u32>(i);
+                    region.length = static_cast<u32>(end - i);
+                    region.dispatches.ensure_capacity(end - i + 1);
+                    region.mappings.ensure_capacity(end - i + 1);
+                    for (size_t k = i; k < end; ++k) {
+                        region.dispatches.unchecked_append(result.dispatches[k]);
+                        region.mappings.unchecked_append(result.src_dst_mappings[k]);
+                    }
+                    region.dispatches.unchecked_append(Dispatch { { .handler_ptr = region_end_handler }, &region_end_instruction });
+                    region.mappings.unchecked_append({ .sources = { Dispatch::Stack, Dispatch::Stack, Dispatch::Stack }, .destination = Dispatch::Stack });
+                    result.interp_regions.append(move(region));
+                    i = end;
+                }
+            }
+        }
+    }
+
     return result;
+}
+
+void BytecodeInterpreter::run_dispatch_region(Configuration& configuration, CompiledInstructions::InterpRegion const& region)
+{
+    ShortenedIP short_ip { .current_ip_value = 0 };
+    auto const* cc = region.dispatches.data();
+    auto const* addresses_ptr = region.mappings.data();
+    auto const handler = bit_cast<Outcome (*)(HANDLER_PARAMS(DECOMPOSE_PARAMS_TYPE_ONLY))>(cc[0].handler_ptr);
+    handler(*this, configuration, cc[0].instruction, short_ip, cc, addresses_ptr);
 }
 
 }

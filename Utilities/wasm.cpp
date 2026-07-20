@@ -1610,6 +1610,32 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
             }
         }
 
+        if (getenv("WASM_CRANELIFT_STATS")) {
+            size_t total = 0, eligible = 0, compiled_count = 0;
+            size_t total_insns = 0, compiled_insns = 0, elig_rej_insns = 0, cl_rej_insns = 0;
+            for (auto address : module_instance->functions()) {
+                auto* function = machine.store().get(address)->get_pointer<Wasm::WasmFunction>();
+                if (!function)
+                    continue;
+                auto& ci = function->code().func().body().compiled_instructions;
+                ++total;
+                auto insns = function->code().func().body().instructions().size();
+                total_insns += insns;
+                if (ci.cranelift_eligible)
+                    ++eligible;
+                if (ci.cranelift_compiled) {
+                    ++compiled_count;
+                    compiled_insns += insns;
+                } else if (!ci.cranelift_eligible) {
+                    elig_rej_insns += insns;
+                } else {
+                    cl_rej_insns += insns;
+                }
+            }
+            warnln("cranelift-stats: fns total={} eligible={} compiled={} | insns total={} compiled={} inelig={} rejected={}",
+                total, eligible, compiled_count, total_insns, compiled_insns, elig_rej_insns, cl_rej_insns);
+        }
+
         if (dump_native) {
             Span<Wasm::FunctionAddress const> functions = module_instance->functions();
             Wasm::FunctionAddress spec = specific_function_address.value_or(0);

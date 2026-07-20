@@ -100,6 +100,12 @@ struct WASM_API BytecodeInterpreter final : public Interpreter {
     template<typename M, template<typename> typename SetSign, typename VectorType = Native128ByteVectorOf<M, SetSign>>
     VectorType pop_vector(Configuration&, size_t source, SourcesAndDestination const&);
     bool store_to_memory(Configuration&, Instruction::MemoryArgument const&, ReadonlyBytes data, Value const& base);
+    bool fused_v128_copy(Configuration&, Instruction const&, SourcesAndDestination const&);
+    bool fused_v128_store_const(Configuration&, Instruction const&, SourcesAndDestination const&);
+    bool execute_direct_leaf_call(Configuration&, WasmFunction const&, Vector<Value, ArgumentsStaticSize>& args, Optional<Value>& single_result);
+    // Runs an extracted interpreter region (see CompiledInstructions::InterpRegion) in the current
+    // frame; called from Cranelift-compiled code via the run_interp_region runtime helper.
+    void run_dispatch_region(Configuration&, CompiledInstructions::InterpRegion const&);
     Outcome call_address(Configuration&, FunctionAddress, SourcesAndDestination const&, CallAddressSource = CallAddressSource::DirectCall, CallType = CallType::UsingStack);
     Outcome run_compiled_function_direct(Configuration&);
     Outcome run_native_entry(Configuration&);

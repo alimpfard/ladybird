@@ -231,6 +231,7 @@ impl CraneliftCompiler {
             }};
         }
         let h_call_fn = decl_helper!(call_fn_sig, HelperId::call_function);
+        let h_run_interp_region = decl_helper!(call_fn_sig, HelperId::run_interp_region);
         let h_direct_call_0 = decl_helper!(call_fn_sig, HelperId::direct_call_0);
         let h_direct_call_1 = decl_helper!(call_fn1_sig, HelperId::direct_call_1);
         let h_direct_call_2 = decl_helper!(call_fn2_sig, HelperId::direct_call_2);
@@ -287,34 +288,37 @@ impl CraneliftCompiler {
 
         let uses_default_memory = insns.iter().any(|insn| {
             let mem_idx = insn.imm3 & 0x7fff_ffff;
-            matches!(
-                insn.opcode,
-                op::I32_LOAD
-                    | op::I64_LOAD
-                    | op::F32_LOAD
-                    | op::F64_LOAD
-                    | op::I32_LOAD8_S
-                    | op::I32_LOAD8_U
-                    | op::I32_LOAD16_S
-                    | op::I32_LOAD16_U
-                    | op::I64_LOAD8_S
-                    | op::I64_LOAD8_U
-                    | op::I64_LOAD16_S
-                    | op::I64_LOAD16_U
-                    | op::I64_LOAD32_S
-                    | op::I64_LOAD32_U
-                    | op::I32_STORE
-                    | op::I64_STORE
-                    | op::F32_STORE
-                    | op::F64_STORE
-                    | op::I32_STORE8
-                    | op::I32_STORE16
-                    | op::I64_STORE8
-                    | op::I64_STORE16
-                    | op::I64_STORE32
-                    | op::SYNTHETIC_I32_STORELOCAL
-                    | op::SYNTHETIC_I64_STORELOCAL
-            ) && mem_idx == 0
+            // The fused v128 ops always target memory 0 (and store_const repurposes imm3
+            // for its offset), so they skip the mem_idx check.
+            matches!(insn.opcode, op::SYNTHETIC_V128_COPY | op::SYNTHETIC_V128_STORE_CONST)
+                || (matches!(
+                    insn.opcode,
+                    op::I32_LOAD
+                        | op::I64_LOAD
+                        | op::F32_LOAD
+                        | op::F64_LOAD
+                        | op::I32_LOAD8_S
+                        | op::I32_LOAD8_U
+                        | op::I32_LOAD16_S
+                        | op::I32_LOAD16_U
+                        | op::I64_LOAD8_S
+                        | op::I64_LOAD8_U
+                        | op::I64_LOAD16_S
+                        | op::I64_LOAD16_U
+                        | op::I64_LOAD32_S
+                        | op::I64_LOAD32_U
+                        | op::I32_STORE
+                        | op::I64_STORE
+                        | op::F32_STORE
+                        | op::F64_STORE
+                        | op::I32_STORE8
+                        | op::I32_STORE16
+                        | op::I64_STORE8
+                        | op::I64_STORE16
+                        | op::I64_STORE32
+                        | op::SYNTHETIC_I32_STORELOCAL
+                        | op::SYNTHETIC_I64_STORELOCAL
+                ) && mem_idx == 0)
         });
         // The base address is stable for the whole call: memory32 storage reserves its maximum
         // (plus guard) up front, so growing commits in place and never moves the allocation.
@@ -346,9 +350,14 @@ impl CraneliftCompiler {
         let mut control_stack: Vec<ControlFrame> = Vec::new();
 
         // Virtual stack, to avoid touching the interpreter-side stack as much as possible.
-        let has_raw_call = insns
-            .iter()
-            .any(|i| i.opcode == op::CALL || i.opcode == op::CALL_INDIRECT);
+        // Interpreter regions behave like raw calls: the helper consumes and produces values on
+        // the real value stack, so the virtual stack can't be used.
+        let has_raw_call = insns.iter().any(|i| {
+            matches!(
+                i.opcode,
+                op::CALL | op::CALL_INDIRECT | op::SYNTHETIC_INTERP_REGION
+            )
+        });
         let max_stack_depth = match has_raw_call {
             true => 0,
             // We can't easily track across control flow merges, so count dests instead.
@@ -406,6 +415,7 @@ impl CraneliftCompiler {
 
         const F32_KIND: u8 = 2;
         const F64_KIND: u8 = 3;
+        const V128_KIND: u8 = 4;
         let num_locals = num_locals as usize;
         let num_params = num_params as usize;
         let local_is_f64: Vec<bool> = (0..num_locals)
@@ -428,7 +438,10 @@ impl CraneliftCompiler {
         } else {
             8
         };
-        let local_vars: Vec<Variable> = if num_locals <= max_promote_locals {
+        // v128 locals only ever get accessed from interpreter regions, which read the full
+        // 16-byte frame slot -- so they must stay in memory, never in a promoted i64 variable.
+        let has_v128_local = local_types.iter().any(|&t| t == V128_KIND);
+        let local_vars: Vec<Variable> = if num_locals <= max_promote_locals && !has_v128_local {
             (0..num_locals)
                 .map(|_| {
                     let v = Variable::from_u32(next_var_id);
@@ -2150,6 +2163,54 @@ impl CraneliftCompiler {
                     }
                 }
 
+                op::SYNTHETIC_INTERP_REGION => {
+                    // Run an extracted interpreter region in this frame; its operands and results
+                    // live on the real value stack (the extraction pass pinned them there).
+                    flush_vstack_to_real!(builder);
+                    let region_idx = builder.ins().iconst(types::I32, insn.imm1);
+                    let cfp = builder.ins().func_addr(ptr_type, h_run_interp_region);
+                    let iv = builder.use_var(interp_var);
+                    let cv = builder.use_var(config_var);
+                    do_call_and_check!(builder, call_fn_sig, cfp, &[iv, cv, region_idx]);
+                }
+
+                op::SYNTHETIC_V128_COPY => {
+                    // Fused v128.load + v128.store on memory 0: a 16-byte copy.
+                    // sources: [src_base, dst_base]; imm1 = load offset, imm2 = store offset.
+                    // Single 16-byte accesses so an OOB fault can't leave a partial write behind.
+                    let src_raw = read_src!(builder, insn.sources[0]);
+                    let dst_raw = read_src!(builder, insn.sources[1]);
+                    let src_u32 = builder.ins().ireduce(types::I32, src_raw);
+                    let src_u64 = builder.ins().uextend(types::I64, src_u32);
+                    let src_off = builder.ins().iconst(types::I64, insn.imm1);
+                    let src_addr = builder.ins().iadd(src_u64, src_off);
+                    let src_address = inline_default_memory_address!(builder, src_addr);
+                    let value = builder.ins().load(types::I8X16, wasm_memory_flags, src_address, 0);
+                    let dst_u32 = builder.ins().ireduce(types::I32, dst_raw);
+                    let dst_u64 = builder.ins().uextend(types::I64, dst_u32);
+                    let dst_off = builder.ins().iconst(types::I64, insn.imm2);
+                    let dst_addr = builder.ins().iadd(dst_u64, dst_off);
+                    let dst_address = inline_default_memory_address!(builder, dst_addr);
+                    builder.ins().store(wasm_memory_flags, value, dst_address, 0);
+                }
+
+                op::SYNTHETIC_V128_STORE_CONST => {
+                    // Fused v128.const + v128.store on memory 0.
+                    // sources: [dst_base]; imm1+imm2 = the 16-byte constant, imm3 = store offset.
+                    let base_raw = read_src!(builder, insn.sources[0]);
+                    let base_u32 = builder.ins().ireduce(types::I32, base_raw);
+                    let base_u64 = builder.ins().uextend(types::I64, base_u32);
+                    let offset = builder.ins().iconst(types::I64, i64::from(insn.imm3));
+                    let addr = builder.ins().iadd(base_u64, offset);
+                    let address = inline_default_memory_address!(builder, addr);
+                    let mut bytes = [0u8; 16];
+                    bytes[..8].copy_from_slice(&insn.imm1.to_le_bytes());
+                    bytes[8..].copy_from_slice(&insn.imm2.to_le_bytes());
+                    let handle = builder.func.dfg.constants.insert(bytes.as_slice().into());
+                    let value = builder.ins().vconst(types::I8X16, handle);
+                    builder.ins().store(wasm_memory_flags, value, address, 0);
+                }
+
                 op::MEMORY_SIZE => {
                     let mem_idx = builder.ins().iconst(types::I32, insn.imm1);
                     let _xv_config_var = builder.use_var(config_var);
@@ -2635,6 +2696,9 @@ impl CraneliftCompiler {
                 | op::SYNTHETIC_I64_ADD2LOCAL..=op::SYNTHETIC_LOCAL_SETI64_CONST
                 | op::SYNTHETIC_BR_TABLE_CONT
                 | op::SYNTHETIC_TIER_UP
+                | op::SYNTHETIC_V128_COPY
+                | op::SYNTHETIC_V128_STORE_CONST
+                | op::SYNTHETIC_INTERP_REGION
         )
     }
 

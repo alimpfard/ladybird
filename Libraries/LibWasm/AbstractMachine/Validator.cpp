@@ -414,6 +414,12 @@ ErrorOr<void, ValidationError> Validator::validate(CodeSection const& section)
     Vector<CodeSection::Func const*> callee_bodies;
     callee_bodies.resize(m_context.imported_function_count + section.functions().size());
 
+    // Fill in all bodies up front so try_compile_instructions can inline forward-referenced
+    // callees too; callee_if_inlineable checks the raw body shape, not validation results.
+    size_t prefill_index = m_context.imported_function_count;
+    for (auto& entry : section.functions())
+        callee_bodies[prefill_index++] = &entry.func();
+
     size_t index = m_context.imported_function_count;
     for (auto& entry : section.functions()) {
         auto function_index = index++;
@@ -451,8 +457,6 @@ ErrorOr<void, ValidationError> Validator::validate(CodeSection const& section)
         auto results = TRY(function_validator.validate(function.body(), function_type.results(), callee_bodies.span(), function_index));
         if (results.result_types.size() != function_type.results().size())
             return Errors::invalid("function result"sv, function_type.results(), results.result_types);
-
-        callee_bodies[function_index] = &function;
 
         if (function.body().compiled_instructions.max_call_rec_size != 0) {
             size_t max_callee_locals = 0;
@@ -5118,14 +5122,65 @@ ErrorOr<Validator::ExpressionTypeResult, ValidationError> Validator::validate(Ex
     m_max_frame_size = 0;
 
     // Now that we're in happy land, try to compile the expression down to a list of labels to help dispatch.
-    expression.compiled_instructions = try_compile_instructions(expression, m_context.functions.span(), callee_bodies, current_function_index, m_context.locals.size(), m_context.imported_function_count);
+    expression.compiled_instructions = try_compile_instructions(expression, m_context.functions.span(), callee_bodies, current_function_index, m_context.locals.size(), m_context.imported_function_count, m_context.locals.span());
+
+    // Refine leaf-call eligibility with type information: at most one non-reference result, and no
+    // reference-typed params or locals (the leaf path keeps locals in a buffer the GC doesn't scan).
+    if (expression.compiled_instructions.leaf_call_eligible) {
+        bool leaf_ok = result_types.size() <= 1;
+        for (auto& type : result_types) {
+            if (type.is_reference())
+                leaf_ok = false;
+        }
+        if (leaf_ok) {
+            for (auto& type : m_context.locals) {
+                if (type.is_reference()) {
+                    leaf_ok = false;
+                    break;
+                }
+            }
+        }
+        expression.compiled_instructions.leaf_call_eligible = leaf_ok;
+    }
+
+    if (!expression.compiled_instructions.interp_regions.is_empty()) {
+        // Interpreter regions can leave v128 or reference values on the shared stack; compiled
+        // global accesses use 64-bit loads, so a wide-typed global would be read or written
+        // truncated. Drop the regions in that case (the function then stays interpreted, as before).
+        bool module_has_wide_global = false;
+        for (auto& global : m_context.globals) {
+            if (global.type().kind() == ValueType::V128 || global.type().is_reference()) {
+                module_has_wide_global = true;
+                break;
+            }
+        }
+        if (module_has_wide_global) {
+            for (auto& insn : expression.instructions()) {
+                if (first_is_one_of(insn.opcode(), Instructions::global_get, Instructions::global_set)) {
+                    expression.compiled_instructions.interp_regions.clear();
+                    break;
+                }
+            }
+        }
+    }
 
     if (expression.compiled_instructions.direct && !is_constant_expression) {
         bool has_unsupported_types = false;
-        for (auto& type : m_context.locals) {
-            if (type.is_reference() || type.kind() == ValueType::V128) {
+        for (size_t i = 0; i < m_context.locals.size(); ++i) {
+            auto& type = m_context.locals[i];
+            if (type.is_reference()) {
                 has_unsupported_types = true;
                 break;
+            }
+            if (type.kind() == ValueType::V128) {
+                // A non-parameter v128 local is fine when its accesses run inside interpreter
+                // regions: try_compile_instructions treats such accesses as region ops, so if
+                // extraction succeeded (regions are present), every access is covered and the
+                // compiled side keeps the local in its 16-byte frame slot (memory mode).
+                if (i < m_context.current_function_parameter_count || expression.compiled_instructions.interp_regions.is_empty()) {
+                    has_unsupported_types = true;
+                    break;
+                }
             }
         }
         if (!has_unsupported_types) {
@@ -5168,6 +5223,10 @@ ErrorOr<Validator::ExpressionTypeResult, ValidationError> Validator::validate(Ex
                 expression.compiled_instructions.cranelift_local_types.unchecked_append(to_underlying(type.kind()));
         }
     }
+
+    // Regions on functions that didn't end up eligible are never serialized; free them.
+    if (!expression.compiled_instructions.cranelift_eligible)
+        expression.compiled_instructions.interp_regions.clear();
 
     return ExpressionTypeResult { stack.release_vector(), is_constant_expression };
 }

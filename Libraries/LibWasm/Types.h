@@ -801,6 +801,18 @@ public:
         }
     };
 
+    // Fused `v128.load; v128.store` (a 16-byte memory-to-memory copy); both memargs target memory 0.
+    struct V128CopyArgs {
+        MemoryArgument source;
+        MemoryArgument destination;
+    };
+
+    // Fused `v128.const; v128.store`; the memarg targets memory 0 and its offset fits in u32.
+    struct V128StoreConstArgs {
+        MemoryArgument destination;
+        u128 value;
+    };
+
     struct ShuffleArgument {
         explicit ShuffleArgument(u8 (&lanes)[16])
             : lanes {
@@ -880,6 +892,8 @@ private:
         TableTableArgs,
         TryTableArgs,
         TypeIndex,
+        V128CopyArgs,
+        V128StoreConstArgs,
         ValueType,
         Vector<ValueType>,
         double,
@@ -987,6 +1001,20 @@ struct CompiledInstructions {
     Vector<SourcesAndDestination> src_dst_mappings;
     InstructionStorage extra_instruction_storage;
 
+    // A contiguous run of dispatches the Cranelift JIT can't lower (SIMD and friends), extracted
+    // so the rest of the function can still compile. The serialized stream replaces the run with a
+    // synthetic_interp_region instruction whose runtime helper executes these dispatch copies in
+    // the caller's frame; a trailing synthetic_end_expression returns control to compiled code.
+    // All region operands are pinned to the (interpreter-format) value stack, so no wide value
+    // ever round-trips through the compiled i64 register model.
+    struct InterpRegion {
+        Vector<Dispatch> dispatches;
+        Vector<SourcesAndDestination> mappings;
+        u32 start = 0;  // First covered index in the main dispatch stream.
+        u32 length = 0; // Number of covered main-stream dispatches.
+    };
+    Vector<InterpRegion> interp_regions;
+
     Vector<u8> cranelift_local_types;
 
     // Pointer/size_t-sized members first, then the u32, then the bools, so the trailing scalars pack
@@ -1015,6 +1043,11 @@ struct CompiledInstructions {
     bool cranelift_eligible = false;      // true if this expression cleared the Cranelift type/shape checks during validation.
     bool has_tier_up_checkpoints = false; // true if try_compile_instructions inserted synthetic_tier_up ops (Tier-Up sites).
     bool cranelift_compiled = false;
+    // True if calls to this function may take the leaf fast path: the body makes no calls, has no
+    // exception or GC-allocating constructs, and has at most one (non-reference) result; validation
+    // additionally requires no reference-typed params/locals (leaf locals live in a buffer the GC
+    // doesn't scan). Set preliminarily by try_compile_instructions, refined during validation.
+    bool leaf_call_eligible = false;
 };
 
 // Read the native entry with acquire ordering: a non-zero result means the function is fully
@@ -1792,7 +1825,7 @@ private:
     size_t m_minimum_call_record_allocation_size { 0 };
 };
 
-CompiledInstructions try_compile_instructions(Expression const&, Span<FunctionType const> functions, Span<CodeSection::Func const* const> callee_bodies = {}, size_t current_function_index = 0, size_t caller_local_count = 0, size_t imported_function_count = 0);
+CompiledInstructions try_compile_instructions(Expression const&, Span<FunctionType const> functions, Span<CodeSection::Func const* const> callee_bodies = {}, size_t current_function_index = 0, size_t caller_local_count = 0, size_t imported_function_count = 0, Span<ValueType const> local_types = {});
 ErrorOr<void, ValidationError> ensure_cranelift_compiled(Module&);
 WASM_API void start_cranelift_compilation(Module&);
 bool try_cranelift_compile(CompiledInstructions& compiled, u32 result_arity = 0);

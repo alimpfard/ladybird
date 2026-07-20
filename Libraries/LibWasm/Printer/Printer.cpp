@@ -546,6 +546,8 @@ void Printer::print(Wasm::Instruction const& instruction)
                     args.source_type.kind_name(), args.source_type.is_nullable() ? " nullable"sv : ""sv,
                     args.target_type.kind_name(), args.target_type.is_nullable() ? " nullable"sv : ""sv);
             },
+            [&](Instruction::V128CopyArgs const& args) { print("(from (memory index {}) (offset {}) to (memory index {}) (offset {}))", args.source.memory_index.value(), args.source.offset, args.destination.memory_index.value(), args.destination.offset); },
+            [&](Instruction::V128StoreConstArgs const& args) { print("(const {:x}) (memory index {}) (offset {})", args.value, args.destination.memory_index.value(), args.destination.offset); },
             [&](ValueType const& type) { print(type); },
             [&](Vector<ValueType> const&) { print("(types...)"); },
             [&](auto const& value) { print("(const {})", value); });
@@ -1429,5 +1431,8 @@ HashMap<Wasm::OpCode, ByteString>& Wasm::Names::instruction_names = *new HashMap
     { Instructions::synthetic_i64_shru2local, "synthetic:i64.shru2local" },
     { Instructions::synthetic_i64_shrs2local, "synthetic:i64.shrs2local" },
     { Instructions::synthetic_local_seti64_const, "synthetic:local.seti64_const" },
+    { Instructions::synthetic_v128_copy, "synthetic:v128.copy" },
+    { Instructions::synthetic_v128_store_const, "synthetic:v128.store_const" },
+    { Instructions::synthetic_interp_region, "synthetic:interp.region" },
 };
 HashMap<ByteString, Wasm::OpCode>& Wasm::Names::instructions_by_name = *new HashMap<ByteString, Wasm::OpCode>;

@@ -584,7 +584,16 @@ namespace Instructions {
     /* Continuation data for br_table with >8 labels.  \
      * Only consumed by the Cranelift compiler; */     \
     M(synthetic_br_table_cont, 0xfe00003cu, 0, 0)      \
-    M(synthetic_tier_up, 0xfe00003du, 0, 0)
+    M(synthetic_tier_up, 0xfe00003du, 0, 0)            \
+    /* Fused v128 memcpy idioms; only ever fused for   \
+     * memory index 0, so no v128 value materializes   \
+     * on the stack or in a local. */                  \
+    M(synthetic_v128_copy, 0xfe00003eu, 2, 0)          \
+    M(synthetic_v128_store_const, 0xfe00003fu, 1, 0)   \
+    /* Marker for an extracted interpreter region;     \
+     * only appears in the serialized Cranelift        \
+     * stream, never in the dispatch stream. */        \
+    M(synthetic_interp_region, 0xfe000040u, 0, 0)
 
 #define ENUMERATE_WASM_OPCODES(M)         \
     ENUMERATE_SINGLE_BYTE_WASM_OPCODES(M) \
@@ -595,7 +604,7 @@ ENUMERATE_WASM_OPCODES(M)
 #undef M
 
 static constexpr inline OpCode SyntheticInstructionBase = 0xfe000000u;
-static constexpr inline size_t SyntheticInstructionCount = 61;
+static constexpr inline size_t SyntheticInstructionCount = 64;
 
 }
 

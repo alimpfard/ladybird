@@ -185,7 +185,8 @@ static u64 compute_layout_hash(RuntimeHelpers const& h)
 static_assert(offsetof(RuntimeHelpers, call_function) == 0);
 static_assert(offsetof(RuntimeHelpers, memory_fill) == sizeof(size_t) * 30);
 static_assert(offsetof(RuntimeHelpers, primitive_storage_cage_base) == sizeof(size_t) * 31);
-static_assert(HELPER_COUNT == 32);
+static_assert(offsetof(RuntimeHelpers, run_interp_region) == sizeof(size_t) * 32);
+static_assert(HELPER_COUNT == 33);
 
 static bool apply_helper_relocs(u8* code_bytes, size_t code_size, HelperReloc const* relocs, size_t reloc_count, RuntimeHelpers const& helpers)
 {
@@ -430,6 +431,16 @@ i32 wasm_cl_call_function(void* interp_ptr, void* config_ptr, i32 func_index)
         BytecodeInterpreter::CallType::UsingStack);
 
     return outcome == Outcome::Return && interpreter.did_trap() ? 1 : 0;
+}
+
+i32 wasm_cl_run_interp_region(void* interp_ptr, void* config_ptr, i32 region_index);
+i32 wasm_cl_run_interp_region(void* interp_ptr, void* config_ptr, i32 region_index)
+{
+    auto& interpreter = *static_cast<BytecodeInterpreter*>(interp_ptr);
+    auto& config = *static_cast<Configuration*>(config_ptr);
+    auto const& regions = config.frame().expression().compiled_instructions.interp_regions;
+    interpreter.run_dispatch_region(config, regions[region_index]);
+    return interpreter.did_trap() ? 1 : 0;
 }
 
 void wasm_cl_set_trap(void* interp_ptr, u8 const* msg, i32 len);
@@ -968,6 +979,7 @@ static RuntimeHelpers make_runtime_helpers()
         .memory_copy = bit_cast<uintptr_t>(&wasm_cl_memory_copy),
         .memory_fill = bit_cast<uintptr_t>(&wasm_cl_memory_fill),
         .primitive_storage_cage_base = bit_cast<uintptr_t>(&js_primitive_storage_cage_base),
+        .run_interp_region = bit_cast<uintptr_t>(&wasm_cl_run_interp_region),
         .regs_offset = static_cast<u32>(offsetof(Configuration, regs)),
         .value_size = static_cast<u32>(sizeof(Value)),
         .locals_base_offset = static_cast<u32>(Configuration::locals_base_offset()),
@@ -1108,6 +1120,17 @@ static CraneliftInsn serialize_insn(Dispatch const& dispatch, SourcesAndDestinat
             out.imm2 = static_cast<i64>(insn->local_index().value());
         } else if (syn_between(Instructions::synthetic_argument_get, Instructions::synthetic_argument_tee)) {
             out.imm1 = static_cast<i64>(insn->local_index().value());
+        } else if (is_syn(Instructions::synthetic_v128_copy)) {
+            // Both memargs are guaranteed to target memory 0 by the fuser.
+            auto const& copy_args = args.get<Instruction::V128CopyArgs>();
+            out.imm1 = static_cast<i64>(copy_args.source.offset);
+            out.imm2 = static_cast<i64>(copy_args.destination.offset);
+        } else if (is_syn(Instructions::synthetic_v128_store_const)) {
+            // Memory 0 with a u32-sized offset, guaranteed by the fuser; the 16-byte constant goes in imm1+imm2.
+            auto const& store_args = args.get<Instruction::V128StoreConstArgs>();
+            out.imm1 = static_cast<i64>(static_cast<u64>(store_args.value));
+            out.imm2 = static_cast<i64>(static_cast<u64>(store_args.value >> 64));
+            out.imm3 = static_cast<u32>(store_args.destination.offset);
         }
     }
 
@@ -1469,7 +1492,21 @@ bool try_cranelift_compile(CompiledInstructions& compiled, u32 result_arity)
 
     Vector<CraneliftInsn> flat;
     flat.ensure_capacity(dispatches.size());
+    auto const& regions = compiled.interp_regions;
+    size_t next_region = 0;
     for (size_t i = 0; i < dispatches.size(); ++i) {
+        // Replace each extracted interpreter region with a single region insn; the covered
+        // dispatches run through the interpreter helper instead of being lowered.
+        if (next_region < regions.size() && regions[next_region].start == i) {
+            CraneliftInsn region_insn {};
+            region_insn.opcode = Instructions::synthetic_interp_region.value();
+            region_insn.imm1 = static_cast<i64>(next_region);
+            flat.append(region_insn);
+            i += regions[next_region].length - 1;
+            ++next_region;
+            continue;
+        }
+
         flat.append(serialize_insn(dispatches[i], addresses[i]));
 
         if (dispatches[i].instruction->opcode().value() == Instructions::synthetic_tier_up.value())

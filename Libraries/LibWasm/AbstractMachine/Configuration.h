@@ -99,6 +99,20 @@ public:
         // Skip the label push (Cranelift uses its own structured control flow).
     }
 
+    // Lightweight set_frame for interpreter calls to leaf functions: the frame borrows a
+    // caller-managed locals buffer (skipping the owned-locals stack), but unlike the Cranelift
+    // variant it still pushes the function-level label the interpreter's control flow needs.
+    void set_frame_for_leaf_call(ModuleInstance const& module, Value* locals_ptr, Expression const& expression, size_t arity)
+    {
+        set_frame_lightweight(module, locals_ptr, expression, arity);
+        auto& frame = m_frame_stack.last();
+        auto continuation = expression.instructions().size() - 1;
+        if (auto size = expression.compiled_instructions.dispatches.size(); size > 0)
+            continuation = size - 1;
+        frame.label_index() = m_label_stack.size();
+        m_label_stack.append(Label(arity, continuation, m_value_stack.size()));
+    }
+
     ALWAYS_INLINE auto& frame() const { return m_frame_stack.last(); }
     ALWAYS_INLINE auto& frame() { return m_frame_stack.last(); }
     ALWAYS_INLINE auto& ip() const { return m_ip; }
