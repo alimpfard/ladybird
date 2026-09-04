@@ -1,0 +1,16 @@
+:root { color-scheme: light dark; font: 16px system-ui, sans-serif; }
+body { margin: 0; background: #101923; color: #e6edf4; }
+main { max-width: 960px; margin: 3rem auto; padding: 0 1.5rem; }
+h1 { font-size: 2.4rem; margin-bottom: .5rem; }
+h2 { font-size: 1.2rem; }
+p { color: #b6c5d4; line-height: 1.5; }
+section, details { background: #192633; border: 1px solid #33485c; border-radius: 10px; padding: 1.3rem; margin: 1rem 0; }
+label { display: block; margin: .8rem 0; }
+input:not([type=checkbox]), select, textarea { box-sizing: border-box; padding: .55rem; margin-left: .4rem; max-width: 100%; border: 1px solid #567087; border-radius: 4px; background: #101923; color: inherit; }
+textarea { display: block; width: 100%; margin: .5rem 0; font: 14px monospace; }
+#endpoint { width: 70%; }
+button { padding: .65rem 1rem; border: 0; border-radius: 5px; background: #7be0bb; color: #092b20; font: inherit; cursor: pointer; margin: .3rem .3rem .3rem 0; }
+button:disabled { opacity: .4; cursor: default; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 32rem; overflow: auto; font: 12px/1.5 monospace; }
+#status { font-weight: bold; color: #7be0bb; }
+meter { width: 160px; }

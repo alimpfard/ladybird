@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WebRTC echo lab</title>
+<link rel="stylesheet" href="style.css">
+<main>
+  <h1>WebRTC echo lab</h1>
+  <p>Send audio and messages to Janus and inspect what comes back.</p>
+  <section>
+    <label>Audio source <select id="source"><option value="tone">440 Hz test tone</option><option value="microphone">Microphone</option><option value="none">Data only</option></select></label>
+    <label>Tone sample rate <select id="rate"><option>48000</option><option>44100</option></select></label>
+    <button id="start">Connect</button> <button id="stop" disabled>Disconnect</button>
+    <p id="status" role="status">Disconnected</p>
+    <p>Returned audio level: <meter id="level" min="0" max="0.3" value="0"></meter> <output id="rms">0.0000</output></p>
+    <label><input id="listen" type="checkbox"> Listen to returned audio (use headphones with a microphone)</label>
+  </section>
+  <section>
+    <h2>Data channel</h2>
+    <label>Message <input id="message" value="Hello from WebRTC 👋"></label>
+    <button id="send" disabled>Send text</button> <button id="binary" disabled>Send binary probe</button>
+    <p id="echo">No echo yet</p>
+  </section>
+  <details><summary>Connection options</summary>
+    <p>The defaults use host ICE candidates and the server beside this page.</p>
+    <label>Janus API <input id="endpoint" value="./janus"></label>
+    <label>ICE servers (JSON)<textarea id="ice" rows="3">[]</textarea></label>
+    <p>Optional STUN/TURN entries use the standard RTCIceServer format. Settings stay in this page.</p>
+  </details>
+  <section>
+    <h2>Event log</h2>
+    <button id="clear">Clear log</button> <button id="download">Download log</button>
+    <pre id="log" aria-live="polite"></pre>
+  </section>
+</main>
+<script src="app.js"></script>
+</html>
