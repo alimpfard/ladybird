@@ -698,6 +698,174 @@ dependencies = [
 ]
 
 [[package]]
+name = "ipc_compositorcontrolclient"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_compositorcontrolserver"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_compositorfontclient"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_compositorfontserver"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_compositorwebcontentclient"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_compositorwebcontentserver"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_imagedecoderclient"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_imagedecoderserver"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_requestclient"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_requestserver"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_uiprocessclient"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_uiprocessserver"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_videopresentationclient"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_videopresentationserver"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_wasmcompilerclient"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_wasmcompilerserver"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_webcontentclient"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_webcontentserver"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_webdriverbrowserclient"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_webdriverbrowserserver"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_webuiclient"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_webuiserver"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_webworkerclient"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_webworkerserver"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
 name = "is_terminal_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -799,6 +967,13 @@ version = "0.1.0"
 dependencies = [
  "cbindgen",
  "jxl",
+]
+
+[[package]]
+name = "libipc"
+version = "0.1.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

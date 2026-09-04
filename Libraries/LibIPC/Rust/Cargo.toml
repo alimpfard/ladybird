@@ -1,0 +1,13 @@
+[package]
+name = "libipc"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["rlib"]
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[lints]
+workspace = true

@@ -744,17 +744,201 @@ def build(out: TextIO, endpoints: List[Endpoint]) -> None:
         write_endpoint(out, endpoint)
 
 
+RUST_KEYWORDS = {
+    "as", "async", "await", "become", "box", "break", "const", "continue",
+    "crate", "do", "dyn", "else", "enum", "extern", "false", "final", "fn",
+    "for", "if", "impl", "in", "let", "loop", "macro", "match", "mod", "move",
+    "mut", "override", "priv", "pub", "ref", "return", "Self", "self", "static",
+    "struct", "super", "trait", "true", "try", "type", "typeof", "unsafe",
+    "unsized", "use", "virtual", "where", "while", "yield",
+}
+
+
+PRIMITIVE_RUST_MAP = {
+    "i8": "i8",
+    "u8": "u8",
+    "i16": "i16",
+    "u16": "u16",
+    "i32": "i32",
+    "u32": "u32",
+    "i64": "i64",
+    "u64": "u64",
+    "int": "i32",
+    "unsigned": "u32",
+    "unsigned int": "u32",
+    "size_t": "usize",
+    "bool": "bool",
+    "float": "f32",
+    "double": "f64",
+    "String": "String",
+    "ByteString": "::libipc::ByteString",
+    "ByteBuffer": "Vec<u8>",
+    "Utf16String": "::libipc::Utf16String",
+    "Empty": "::libipc::Empty",
+    "IPC::TransportHandle": "::libipc::TransportHandle",
+}
+
+
+def rust_safe_ident(name: str) -> str:
+    if name in RUST_KEYWORDS:
+        return f"r#{name}"
+    return name
+
+
+def split_top_level_comma(text: str) -> List[str]:
+    parts: List[str] = []
+    depth = 0
+    last = 0
+    for i, ch in enumerate(text):
+        if ch == "<":
+            depth += 1
+        elif ch == ">":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            parts.append(text[last:i])
+            last = i + 1
+    parts.append(text[last:])
+    return [p.strip() for p in parts]
+
+
+def to_rust_type(cpp_type: str) -> str:
+    cpp_type = cpp_type.strip()
+    while cpp_type.startswith("::"):
+        cpp_type = cpp_type[2:]
+
+    if "<" in cpp_type and cpp_type.endswith(">"):
+        head, _, rest = cpp_type.partition("<")
+        head = head.strip()
+        inner = rest[:-1]
+
+        if head == "Vector":
+            return f"Vec<{to_rust_type(inner)}>"
+        if head == "Optional":
+            return f"Option<{to_rust_type(inner)}>"
+        if head == "HashMap":
+            parts = split_top_level_comma(inner)
+            if len(parts) == 2:
+                return f"::std::collections::HashMap<{to_rust_type(parts[0])}, {to_rust_type(parts[1])}>"
+
+        # Generic non-builtin type — pass through with type-args translated.
+        parts = split_top_level_comma(inner)
+        mapped = ", ".join(to_rust_type(p) for p in parts)
+        return f"{head}<{mapped}>"
+
+    return PRIMITIVE_RUST_MAP.get(cpp_type, cpp_type)
+
+
+def write_rust_message_struct(out: TextIO, name: str, parameters: List[Parameter]) -> None:
+    pascal = pascal_case(name)
+
+    if not parameters:
+        out.write(f"\n    #[derive(Clone, Copy, Debug, Default)]\n")
+        out.write(f"    pub struct {pascal};\n")
+        out.write(f"\n    impl ::libipc::IPCEncode for {pascal} {{\n")
+        out.write("        fn encode(&self, _: &mut ::libipc::Encoder<'_>)"
+                  " -> ::core::result::Result<(), ::libipc::Error> {\n")
+        out.write("            Ok(())\n")
+        out.write("        }\n    }\n")
+        out.write(f"\n    impl ::libipc::IPCDecode for {pascal} {{\n")
+        out.write("        fn decode(_: &mut ::libipc::Decoder<'_>)"
+                  " -> ::core::result::Result<Self, ::libipc::Error> {\n")
+        out.write("            Ok(Self)\n")
+        out.write("        }\n    }\n")
+        return
+
+    out.write(f"\n    #[derive(Debug)]\n    pub struct {pascal} {{\n")
+    for parameter in parameters:
+        ident = rust_safe_ident(parameter.name)
+        rust_type = to_rust_type(parameter.type)
+        out.write(f"        pub {ident}: {rust_type},\n")
+    out.write("    }\n")
+
+    out.write(f"\n    impl ::libipc::IPCEncode for {pascal} {{\n")
+    out.write("        fn encode(&self, encoder: &mut ::libipc::Encoder<'_>)"
+              " -> ::core::result::Result<(), ::libipc::Error> {\n")
+    for parameter in parameters:
+        ident = rust_safe_ident(parameter.name)
+        out.write(f"            ::libipc::IPCEncode::encode(&self.{ident}, encoder)?;\n")
+    out.write("            Ok(())\n")
+    out.write("        }\n    }\n")
+
+    out.write(f"\n    impl ::libipc::IPCDecode for {pascal} {{\n")
+    out.write("        fn decode(decoder: &mut ::libipc::Decoder<'_>)"
+              " -> ::core::result::Result<Self, ::libipc::Error> {\n")
+    out.write("            Ok(Self {\n")
+    for parameter in parameters:
+        ident = rust_safe_ident(parameter.name)
+        out.write(f"                {ident}: ::libipc::IPCDecode::decode(decoder)?,\n")
+    out.write("            })\n")
+    out.write("        }\n    }\n")
+
+
+def write_rust_message_impl(out: TextIO, endpoint: Endpoint, message_name: str) -> None:
+    pascal = pascal_case(message_name)
+    out.write(f"\n    impl ::libipc::IPCMessage for {pascal} {{\n")
+    out.write("        const ENDPOINT_MAGIC: u32 = ENDPOINT_MAGIC;\n")
+    out.write(f"        const MESSAGE_ID: i32 = MessageId::{pascal} as i32;\n")
+    out.write(f"        const NAME: &'static str = \"{endpoint.name}::{pascal}\";\n")
+    out.write("    }\n")
+
+
+def write_rust_endpoint(out: TextIO, endpoint: Endpoint) -> None:
+    out.write(f"\n#[allow(non_snake_case, clippy::module_name_repetitions, "
+              "clippy::needless_question_mark, clippy::unnecessary_wraps)]\n")
+    out.write(f"pub mod {endpoint.name} {{\n")
+    out.write(f"    pub const ENDPOINT_NAME: &str = \"{endpoint.name}\";\n")
+    out.write(f"    pub const ENDPOINT_MAGIC: u32 = {endpoint.magic};\n")
+
+    if endpoint.messages:
+        out.write("\n    #[repr(i32)]\n")
+        out.write("    #[derive(Clone, Copy, Debug, Eq, PartialEq)]\n")
+        out.write("    pub enum MessageId {\n")
+        message_id = 0
+        for message in endpoint.messages:
+            message_id += 1
+            out.write(f"        {pascal_case(message.name)} = {message_id},\n")
+            if message.is_synchronous:
+                message_id += 1
+                out.write(f"        {pascal_case(message.response_name())} = {message_id},\n")
+        out.write("    }\n")
+
+    for message in endpoint.messages:
+        write_rust_message_struct(out, message.name, message.inputs)
+        write_rust_message_impl(out, endpoint, message.name)
+
+        if message.is_synchronous:
+            write_rust_message_struct(out, message.response_name(), message.outputs)
+            write_rust_message_impl(out, endpoint, message.response_name())
+
+    out.write("}\n")
+
+
+def build_rust(out: TextIO, endpoints: List[Endpoint]) -> None:
+    out.write("// Auto-generated by Meta/Generators/generate_ipc_definitions.py — do not edit.\n\n")
+    for endpoint in endpoints:
+        write_rust_endpoint(out, endpoint)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Ladybird IPC endpoint compiler")
     parser.add_argument("--input", required=True, help="IPC endpoint definition file")
-    parser.add_argument("--output", required=True, help="File to write file generated header")
+    parser.add_argument("--output", help="File to write the generated C++ header")
+    parser.add_argument("--rust-output", help="File to write Rust mirror definitions")
     args = parser.parse_args()
+
+    if not args.output and not args.rust_output:
+        parser.error("at least one of --output or --rust-output must be provided")
 
     with open(args.input, "r", encoding="utf-8") as input_file:
         endpoints = parse(input_file.read())
 
-    with open(args.output, "w", encoding="utf-8") as output_file:
-        build(output_file, endpoints)
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as output_file:
+            build(output_file, endpoints)
+
+    if args.rust_output:
+        with open(args.rust_output, "w", encoding="utf-8") as rust_output_file:
+            build_rust(rust_output_file, endpoints)
 
 
 if __name__ == "__main__":
