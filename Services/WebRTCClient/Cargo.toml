@@ -1,0 +1,24 @@
+[package]
+name = "webrtcclient_service"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "WebRTCClient"
+path = "src/main.rs"
+
+[dependencies]
+ladybird_webrtc = { path = "../../Libraries/LibWebRTC/Rust" }
+libipc = { workspace = true }
+# Generated per-endpoint crates. The cmake `compile_ipc` step writes these into
+# Build/<config>/cargo/generated/ipc/, picked up by the workspace glob.
+ipc_webrtcclientserver = { path = "../../Build/release/cargo/generated/ipc/ipc_webrtcclientserver" }
+ipc_webrtcclientclient = { path = "../../Build/release/cargo/generated/ipc/ipc_webrtcclientclient" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "signal", "time", "io-util", "net"] }
+anyhow = "1"
+env_logger = "0.11"
+log = "0.4"
+
+[lints]
+workspace = true

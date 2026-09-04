@@ -13,6 +13,8 @@ members = [
     "Libraries/LibWeb/ContentBlocker/Rust",
     "Libraries/LibWeb/Rust",
     "Libraries/LibWeb/HTML/Parser/Rust",
+    "Libraries/LibWebRTC/Rust",
+    "Services/WebRTCClient",
     # Per-endpoint crates emitted by Meta/Generators/generate_ipc_definitions.py
     # via the cmake `compile_ipc` function. The glob requires at least one match,
     # so a `cmake` configure must have run for any build directory before cargo

@@ -1,0 +1,41 @@
+#include <LibIPC/TransportHandle.h>
+
+endpoint WebRTCClientServer
+{
+    init_transport(int peer_pid) => (int peer_pid)
+
+    connect_new_client(IPC::TransportHandle handle) =|
+
+    create_peer_connection(u64 pc_id) =|
+    close_peer_connection(u64 pc_id) =|
+
+    create_offer(u64 pc_id, u64 request_id) =|
+    create_answer(u64 pc_id, u64 request_id) =|
+
+    set_local_description(u64 pc_id, u64 request_id, String sdp_type, String sdp) =|
+    set_remote_description(u64 pc_id, u64 request_id, String sdp_type, String sdp) =|
+
+    add_ice_candidate(u64 pc_id, u64 request_id, String candidate, Optional<String> sdp_mid, Optional<u32> sdp_mline_index, Optional<String> ufrag) =|
+
+    add_transceiver(u64 pc_id, u64 transceiver_id, String kind, String direction) =|
+
+    add_audio_track(u64 pc_id, u64 sender_id) =|
+    remove_track(u64 pc_id, u64 sender_id) =|
+
+    // Pushes a PCM frame (s16le, interleaved) for an outbound audio sender. The host owns
+    // capture; the rust service opus-encodes and feeds the underlying webrtc-rs sender.
+    audio_track_pcm_frame(u64 sender_id, u32 sample_rate, u16 channels, ByteBuffer pcm_s16le) =|
+
+    // Pushes an already-encoded (and possibly E2E-encrypted, e.g. via DAVE/SFrame) opus
+    // payload that should be written verbatim onto the wire, bypassing the rust-side
+    // opus encoder. `duration_micros` is the temporal length of the frame (typically
+    // 20000 for a 20 ms opus frame); webrtc-rs uses it to advance the RTP timestamp.
+    audio_track_encoded_frame(u64 sender_id, u32 duration_micros, ByteBuffer payload) =|
+
+    add_data_channel(u64 pc_id, u64 channel_id, String label, bool ordered, Optional<u16> max_packet_life_time, Optional<u16> max_retransmits, String protocol, bool negotiated, Optional<u16> id) =|
+    data_channel_send_text(u64 channel_id, String data) =|
+    data_channel_send_binary(u64 channel_id, ByteBuffer data) =|
+    data_channel_close(u64 channel_id) =|
+
+    set_track_sink_params(u64 track_id, f64 volume, bool muted, bool paused) =|
+}
