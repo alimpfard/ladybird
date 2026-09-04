@@ -1,0 +1,163 @@
+/*
+ * Copyright (c) 2026-present, the Ladybird developers.
+ *
+ * SPDX-License-Identifier: BSD-2-Clause
+ */
+
+#include <AK/ScopeGuard.h>
+#include <LibMedia/FFmpeg/FFmpegHelpers.h>
+
+#include "FFmpegAudioEncoder.h"
+
+namespace Media::FFmpeg {
+
+DecoderErrorOr<NonnullOwnPtr<FFmpegAudioEncoder>> FFmpegAudioEncoder::try_create(CodecID codec_id, Audio::SampleSpecification const& sample_specification, int bitrate)
+{
+    AVCodecContext* codec_context = nullptr;
+    AVPacket* packet = nullptr;
+    AVFrame* frame = nullptr;
+    ArmedScopeGuard memory_guard {
+        [&] {
+            avcodec_free_context(&codec_context);
+            av_packet_free(&packet);
+            av_frame_free(&frame);
+        }
+    };
+
+    auto ff_codec_id = ffmpeg_codec_id_from_media_codec_id(codec_id);
+    auto const* codec = avcodec_find_encoder(ff_codec_id);
+    if (!codec)
+        return DecoderError::format(DecoderErrorCategory::NotImplemented, "Could not find FFmpeg encoder for codec {}", codec_id);
+
+    codec_context = avcodec_alloc_context3(codec);
+    if (!codec_context)
+        return DecoderError::format(DecoderErrorCategory::Memory, "Failed to allocate FFmpeg codec context for codec {}", codec_id);
+
+    if (sample_specification.sample_rate() > NumericLimits<int>::max())
+        return DecoderError::with_description(DecoderErrorCategory::Corrupted, "Sample rate is too large"sv);
+    codec_context->sample_rate = static_cast<int>(sample_specification.sample_rate());
+    codec_context->time_base = AVRational { 1, codec_context->sample_rate };
+    codec_context->bit_rate = bitrate;
+    codec_context->sample_fmt = AV_SAMPLE_FMT_FLT;
+
+    if (sample_specification.channel_map().is_valid()) {
+        auto channel_layout_result = channel_map_to_av_channel_layout(sample_specification.channel_map());
+        if (channel_layout_result.is_error())
+            return DecoderError::format(DecoderErrorCategory::Invalid, channel_layout_result.error().string_literal());
+        codec_context->ch_layout = channel_layout_result.release_value();
+    }
+
+    if (avcodec_open2(codec_context, codec, nullptr) < 0)
+        return DecoderError::format(DecoderErrorCategory::Unknown, "Unknown error occurred when opening FFmpeg encoder {}", codec_id);
+
+    packet = av_packet_alloc();
+    if (!packet)
+        return DecoderError::with_description(DecoderErrorCategory::Memory, "Failed to allocate FFmpeg packet"sv);
+
+    frame = av_frame_alloc();
+    if (!frame)
+        return DecoderError::with_description(DecoderErrorCategory::Memory, "Failed to allocate FFmpeg frame"sv);
+
+    memory_guard.disarm();
+    return DECODER_TRY_ALLOC(try_make<FFmpegAudioEncoder>(codec_context, packet, frame));
+}
+
+FFmpegAudioEncoder::FFmpegAudioEncoder(AVCodecContext* codec_context, AVPacket* packet, AVFrame* frame)
+    : m_codec_context(codec_context)
+    , m_packet(packet)
+    , m_frame(frame)
+{
+}
+
+FFmpegAudioEncoder::~FFmpegAudioEncoder()
+{
+    av_packet_free(&m_packet);
+    av_frame_free(&m_frame);
+    avcodec_free_context(&m_codec_context);
+}
+
+int FFmpegAudioEncoder::frame_size() const
+{
+    return m_codec_context->frame_size;
+}
+
+DecoderErrorOr<void> FFmpegAudioEncoder::receive_pcm_data(AK::Duration timestamp, AudioBlock const& block)
+{
+    auto channel_count = block.channel_count();
+    if (channel_count == 0)
+        return DecoderError::with_description(DecoderErrorCategory::Invalid, "AudioBlock has no channels"sv);
+
+    auto sample_count_per_channel = block.frame_count();
+    if (sample_count_per_channel == 0)
+        return {};
+
+    av_frame_unref(m_frame);
+    m_frame->nb_samples = static_cast<int>(sample_count_per_channel);
+    m_frame->format = AV_SAMPLE_FMT_FLT;
+    m_frame->sample_rate = m_codec_context->sample_rate;
+    if (av_channel_layout_copy(&m_frame->ch_layout, &m_codec_context->ch_layout) < 0)
+        return DecoderError::with_description(DecoderErrorCategory::Memory, "Failed to copy AVChannelLayout to encoder frame"sv);
+    m_frame->pts = av_rescale_q(timestamp.to_microseconds(), AVRational { 1, 1'000'000 }, m_codec_context->time_base);
+
+    if (av_frame_get_buffer(m_frame, 0) < 0)
+        return DecoderError::with_description(DecoderErrorCategory::Memory, "Failed to allocate encoder frame buffer"sv);
+
+    auto sample_count = sample_count_per_channel * channel_count;
+    block.copy_to_interleaved({ reinterpret_cast<float*>(m_frame->data[0]), sample_count });
+
+    auto result = avcodec_send_frame(m_codec_context, m_frame);
+    switch (result) {
+    case 0:
+        return {};
+    case AVERROR(EAGAIN):
+        return DecoderError::with_description(DecoderErrorCategory::NeedsMoreInput, "FFmpeg encoder cannot accept more frames until packets have been retrieved"sv);
+    case AVERROR_EOF:
+        return DecoderError::with_description(DecoderErrorCategory::EndOfStream, "FFmpeg encoder has been flushed"sv);
+    case AVERROR(EINVAL):
+        return DecoderError::with_description(DecoderErrorCategory::Invalid, "FFmpeg encoder is in an invalid state"sv);
+    case AVERROR(ENOMEM):
+        return DecoderError::with_description(DecoderErrorCategory::Memory, "FFmpeg encoder ran out of internal memory"sv);
+    default:
+        return DecoderError::format(DecoderErrorCategory::Unknown, "FFmpeg encoder reported error code {:x}", result);
+    }
+}
+
+DecoderErrorOr<bool> FFmpegAudioEncoder::write_next_packet(Packet& out)
+{
+    av_packet_unref(m_packet);
+    auto result = avcodec_receive_packet(m_codec_context, m_packet);
+    switch (result) {
+    case 0: {
+        auto buffer_or_err = ByteBuffer::copy(m_packet->data, static_cast<size_t>(m_packet->size));
+        if (buffer_or_err.is_error())
+            return DecoderError::with_description(DecoderErrorCategory::Memory, "Failed to copy encoded packet bytes"sv);
+        out.data = buffer_or_err.release_value();
+        // The encoder reports timestamps in its time_base (1 / sample_rate). Convert
+        // back to absolute microsecond durations matching the input timestamps we fed.
+        out.timestamp = AK::Duration::from_microseconds(av_rescale_q(m_packet->pts, m_codec_context->time_base, AVRational { 1, 1'000'000 }));
+        out.duration = AK::Duration::from_microseconds(av_rescale_q(m_packet->duration, m_codec_context->time_base, AVRational { 1, 1'000'000 }));
+        return true;
+    }
+    case AVERROR(EAGAIN):
+        return false;
+    case AVERROR_EOF:
+        return false;
+    case AVERROR(EINVAL):
+        return DecoderError::with_description(DecoderErrorCategory::Invalid, "FFmpeg encoder has not been opened"sv);
+    default:
+        return DecoderError::format(DecoderErrorCategory::Unknown, "FFmpeg encoder encountered an unexpected error retrieving packets with code {:x}", result);
+    }
+}
+
+void FFmpegAudioEncoder::signal_end_of_stream()
+{
+    auto result = avcodec_send_frame(m_codec_context, nullptr);
+    VERIFY(result == 0 || result == AVERROR_EOF);
+}
+
+void FFmpegAudioEncoder::flush()
+{
+    avcodec_flush_buffers(m_codec_context);
+}
+
+}

@@ -79,6 +79,7 @@ target_link_libraries(LibMedia PRIVATE LibCore LibCrypto LibIPC LibGfx LibSync L
 target_sources(LibMedia PRIVATE
         FFmpeg/FFmpegAudioConverter.cpp
         FFmpeg/FFmpegAudioDecoder.cpp
+        FFmpeg/FFmpegAudioEncoder.cpp
         FFmpeg/FFmpegDemuxer.cpp
         FFmpeg/FFmpegHelpers.cpp
         FFmpeg/FFmpegIOContext.cpp
@@ -102,6 +103,7 @@ if (LADYBIRD_AUDIO_BACKEND STREQUAL "PULSE")
     )
     target_compile_definitions(LibMedia PRIVATE LIBMEDIA_AUDIO_BACKEND=1 LIBMEDIA_AUDIO_CAPTURE_BACKEND=1 LIBMEDIA_AUDIO_DEVICE_ENUMERATION=1)
     target_link_libraries(LibMedia PRIVATE PkgConfig::PULSEAUDIO)
+    target_compile_definitions(LibMedia PRIVATE LADYBIRD_AUDIO_BACKEND_PULSE=1)
 elseif (LADYBIRD_AUDIO_BACKEND STREQUAL "AUDIO_UNIT")
     target_sources(LibMedia PRIVATE
         Audio/AudioDevicesCoreAudio.cpp
