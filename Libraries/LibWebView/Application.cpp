@@ -23,6 +23,7 @@
 #include <LibDevTools/DevToolsServer.h>
 #include <LibDevTools/FirefoxClient.h>
 #include <LibFileSystem/FileSystem.h>
+#include <LibIPC/Transport.h>
 #include <LibIPC/TransportHandle.h>
 #include <LibImageDecoderClient/Client.h>
 #include <LibURL/InternalURLs.h>
@@ -173,6 +174,8 @@ Application::Application(Optional<ByteString> ladybird_binary_path)
 Application::~Application()
 {
     m_autocomplete_service.clear();
+    if (m_webrtc_client)
+        m_webrtc_client->on_death = nullptr;
 
     // Explicitly delete the observers first, as the observer destructors will refer to Application::the().
     m_settings_observer.clear();
@@ -843,6 +846,9 @@ ErrorOr<NonnullRefPtr<WebContentClient>> Application::create_web_content_client(
     client->async_connect_to_request_server(request_server_handle);
     client->async_set_site_compatibility_data(m_site_compatibility_data);
     client->async_connect_to_image_decoder(image_decoder_handle);
+    auto webrtc_transport = TRY(IPC::Transport::create_paired());
+    m_webrtc_client->async_connect_new_client(webrtc_transport.remote_handle);
+    client->async_connect_to_webrtc(TRY(webrtc_transport.local->release_for_transfer()));
 #if defined(HAVE_WASM_COMPILER_SERVICE)
     client->async_connect_to_wasm_compiler(wasm_compiler_handle);
 #endif
@@ -1406,6 +1412,7 @@ ErrorOr<void> Application::launch_services()
 
     TRY(launch_request_server());
     TRY(launch_image_decoder_server());
+    TRY(launch_webrtc_client());
 #if defined(HAVE_WASM_COMPILER_SERVICE)
     TRY(launch_wasm_compiler_server());
 #endif
@@ -1527,6 +1534,21 @@ void Application::recover_compositor_process()
         client->replay_compositor_view_state_after_reconnect({});
     for (auto& client : clients)
         client->notify_compositor_process_reconnected({});
+}
+
+ErrorOr<void> Application::launch_webrtc_client()
+{
+    m_webrtc_client = TRY(launch_webrtc_client_process());
+
+    m_webrtc_client->on_death = [this]() {
+        m_webrtc_client = nullptr;
+        if (Core::EventLoop::current().was_exit_requested())
+            return;
+        if (auto result = launch_webrtc_client(); result.is_error())
+            dbgln("Failed to restart WebRTCClient: {}", result.error());
+    };
+
+    return {};
 }
 
 ErrorOr<void> Application::launch_request_server()
@@ -1869,6 +1891,13 @@ void Application::process_did_exit(Process&& process, Optional<int> exit_status)
         break;
     case ProcessType::WebWorker:
         dbgln_if(WEBVIEW_PROCESS_DEBUG, "WebWorker {} died, not sure what to do.", process.pid());
+        break;
+    case ProcessType::WebRTCClient:
+        if (auto client = process.client<WebRTCClient::Client>(); client.has_value()) {
+            dbgln_if(WEBVIEW_PROCESS_DEBUG, "Restart WebRTCClient process");
+            if (auto on_death = move(client->on_death))
+                on_death();
+        }
         break;
     case ProcessType::Browser:
         dbgln("Invalid process type to be dying: Browser");

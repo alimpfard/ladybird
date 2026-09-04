@@ -1974,4 +1974,14 @@ void PageClient::queue_screenshot_task(Optional<Web::UniqueNodeID> node_id)
     page().top_level_traversable()->queue_screenshot_task(node_id);
 }
 
+void PageClient::rtc_transform_init(Web::HTML::WorkerAgentId agent_id, Web::HTML::WorkerAgentOwnerToken owner_token, u64 transform_id, Web::HTML::SerializedTransferRecord options_record)
+{
+    client().async_rtc_transform_init(agent_id, owner_token, transform_id, move(options_record));
+}
+
+void PageClient::rtc_transform_encoded_audio_frame(Web::HTML::WorkerAgentId agent_id, Web::HTML::WorkerAgentOwnerToken owner_token, u64 transform_id, ByteBuffer payload, u32 ssrc, u8 payload_type, u32 rtp_timestamp, u16 sequence_number)
+{
+    client().async_rtc_transform_encoded_audio_frame(agent_id, owner_token, transform_id, payload.bytes(), ssrc, payload_type, rtp_timestamp, sequence_number);
+}
+
 }

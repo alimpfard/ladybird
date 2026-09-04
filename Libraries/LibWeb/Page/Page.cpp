@@ -30,6 +30,7 @@
 #include <LibWeb/HTML/Scripting/Environments.h>
 #include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
 #include <LibWeb/HTML/SelectedFile.h>
+#include <LibWeb/HTML/StructuredSerialize.h>
 #include <LibWeb/HTML/Window.h>
 #include <LibWeb/Loader/ContentBlocker.h>
 #include <LibWeb/Page/Page.h>
@@ -1386,6 +1387,10 @@ void Page::set_viewport_is_fullscreen(ViewportIsFullscreen is_fullscreen)
     m_viewport_is_fullscreen = is_fullscreen;
     m_fullscreen_ipc_sent_to_ui = false;
     process_pending_fullscreen_operations();
+}
+
+void PageClient::rtc_transform_init(HTML::WorkerAgentId, HTML::WorkerAgentOwnerToken, u64, HTML::SerializedTransferRecord)
+{
 }
 
 void PageClient::request_navigation_start(HTML::LocalNavigable& navigable, URL::URL const& current_url, NavigationTarget target, URL::URL const&, Utf16String navigation_id, Optional<HTML::NavigationStartRequest> start_request)

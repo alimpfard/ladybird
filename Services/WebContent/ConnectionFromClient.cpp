@@ -82,6 +82,7 @@
 #include <LibWeb/Platform/EventLoopPlugin.h>
 #include <LibWeb/Platform/FontPlugin.h>
 #include <LibWeb/Selection/Selection.h>
+#include <LibWeb/WebRTC/WebRTCAgent.h>
 #include <LibWebView/Attribute.h>
 #include <LibWebView/CompositorConnection.h>
 #include <LibWebView/DictionaryLookup.h>
@@ -310,6 +311,11 @@ void ConnectionFromClient::connect_to_web_ui(u64 page_id, IPC::TransportHandle h
         if (auto result = page->connect_to_web_ui(move(handle)); result.is_error())
             dbgln("Unable to connect to the WebUI host: {}", result.error());
     }
+}
+
+void ConnectionFromClient::connect_to_webrtc(IPC::TransportHandle handle)
+{
+    Web::WebRTC::WebRTCAgent::the().initialize(MUST(handle.create_transport()));
 }
 
 void ConnectionFromClient::connect_to_image_decoder(IPC::TransportHandle handle)
@@ -2817,6 +2823,11 @@ void ConnectionFromClient::exit_fullscreen(u64 page_id)
         Web::HTML::TemporaryExecutionContext context(page->page().top_level_browsing_context().active_document()->relevant_settings_object(), Web::HTML::TemporaryExecutionContext::CallbacksEnabled::Yes);
         page->page().top_level_browsing_context().active_document()->fully_exit_fullscreen();
     }
+}
+
+void ConnectionFromClient::rtc_transform_encoded_audio_frame_written(Web::HTML::WorkerAgentOwnerToken owner_token, u64 transform_id, ByteBuffer payload, u32 ssrc, u8 payload_type, u32 rtp_timestamp, u16 sequence_number)
+{
+    Web::HTML::WorkerAgentParent::rtc_transform_encoded_audio_frame_written(owner_token, transform_id, move(payload), ssrc, payload_type, rtp_timestamp, sequence_number);
 }
 
 }

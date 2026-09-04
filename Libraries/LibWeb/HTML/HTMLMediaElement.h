@@ -54,7 +54,7 @@ enum class MediaSeekMode : u8 {
 
 class SourceElementSelector;
 
-using OptionalMediaProvider = Variant<Empty, GC::Ref<MediaSourceExtensions::MediaSource>, GC::Ref<FileAPI::Blob>>;
+using OptionalMediaProvider = Variant<Empty, GC::Ref<MediaCapture::MediaStream>, GC::Ref<MediaSourceExtensions::MediaSource>, GC::Ref<FileAPI::Blob>>;
 
 class HTMLMediaElement : public HTMLElement {
     WEB_WRAPPABLE(HTMLMediaElement, HTMLElement);
@@ -218,7 +218,7 @@ private:
 
     Task::Source media_element_event_task_source() const { return m_media_element_event_task_source.source; }
 
-    using MediaProviderObject = Variant<Empty, GC::Ref<MediaSourceExtensions::MediaSource>, GC::Ref<FileAPI::Blob>>;
+    using MediaProviderObject = Variant<Empty, GC::Ref<MediaCapture::MediaStream>, GC::Ref<MediaSourceExtensions::MediaSource>, GC::Ref<FileAPI::Blob>>;
     MediaProviderObject const& assigned_media_provider_object() const;
     MediaProviderObject& assigned_media_provider_object();
     void set_assigned_media_provider_object(MediaProviderObject const&);

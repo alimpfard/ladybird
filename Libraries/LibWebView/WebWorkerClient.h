@@ -38,6 +38,7 @@ public:
     pid_t pid() const { return m_pid; }
     void set_pid(pid_t pid) { m_pid = pid; }
 
+    virtual void rtc_transform_encoded_audio_frame_written(u64 transform_id, ByteBuffer payload, u32 ssrc, u8 payload_type, u32 rtp_timestamp, u16 sequence_number) override;
     virtual void did_close_worker() override;
     virtual void did_finish_loading_worker_script(bool worker_is_secure_context) override;
     virtual void did_fail_loading_worker_script() override;
@@ -48,6 +49,8 @@ public:
     virtual Messages::WebWorkerClient::DidIsKnownHstsHostResponse did_is_known_hsts_host(String domain) override;
     virtual void did_post_broadcast_channel_message(Web::HTML::BroadcastChannelMessage) override;
     virtual Messages::WebWorkerClient::StartWorkerAgentResponse start_worker_agent(Web::HTML::WorkerAgentStartRequest request) override;
+    virtual void rtc_transform_init(Web::HTML::WorkerAgentId agent_id, Web::HTML::WorkerAgentOwnerToken owner_token, u64 transform_id, Web::HTML::SerializedTransferRecord options_record) override;
+    virtual void rtc_transform_encoded_audio_frame(Web::HTML::WorkerAgentId agent_id, Web::HTML::WorkerAgentOwnerToken owner_token, u64 transform_id, ByteBuffer payload, u32 ssrc, u8 payload_type, u32 rtp_timestamp, u16 sequence_number) override;
     virtual void close_worker_agent(Web::HTML::WorkerAgentId, Web::HTML::WorkerAgentOwnerToken) override;
     virtual Messages::WebWorkerClient::OpenSystemFontResponse open_system_font(u64 generation, u64 face_id) override;
     virtual Messages::WebWorkerClient::MatchSystemFontResponse match_system_font(String family, u16 weight, u16 width, u8 slope) override;

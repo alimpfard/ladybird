@@ -4,13 +4,25 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibCore/EventLoop.h>
 #include <LibCore/Process.h>
 #include <LibCore/System.h>
+#include <LibGC/Function.h>
 #include <LibGfx/Font/FontDatabase.h>
 #include <LibGfx/Font/SharedFontProvider.h>
+#include <LibJS/Runtime/ArrayBuffer.h>
+#include <LibWeb/Bindings/WrapperWorld.h>
 #include <LibWeb/HTML/BroadcastChannel.h>
+#include <LibWeb/HTML/EventLoop/EventLoop.h>
+#include <LibWeb/HTML/EventLoop/Task.h>
+#include <LibWeb/HTML/EventNames.h>
+#include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
 #include <LibWeb/HTML/WorkerAgentParent.h>
+#include <LibWeb/HTML/WorkerGlobalScope.h>
 #include <LibWeb/Platform/FontPlugin.h>
+#include <LibWeb/WebRTC/RTCEncodedAudioFrame.h>
+#include <LibWeb/WebRTC/RTCRtpScriptTransformer.h>
+#include <LibWeb/WebRTC/RTCTransformEvent.h>
 #include <LibWebView/CompositorConnection.h>
 #include <WebWorker/ConnectionFromClient.h>
 #include <WebWorker/PageHost.h>
@@ -216,6 +228,12 @@ void ConnectionFromClient::start_worker(URL::URL url, Web::HTML::WorkerType type
 
     // FIXME: Add an assertion that the agent_type passed here is the same that was passed at process creation to initialize_main_thread_vm()
 
+    m_worker_host->set_on_script_ready([this] {
+        auto pending = move(m_pending_transform_inits);
+        for (auto& entry : pending)
+            run_transform_init(entry.key, move(entry.value));
+    });
+
     m_worker_host->run(page(), move(implicit_port), outside_settings, credentials, is_shared);
 }
 
@@ -259,6 +277,122 @@ void ConnectionFromClient::did_worker_agent_close(Web::HTML::WorkerAgentOwnerTok
 void ConnectionFromClient::broadcast_channel_message(Web::HTML::BroadcastChannelMessage message)
 {
     Web::HTML::BroadcastChannel::deliver_message_locally(message);
+}
+
+void ConnectionFromClient::rtc_transform_init(u64 transform_id, Web::HTML::SerializedTransferRecord options_record)
+{
+    if (!m_worker_host)
+        return;
+    if (!m_worker_host->script_has_run()) {
+        // Hold the init until discord's worker script has had a chance to install its
+        // onrtctransform handler. Otherwise the event fires into a global scope with
+        // no listeners and is dropped.
+        m_pending_transform_inits.set(transform_id, move(options_record));
+        return;
+    }
+    run_transform_init(transform_id, move(options_record));
+}
+
+void ConnectionFromClient::run_transform_init(u64 transform_id, Web::HTML::SerializedTransferRecord options_record)
+{
+    if (!m_worker_host)
+        return;
+    auto global_scope = m_worker_host->global_scope();
+    if (!global_scope) {
+        dbgln("ConnectionFromClient::rtc_transform_init: no worker global scope yet (transform_id={})", transform_id);
+        return;
+    }
+    auto& realm = global_scope->realm();
+    Web::HTML::TemporaryExecutionContext context(realm, Web::HTML::TemporaryExecutionContext::CallbacksEnabled::Yes);
+
+    // Spec step 8.1: deserialize serializedOptions in the worker realm.
+    auto deserialized_or_err = Web::HTML::structured_deserialize_with_transfer(options_record, realm);
+    if (deserialized_or_err.is_exception()) {
+        dbgln("ConnectionFromClient::rtc_transform_init: failed to deserialize options for id={}", transform_id);
+        return;
+    }
+    auto options = deserialized_or_err.release_value().deserialized;
+
+    // Spec step 8.2: create an RTCRtpScriptTransformer with the deserialized options.
+    auto transformer_or_err = Web::WebRTC::RTCRtpScriptTransformer::create(realm, options);
+    if (transformer_or_err.is_exception()) {
+        dbgln("ConnectionFromClient::rtc_transform_init: failed to construct transformer for id={}", transform_id);
+        return;
+    }
+    auto transformer = transformer_or_err.release_value();
+    m_transformers.set(transform_id, GC::make_root(transformer));
+
+    // Wire transformer.[[frameSource]]'s writeEncodedData entry point: the worker's
+    // transformed frames are piped over IPC to the parent process, where the receiver's
+    // decode/playback path consumes them. Captured `this` is fine — the connection
+    // outlives the transformer (close_worker tears the connection down via die()).
+    auto write_encoded_data = GC::create_function(realm.heap(), [this, transform_id](JS::Value chunk) {
+        auto* frame = Web::Bindings::impl_from<Web::WebRTC::RTCEncodedAudioFrame>(chunk.is_object() ? &chunk.as_object() : nullptr);
+        if (!frame) {
+            static size_t logged_non_frame = 0;
+            if (logged_non_frame++ < 3)
+                dbgln("worker: write algorithm got non-frame value (chunk_is_object={}, class={}) for id={}",
+                    chunk.is_object(),
+                    chunk.is_object() ? chunk.as_object().class_name() : "n/a"sv,
+                    transform_id);
+            return;
+        }
+        static size_t logged_writes = 0;
+        if (logged_writes++ < 3)
+            dbgln("worker: write algorithm received frame id={}", transform_id);
+        auto data = frame->data();
+        auto bytes = MUST(ByteBuffer::create_uninitialized(data->byte_length()));
+        data->copy_to(0, bytes);
+        auto metadata = frame->get_metadata();
+        u32 ssrc = metadata.synchronization_source.value_or(0);
+        u8 payload_type = metadata.payload_type.value_or(0);
+        u32 rtp_timestamp = metadata.rtp_timestamp.value_or(0);
+        u16 sequence_number = static_cast<u16>(metadata.sequence_number.value_or(0));
+        async_rtc_transform_encoded_audio_frame_written(transform_id, bytes.bytes(), ssrc, payload_type, rtp_timestamp, sequence_number);
+    });
+    transformer->set_write_encoded_data_algorithm(write_encoded_data);
+
+    // Spec step 8: queue a global task on the DOM manipulation task source so the
+    // event fires on the worker's own event loop, after any pending script setup
+    // (e.g. `self.onrtctransform = ...`) has had a chance to run.
+    Web::HTML::queue_global_task(Web::HTML::Task::Source::DOMManipulation, realm.global_object(),
+        GC::create_function(realm.heap(), [global_scope, transformer, &realm, transform_id] {
+            Web::HTML::TemporaryExecutionContext context(realm, Web::HTML::TemporaryExecutionContext::CallbacksEnabled::Yes);
+            auto event = Web::WebRTC::RTCTransformEvent::create(realm, Web::HTML::EventNames::rtctransform, transformer);
+            auto handler_attr = global_scope->event_handler_attribute(Web::HTML::EventNames::rtctransform);
+            auto has_listeners = global_scope->has_event_listener(Web::HTML::EventNames::rtctransform);
+            dbgln("worker: dispatching rtctransform id={} attr_present={} addEventListener_present={}", transform_id, handler_attr != nullptr, has_listeners);
+            global_scope->dispatch_event(event);
+        }));
+}
+
+void ConnectionFromClient::rtc_transform_encoded_audio_frame(u64 transform_id, ByteBuffer payload, u32 ssrc, u8 payload_type, u32 rtp_timestamp, u16 sequence_number)
+{
+    auto entry = m_transformers.get(transform_id);
+    if (!entry.has_value()) {
+        static size_t logged_miss = 0;
+        if (logged_miss++ < 3)
+            dbgln("worker: rtc_transform_encoded_audio_frame for unknown id={} (have {} transformers)", transform_id, m_transformers.size());
+        return;
+    }
+    auto transformer = *entry;
+    static size_t logged_hit = 0;
+    if (logged_hit++ < 3)
+        dbgln("worker: rtc_transform_encoded_audio_frame id={} ssrc={} seq={} len={}", transform_id, ssrc, sequence_number, payload.size());
+
+    if (!m_worker_host || !m_worker_host->global_scope())
+        return;
+    auto& realm = m_worker_host->global_scope()->realm();
+    Web::HTML::TemporaryExecutionContext context(realm, Web::HTML::TemporaryExecutionContext::CallbacksEnabled::Yes);
+
+    auto frame = Web::WebRTC::RTCEncodedAudioFrame::create_from_packet(realm, move(payload), ssrc, payload_type, rtp_timestamp, sequence_number);
+    if (auto result = transformer->enqueue_encoded_frame(Web::Bindings::wrap(Web::Bindings::host_defined_wrapper_world(realm), realm, frame)); result.is_exception())
+        dbgln("rtc_transform_encoded_audio_frame: enqueue failed for transform_id={}", transform_id);
+}
+
+void ConnectionFromClient::rtc_transform_encoded_audio_frame_written(Web::HTML::WorkerAgentOwnerToken owner_token, u64 transform_id, ByteBuffer payload, u32 ssrc, u8 payload_type, u32 rtp_timestamp, u16 sequence_number)
+{
+    Web::HTML::WorkerAgentParent::rtc_transform_encoded_audio_frame_written(owner_token, transform_id, move(payload), ssrc, payload_type, rtp_timestamp, sequence_number);
 }
 
 }

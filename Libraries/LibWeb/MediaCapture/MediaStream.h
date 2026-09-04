@@ -21,6 +21,7 @@ class MediaStream final : public DOM::EventTarget {
 
 public:
     static GC::Ref<MediaStream> create();
+    static GC::Ref<MediaStream> create_with_id(Utf16String);
     static GC::Ref<MediaStream> create(ReadonlySpan<GC::Ref<MediaStreamTrack>> const&);
     static GC::Ref<MediaStream> create(GC::RootVector<GC::Ref<MediaStreamTrack>> const&);
 

@@ -225,7 +225,7 @@ WebIDL::ExceptionOr<T> decode_or_throw_data_clone_error(JS::Realm& realm, Transf
 }
 
 WEB_API WebIDL::ExceptionOr<SerializedTransferRecord> structured_serialize_with_transfer(JS::Realm&, JS::Value, ReadonlySpan<GC::Ref<JS::Object>> transfer_list);
-WebIDL::ExceptionOr<DeserializedTransferRecord> structured_deserialize_with_transfer(SerializedTransferRecord&, JS::Realm&);
+WEB_API WebIDL::ExceptionOr<DeserializedTransferRecord> structured_deserialize_with_transfer(SerializedTransferRecord&, JS::Realm&);
 WEB_API WebIDL::ExceptionOr<JS::Value> structured_deserialize_with_transfer_internal(TransferDataDecoder&, JS::Realm&);
 
 }
@@ -259,9 +259,9 @@ template<>
 WEB_API ErrorOr<Web::HTML::TransferDataEncoder> decode(Decoder&);
 
 template<>
-ErrorOr<void> encode(Encoder&, Web::HTML::SerializedTransferRecord const&);
+WEB_API ErrorOr<void> encode(Encoder&, Web::HTML::SerializedTransferRecord const&);
 
 template<>
-ErrorOr<Web::HTML::SerializedTransferRecord> decode(Decoder&);
+WEB_API ErrorOr<Web::HTML::SerializedTransferRecord> decode(Decoder&);
 
 }

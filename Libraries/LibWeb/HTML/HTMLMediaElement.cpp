@@ -55,6 +55,7 @@
 #include <LibWeb/Infra/SerializedURL.h>
 #include <LibWeb/InvalidateDisplayList.h>
 #include <LibWeb/Layout/Node.h>
+#include <LibWeb/MediaCapture/MediaStream.h>
 #include <LibWeb/MediaSourceExtensions/MediaSource.h>
 #include <LibWeb/MimeSniff/MimeType.h>
 #include <LibWeb/Page/Page.h>
@@ -249,6 +250,9 @@ void HTMLMediaElement::visit_edges(Cell::Visitor& visitor)
     visitor.visit(m_attached_media_source);
     m_assigned_media_provider_object.visit(
         [](Empty) {},
+        [&visitor](GC::Ref<MediaCapture::MediaStream> stream) {
+            visitor.visit(stream);
+        },
         [&visitor](GC::Ref<MediaSourceExtensions::MediaSource> media_source) {
             visitor.visit(media_source);
         },
@@ -1667,6 +1671,10 @@ void HTMLMediaElement::load_local_resource(MediaProviderObject const& media_prov
             //     further with regard to the HTTP fetch. Data received, etc. is handled largely through
             //     the demuxers that our PlaybackManager is given.
         }
+    } else if (media_provider.has<GC::Ref<MediaCapture::MediaStream>>()) {
+        // FIXME: actually pipe the MediaStream's tracks into our audio/video output. For now
+        //        we accept the assignment so JS that does `audio.srcObject = stream` doesn't
+        //        crash — playback just won't happen.
     } else {
         // FIXME: Support File objects.
         failure_callback("File objects are not supported"_utf16);

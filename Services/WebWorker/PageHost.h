@@ -43,6 +43,8 @@ public:
     virtual void page_did_post_broadcast_channel_message(Web::HTML::BroadcastChannelMessage const& message) override;
     virtual void request_file(Web::FileRequest) override;
     virtual Web::HTML::WorkerAgentId start_worker_agent(Web::HTML::WorkerAgentStartRequest&&) override;
+    virtual void rtc_transform_init(Web::HTML::WorkerAgentId agent_id, Web::HTML::WorkerAgentOwnerToken owner_token, u64 transform_id, Web::HTML::SerializedTransferRecord options_record) override;
+    virtual void rtc_transform_encoded_audio_frame(Web::HTML::WorkerAgentId agent_id, Web::HTML::WorkerAgentOwnerToken owner_token, u64 transform_id, ByteBuffer payload, u32 ssrc, u8 payload_type, u32 rtp_timestamp, u16 sequence_number) override;
     virtual void close_worker_agent(Web::HTML::WorkerAgentId, Web::HTML::WorkerAgentOwnerToken) override;
     virtual bool supports_compositor() const override { return true; }
     virtual void ensure_compositor_host() override;

@@ -163,4 +163,14 @@ void PageHost::visit_edges(JS::Cell::Visitor& visitor)
     visitor.visit(m_page);
 }
 
+void PageHost::rtc_transform_init(Web::HTML::WorkerAgentId agent_id, Web::HTML::WorkerAgentOwnerToken owner_token, u64 transform_id, Web::HTML::SerializedTransferRecord options_record)
+{
+    m_client.async_rtc_transform_init(agent_id, owner_token, transform_id, move(options_record));
+}
+
+void PageHost::rtc_transform_encoded_audio_frame(Web::HTML::WorkerAgentId agent_id, Web::HTML::WorkerAgentOwnerToken owner_token, u64 transform_id, ByteBuffer payload, u32 ssrc, u8 payload_type, u32 rtp_timestamp, u16 sequence_number)
+{
+    m_client.async_rtc_transform_encoded_audio_frame(agent_id, owner_token, transform_id, payload.bytes(), ssrc, payload_type, rtp_timestamp, sequence_number);
+}
+
 }

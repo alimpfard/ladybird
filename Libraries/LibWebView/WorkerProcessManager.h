@@ -38,6 +38,10 @@ public:
 
     Web::HTML::WorkerAgentId start_worker_agent(WebContentClient&, u64 page_id, Web::HTML::WorkerAgentStartRequest);
     Web::HTML::WorkerAgentId start_worker_agent(WebWorkerClient&, Web::HTML::WorkerAgentStartRequest);
+    void rtc_transform_init(WebContentClient&, Web::HTML::WorkerAgentId, Web::HTML::WorkerAgentOwnerToken, u64, Web::HTML::SerializedTransferRecord);
+    void rtc_transform_encoded_audio_frame(WebContentClient&, Web::HTML::WorkerAgentId, Web::HTML::WorkerAgentOwnerToken, u64, ByteBuffer, u32, u8, u32, u16);
+    void rtc_transform_init(WebWorkerClient&, Web::HTML::WorkerAgentId, Web::HTML::WorkerAgentOwnerToken, u64, Web::HTML::SerializedTransferRecord);
+    void rtc_transform_encoded_audio_frame(WebWorkerClient&, Web::HTML::WorkerAgentId, Web::HTML::WorkerAgentOwnerToken, u64, ByteBuffer, u32, u8, u32, u16);
     void update_site_compatibility_data(JsonValue const&);
 
     void close_worker_agent(WebContentClient&, Web::HTML::WorkerAgentId, Web::HTML::WorkerAgentOwnerToken);
@@ -89,6 +93,7 @@ private:
     void worker_did_finish_loading_script(Web::HTML::WorkerAgentId, bool worker_is_secure_context);
     void worker_did_fail_loading_script(Web::HTML::WorkerAgentId);
     void worker_did_report_exception(Web::HTML::WorkerAgentId, Utf16String message, Utf16String filename, u32 lineno, u32 colno);
+    void rtc_transform_encoded_audio_frame_written(Web::HTML::WorkerAgentId, u64 transform_id, ByteBuffer payload, u32 ssrc, u8 payload_type, u32 rtp_timestamp, u16 sequence_number);
     void worker_did_close(Web::HTML::WorkerAgentId);
     void worker_did_die(Web::HTML::WorkerAgentId);
     void worker_did_request_file(Web::HTML::WorkerAgentId, ByteString path, i32 request_id);

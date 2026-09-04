@@ -216,4 +216,11 @@ void MediaStream::set_onremovetrack(WebIDL::CallbackType* event_handler)
     set_event_handler_attribute(HTML::EventNames::removetrack, event_handler);
 }
 
+GC::Ref<MediaStream> MediaStream::create_with_id(Utf16String id)
+{
+    auto stream = create();
+    stream->m_id = move(id);
+    return stream;
+}
+
 }

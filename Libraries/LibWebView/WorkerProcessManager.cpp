@@ -484,4 +484,76 @@ void WorkerProcessManager::remove_owner(Web::HTML::WorkerAgentId agent_id, Owner
         remove_agent(agent_id);
 }
 
+void WorkerProcessManager::rtc_transform_init(WebContentClient& client, Web::HTML::WorkerAgentId agent_id, Web::HTML::WorkerAgentOwnerToken owner_token, u64 transform_id, Web::HTML::SerializedTransferRecord options_record)
+{
+    auto agent = m_agents.find(agent_id);
+    if (agent == m_agents.end() || agent->value.closing)
+        return;
+    for (auto const& owner : agent->value.owners) {
+        auto const* parent = owner.client.get_pointer<WebContentOwner>();
+        if (parent && parent->client.ptr() == &client && owner.token == owner_token) {
+            agent->value.client->async_rtc_transform_init(transform_id, move(options_record));
+            return;
+        }
+    }
+}
+
+void WorkerProcessManager::rtc_transform_encoded_audio_frame(WebContentClient& client, Web::HTML::WorkerAgentId agent_id, Web::HTML::WorkerAgentOwnerToken owner_token, u64 transform_id, ByteBuffer payload, u32 ssrc, u8 payload_type, u32 rtp_timestamp, u16 sequence_number)
+{
+    auto agent = m_agents.find(agent_id);
+    if (agent == m_agents.end() || agent->value.closing)
+        return;
+    for (auto const& owner : agent->value.owners) {
+        auto const* parent = owner.client.get_pointer<WebContentOwner>();
+        if (parent && parent->client.ptr() == &client && owner.token == owner_token) {
+            agent->value.client->async_rtc_transform_encoded_audio_frame(transform_id, payload.bytes(), ssrc, payload_type, rtp_timestamp, sequence_number);
+            return;
+        }
+    }
+}
+
+void WorkerProcessManager::rtc_transform_init(WebWorkerClient& client, Web::HTML::WorkerAgentId agent_id, Web::HTML::WorkerAgentOwnerToken owner_token, u64 transform_id, Web::HTML::SerializedTransferRecord options_record)
+{
+    auto agent = m_agents.find(agent_id);
+    if (agent == m_agents.end() || agent->value.closing)
+        return;
+    for (auto const& owner : agent->value.owners) {
+        auto const* parent = owner.client.get_pointer<WebWorkerOwner>();
+        if (parent && parent->client.ptr() == &client && owner.token == owner_token) {
+            agent->value.client->async_rtc_transform_init(transform_id, move(options_record));
+            return;
+        }
+    }
+}
+
+void WorkerProcessManager::rtc_transform_encoded_audio_frame(WebWorkerClient& client, Web::HTML::WorkerAgentId agent_id, Web::HTML::WorkerAgentOwnerToken owner_token, u64 transform_id, ByteBuffer payload, u32 ssrc, u8 payload_type, u32 rtp_timestamp, u16 sequence_number)
+{
+    auto agent = m_agents.find(agent_id);
+    if (agent == m_agents.end() || agent->value.closing)
+        return;
+    for (auto const& owner : agent->value.owners) {
+        auto const* parent = owner.client.get_pointer<WebWorkerOwner>();
+        if (parent && parent->client.ptr() == &client && owner.token == owner_token) {
+            agent->value.client->async_rtc_transform_encoded_audio_frame(transform_id, payload.bytes(), ssrc, payload_type, rtp_timestamp, sequence_number);
+            return;
+        }
+    }
+}
+
+void WorkerProcessManager::rtc_transform_encoded_audio_frame_written(Web::HTML::WorkerAgentId agent_id, u64 transform_id, ByteBuffer payload, u32 ssrc, u8 payload_type, u32 rtp_timestamp, u16 sequence_number)
+{
+    auto agent = m_agents.find(agent_id);
+    if (agent == m_agents.end())
+        return;
+    for (auto const& owner : agent->value.owners) {
+        owner.client.visit([&](auto const& parent) {
+            if constexpr (IsSame<RemoveCVReference<decltype(parent)>, WebContentOwner>) {
+                if (!parent.client)
+                    return;
+            }
+            parent.client->async_rtc_transform_encoded_audio_frame_written(owner.token, transform_id, payload.bytes(), ssrc, payload_type, rtp_timestamp, sequence_number);
+        });
+    }
+}
+
 }

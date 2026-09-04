@@ -2437,4 +2437,14 @@ Optional<ViewImplementation&> WebContentClient::owning_view_for_page_id(u64 page
     return ViewImplementation::find_view_for_traversable(navigable->top_level_traversable());
 }
 
+void WebContentClient::rtc_transform_init(Web::HTML::WorkerAgentId agent_id, Web::HTML::WorkerAgentOwnerToken owner_token, u64 transform_id, Web::HTML::SerializedTransferRecord options_record)
+{
+    WorkerProcessManager::the().rtc_transform_init(*this, agent_id, owner_token, transform_id, move(options_record));
+}
+
+void WebContentClient::rtc_transform_encoded_audio_frame(Web::HTML::WorkerAgentId agent_id, Web::HTML::WorkerAgentOwnerToken owner_token, u64 transform_id, ByteBuffer payload, u32 ssrc, u8 payload_type, u32 rtp_timestamp, u16 sequence_number)
+{
+    WorkerProcessManager::the().rtc_transform_encoded_audio_frame(*this, agent_id, owner_token, transform_id, move(payload), ssrc, payload_type, rtp_timestamp, sequence_number);
+}
+
 }

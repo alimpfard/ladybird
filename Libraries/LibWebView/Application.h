@@ -23,6 +23,7 @@
 #include <LibGfx/Size.h>
 #include <LibIPC/Forward.h>
 #include <LibImageDecoderClient/Client.h>
+#include <LibWebRTCClient/Client.h>
 #include <LibMain/Main.h>
 #include <LibRequests/Forward.h>
 #include <LibURL/URL.h>
@@ -103,6 +104,7 @@ public:
 #if defined(HAVE_WASM_COMPILER_SERVICE)
     static WasmCompilerClient::Client& wasm_compiler_client() { return *the().m_wasm_compiler_client; }
 #endif
+    static WebRTCClient::Client& webrtc_client() { return *the().m_webrtc_client; }
 
     virtual bool supports_vertical_tabs() const { return false; }
     virtual bool supports_private_browsing_windows() const { return false; }
@@ -357,6 +359,7 @@ private:
 #if defined(HAVE_WASM_COMPILER_SERVICE)
     ErrorOr<void> launch_wasm_compiler_server();
 #endif
+    ErrorOr<void> launch_webrtc_client();
     ErrorOr<void> launch_devtools_server();
     ErrorOr<void> load_content_blocker_lists();
     ErrorOr<NonnullRawPtr<Core::GeolocationProvider>> ensure_geolocation_provider();
@@ -508,6 +511,7 @@ private:
         Recovering,
     };
     CompositorRecoveryState m_compositor_recovery_state { CompositorRecoveryState::Idle };
+    RefPtr<WebRTCClient::Client> m_webrtc_client;
 
     RefPtr<WebContentClient> m_spare_web_content_process;
     bool m_has_queued_task_to_launch_spare_web_content_process { false };

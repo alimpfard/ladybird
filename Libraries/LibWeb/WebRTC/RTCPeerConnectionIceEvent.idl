@@ -1,0 +1,15 @@
+
+// https://w3c.github.io/webrtc-pc/#rtcpeerconnectioniceevent
+
+[Exposed=Window]
+interface RTCPeerConnectionIceEvent : Event {
+    [FIXME] constructor(DOMString type, optional RTCPeerConnectionIceEventInit eventInitDict = {});
+    readonly attribute RTCIceCandidate? candidate;
+    [FIXME] readonly attribute DOMString? url;
+};
+
+dictionary RTCPeerConnectionIceEventInit : EventInit {
+    // FIXME: spec has `RTCIceCandidate? candidate`.
+    object? candidate;
+    DOMString? url;
+};

@@ -472,6 +472,12 @@ ErrorOr<IPC::TransportHandle> connect_new_image_decoder_client()
     return handles.take_last();
 }
 
+ErrorOr<NonnullRefPtr<WebRTCClient::Client>> launch_webrtc_client_process()
+{
+    Vector<ByteString> arguments;
+    return launch_server_process<WebRTCClient::Client>("WebRTCClient"sv, arguments);
+}
+
 #if defined(HAVE_WASM_COMPILER_SERVICE)
 ErrorOr<IPC::TransportHandle> connect_new_wasm_compiler_client()
 {

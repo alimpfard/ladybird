@@ -113,4 +113,19 @@ void WebWorkerClient::close_worker_agent(Web::HTML::WorkerAgentId agent_id, Web:
     WorkerProcessManager::the().close_worker_agent(*this, agent_id, owner_token);
 }
 
+void WebWorkerClient::rtc_transform_init(Web::HTML::WorkerAgentId agent_id, Web::HTML::WorkerAgentOwnerToken owner_token, u64 transform_id, Web::HTML::SerializedTransferRecord options_record)
+{
+    WorkerProcessManager::the().rtc_transform_init(*this, agent_id, owner_token, transform_id, move(options_record));
+}
+
+void WebWorkerClient::rtc_transform_encoded_audio_frame(Web::HTML::WorkerAgentId agent_id, Web::HTML::WorkerAgentOwnerToken owner_token, u64 transform_id, ByteBuffer payload, u32 ssrc, u8 payload_type, u32 rtp_timestamp, u16 sequence_number)
+{
+    WorkerProcessManager::the().rtc_transform_encoded_audio_frame(*this, agent_id, owner_token, transform_id, move(payload), ssrc, payload_type, rtp_timestamp, sequence_number);
+}
+
+void WebWorkerClient::rtc_transform_encoded_audio_frame_written(u64 transform_id, ByteBuffer payload, u32 ssrc, u8 payload_type, u32 rtp_timestamp, u16 sequence_number)
+{
+    WorkerProcessManager::the().rtc_transform_encoded_audio_frame_written(m_agent_id, transform_id, move(payload), ssrc, payload_type, rtp_timestamp, sequence_number);
+}
+
 }

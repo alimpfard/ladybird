@@ -139,6 +139,9 @@ static constexpr auto s_serializable_storage_registry = to_array<SerializableReg
     { Bindings::InterfaceName::ImageData, "ImageData"sv },
     { Bindings::InterfaceName::Module, "Module"sv },
     { Bindings::InterfaceName::QuotaExceededError, "QuotaExceededError"sv },
+    { Bindings::InterfaceName::RTCCertificate, "RTCCertificate"sv },
+    { Bindings::InterfaceName::RTCEncodedAudioFrame, "RTCEncodedAudioFrame"sv },
+    { Bindings::InterfaceName::RTCEncodedVideoFrame, "RTCEncodedVideoFrame"sv },
 });
 
 ReadonlySpan<SerializableRegistryEntry> serializable_storage_registry()

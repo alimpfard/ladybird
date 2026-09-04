@@ -1182,6 +1182,38 @@ set(SOURCES
     WebIDL/OverloadTypes.cpp
     WebIDL/Promise.cpp
     WebIDL/QuotaExceededError.cpp
+    WebRTC/KeyFrameRequestEvent.cpp
+    WebRTC/RTCCertificate.cpp
+    WebRTC/RTCDTMFSender.cpp
+    WebRTC/RTCDTMFToneChangeEvent.cpp
+    WebRTC/RTCDataChannel.cpp
+    WebRTC/RTCDataChannelEvent.cpp
+    WebRTC/RTCDtlsTransport.cpp
+    WebRTC/RTCEncodedAudioFrame.cpp
+    WebRTC/RTCEncodedVideoFrame.cpp
+    WebRTC/RTCError.cpp
+    WebRTC/RTCErrorEvent.cpp
+    WebRTC/RTCIceCandidate.cpp
+    WebRTC/RTCIceTransport.cpp
+    WebRTC/RTCPeerConnection.cpp
+    WebRTC/RTCPeerConnectionIceErrorEvent.cpp
+    WebRTC/RTCPeerConnectionIceEvent.cpp
+    WebRTC/RTCRtpReceiver.cpp
+    WebRTC/RTCRtpScriptTransform.cpp
+    WebRTC/RTCRtpScriptTransformer.cpp
+    WebRTC/RTCRtpSender.cpp
+    WebRTC/RTCRtpTransceiver.cpp
+    WebRTC/RTCSFrameReceiverTransform.cpp
+    WebRTC/RTCSFrameSenderTransform.cpp
+    WebRTC/RTCSctpTransport.cpp
+    WebRTC/RTCSessionDescription.cpp
+    WebRTC/RTCStatsReport.cpp
+    WebRTC/RTCTrackEvent.cpp
+    WebRTC/RTCTransformEvent.cpp
+    WebRTC/SFrameDecrypterStream.cpp
+    WebRTC/SFrameEncrypterStream.cpp
+    WebRTC/SFrameTransformErrorEvent.cpp
+    WebRTC/WebRTCAgent.cpp
     WebSockets/WebSocket.cpp
     WebVTT/VTTCue.cpp
     WebVTT/VTTRegion.cpp
@@ -1256,7 +1288,7 @@ set(GENERATED_SOURCES
 ladybird_lib(LibWeb web EXPLICIT_SYMBOL_EXPORT)
 add_dependencies(LibWeb generate_GLFunctions.cpp)
 
-target_link_libraries(LibWeb PRIVATE LibCore LibCompress LibCrypto LibJS LibHTTP LibGfx LibIPC LibRegex LibSyntax LibTextCodec LibUnicode LibMedia LibWasm LibXML LibURL LibTLS LibRequests LibGC LibSync LibThreading skia SDL3::SDL3 LibXml2::LibXml2)
+target_link_libraries(LibWeb PRIVATE LibCore LibCompress LibCrypto LibJS LibHTTP LibGfx LibIPC LibRegex LibSyntax LibTextCodec LibUnicode LibMedia LibWasm LibXML LibURL LibTLS LibRequests LibGC LibSync LibThreading LibFileSystem LibWebRTCClient skia SDL3::SDL3 LibXml2::LibXml2)
 
 # LibWeb still includes ANGLE's GLES headers for WebGL constants and types, but
 # the actual GL entry points live in the Compositor. Copy only ANGLE's compile
