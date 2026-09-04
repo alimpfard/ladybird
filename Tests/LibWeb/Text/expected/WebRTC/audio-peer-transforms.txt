@@ -1,0 +1,3 @@
+PASS: remote track is the receiver's audio track
+PASS: both workers transform encoded frames
+PASS: decoded remote audio contains the transmitted tone

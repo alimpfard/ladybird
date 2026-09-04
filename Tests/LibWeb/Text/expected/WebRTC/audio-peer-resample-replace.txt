@@ -1,0 +1,4 @@
+PASS: remote track is the receiver's audio track
+PASS: decoded remote audio contains the transmitted tone
+PASS: detaching the sender silences the remote track
+PASS: replacement track resumes audio without renegotiation

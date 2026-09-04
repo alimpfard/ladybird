@@ -1,0 +1,4 @@
+PASS: ArrayBuffer preserves exactly its bytes
+PASS: typed array slice preserves exactly its bytes
+PASS: DataView slice preserves exactly its bytes
+PASS: Blob preserves exactly its bytes

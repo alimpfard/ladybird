@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="peer-test.js"></script>
+<script>
+rtcTest(async () => {
+    const pair = peerPair();
+    try {
+        const [local, remote] = await dataPair(pair);
+        check(pair.left.signalingState === "stable" && pair.right.signalingState === "stable", "offer and answer return both peers to stable");
+        const received = nextEvent(remote, "message");
+        local.send("Hello, 世界 👋");
+        check((await received).data === "Hello, 世界 👋", "Unicode text arrives intact");
+        const reply = nextEvent(local, "message");
+        remote.send("reply from answerer");
+        check((await reply).data === "reply from answerer", "answerer sends a reply");
+        pair.checkICE();
+    } finally {
+        pair.close();
+    }
+});
+</script>

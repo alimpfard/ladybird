@@ -1,0 +1,3 @@
+PASS: offer and answer return both peers to stable
+PASS: Unicode text arrives intact
+PASS: answerer sends a reply

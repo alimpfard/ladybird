@@ -1,0 +1,4 @@
+sender uses graph track: true
+track sample rate: 44100
+graph audio: true
+sender detached: true

@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="peer-test.js"></script>
+<script>
+rtcTest(async () => {
+    const pair = peerPair();
+    try {
+        const local = pair.left.createDataChannel("local", { negotiated: true, id: 7 });
+        const remote = pair.right.createDataChannel("remote", { negotiated: true, id: 7 });
+        await pair.negotiate();
+        await Promise.all([opened(local), opened(remote)]);
+        const received = nextEvent(remote, "message");
+        local.send("negotiated channel");
+        check((await received).data === "negotiated channel", "matching negotiated IDs connect");
+        pair.checkICE();
+    } finally {
+        pair.close();
+    }
+});
+</script>

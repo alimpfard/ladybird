@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script>
+    promiseTest(async () => {
+        const context = new AudioContext({ sampleRate: 44100 });
+        const connection = new RTCPeerConnection();
+        const worker = new Worker("audio-worklet-track-worker.js");
+        try {
+            await context.audioWorklet.addModule("audio-worklet-track-processor.js");
+            const source = new ConstantSourceNode(context, { offset: 0.25 });
+            const processor = new AudioWorkletNode(context, "passthrough");
+            const destination = context.createMediaStreamDestination();
+            source.connect(processor).connect(destination);
+            const track = destination.stream.getAudioTracks()[0];
+            const sender = connection.addTrack(track, destination.stream);
+            println(`sender uses graph track: ${sender.track === track}`);
+            println(`track sample rate: ${track.getSettings().sampleRate}`);
+            const received = new Promise((resolve, reject) => {
+                worker.onmessage = event => resolve(event.data);
+                worker.onerror = reject;
+            });
+            sender.transform = new RTCRtpScriptTransform(worker, { token: "graph audio" });
+            source.start();
+            await context.resume();
+            println(await received);
+            await sender.replaceTrack(null);
+            println(`sender detached: ${sender.track === null}`);
+        } finally {
+            connection.close();
+            worker.terminate();
+            await context.close();
+        }
+    });
+</script>

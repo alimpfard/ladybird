@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="peer-test.js"></script>
+<script>
+rtcTest(async () => {
+    const pair = peerPair();
+    try {
+        const channels = [];
+        const incoming = deadline(new Promise(resolve => pair.right.ondatachannel = event => {
+            channels.push(event.channel);
+            event.channel.onmessage = message => event.channel.send(message.data);
+            if (channels.length === 3)
+                resolve();
+        }), "three remote channels");
+        const outgoing = [0, 1, 2].map(index => pair.left.createDataChannel(`channel ${index}`));
+        await pair.negotiate();
+        await incoming;
+        await Promise.all(outgoing.map(opened));
+        const replies = outgoing.map(channel => nextEvent(channel, "message"));
+        outgoing.forEach((channel, index) => channel.send(`payload ${index}`));
+        const messages = await Promise.all(replies);
+        check(messages.every((event, index) => event.data === `payload ${index}`), "three channels keep their messages separate");
+        pair.checkICE();
+    } finally {
+        pair.close();
+    }
+});
+</script>

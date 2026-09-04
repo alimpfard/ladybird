@@ -1,0 +1,1 @@
+PASS: three channels keep their messages separate

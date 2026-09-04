@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="peer-test.js"></script>
+<script>
+rtcTest(async () => {
+    const pair = peerPair();
+    try {
+        const [local, remote] = await dataPair(pair);
+        const received = [];
+        const complete = deadline(new Promise(resolve => remote.onmessage = event => {
+            received.push(event.data);
+            if (received.length === 100)
+                resolve();
+        }), "100 ordered messages");
+        for (let index = 0; index < 100; ++index)
+            local.send(`message ${index}`);
+        await complete;
+        check(received.every((value, index) => value === `message ${index}`), "100 messages arrive once and in order");
+        const payload = new Uint8Array(32768);
+        for (let index = 0; index < payload.length; ++index)
+            payload[index] = index % 251;
+        const large = nextEvent(local, "message");
+        remote.send(payload);
+        const actual = await bytes((await large).data);
+        check(actual.length === payload.length && actual.every((value, index) => value === payload[index]), "fragmented 32 KiB message arrives intact");
+        pair.checkICE();
+    } finally {
+        pair.close();
+    }
+});
+</script>
