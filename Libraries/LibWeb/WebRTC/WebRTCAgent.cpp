@@ -79,7 +79,7 @@ void WebRTCAgent::close_connections_for_global(DOM::EventTarget& global)
     auto connections = m_peer_connections;
     for (auto& [_, connection] : connections) {
         if (connection->relevant_global_impl().ptr() == &global)
-            connection->close();
+            connection->close_for_document_destruction();
     }
 }
 

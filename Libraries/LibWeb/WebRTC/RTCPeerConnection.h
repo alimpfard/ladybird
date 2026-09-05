@@ -120,6 +120,7 @@ public:
     GC::Ref<WebIDL::Promise> get_stats(GC::Ptr<MediaCapture::MediaStreamTrack>);
 
     void close();
+    void close_for_document_destruction();
     void on_helper_died();
 
     u64 pc_id() const { return m_pc_id; }

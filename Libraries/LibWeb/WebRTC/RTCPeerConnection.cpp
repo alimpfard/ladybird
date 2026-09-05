@@ -172,6 +172,11 @@ void RTCPeerConnection::close()
     close_the_connection_algorithm(false);
 }
 
+void RTCPeerConnection::close_for_document_destruction()
+{
+    close_the_connection_algorithm(true);
+}
+
 // https://www.w3.org/TR/webrtc/#dom-rtcpeerconnection-close
 void RTCPeerConnection::close_the_connection_algorithm(bool disappear)
 {
