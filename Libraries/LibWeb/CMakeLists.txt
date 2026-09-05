@@ -1182,7 +1182,6 @@ set(SOURCES
     WebIDL/OverloadTypes.cpp
     WebIDL/Promise.cpp
     WebIDL/QuotaExceededError.cpp
-    WebRTC/AudioCaptureSession.cpp
     WebRTC/RTCCertificate.cpp
     WebRTC/RTCDataChannel.cpp
     WebRTC/RTCDataChannelEvent.cpp
