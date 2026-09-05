@@ -24,6 +24,7 @@ public:
     Client(NonnullOwnPtr<IPC::Transport>);
 
     Function<void()> on_death;
+    Function<void(u64, u64, String, String)> on_stats_result;
 
     Function<void(u64 pc_id, String state)> on_signaling_state_change;
     Function<void(u64 pc_id, String state)> on_connection_state_change;
@@ -54,6 +55,7 @@ public:
 
 private:
     virtual void die() override;
+    virtual void on_stats(u64, u64, String, String) override;
 
     virtual void on_signaling_state(u64 pc_id, String state) override;
     virtual void on_connection_state(u64 pc_id, String state) override;

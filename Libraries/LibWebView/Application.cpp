@@ -1410,7 +1410,6 @@ ErrorOr<void> Application::launch_services()
     TRY(launch_wasm_compiler_server());
 #endif
     TRY(launch_compositor_process());
-    TRY(launch_webrtc_client());
 
     if (m_browser_options.devtools_port.has_value()) {
         // Defer launching devtools until the entire application is initialized.
@@ -1450,21 +1449,6 @@ void Application::notify_compositor_gpu_presentation_unavailable()
     m_reported_compositor_gpu_presentation_unavailable = true;
     if (m_compositor_client)
         m_compositor_client->async_set_client_gpu_presentation_capability(false, 0);
-}
-
-ErrorOr<void> Application::launch_webrtc_client()
-{
-    m_webrtc_client = TRY(launch_webrtc_client_process());
-
-    m_webrtc_client->on_death = [this]() {
-        m_webrtc_client = nullptr;
-        if (Core::EventLoop::current().was_exit_requested())
-            return;
-        if (auto result = launch_webrtc_client(); result.is_error())
-            dbgln("Failed to restart WebRTCClient: {}", result.error());
-    };
-
-    return {};
 }
 
 void Application::handle_compositor_process_death()
@@ -1885,13 +1869,6 @@ void Application::process_did_exit(Process&& process, Optional<int> exit_status)
         break;
     case ProcessType::WebWorker:
         dbgln_if(WEBVIEW_PROCESS_DEBUG, "WebWorker {} died, not sure what to do.", process.pid());
-        break;
-    case ProcessType::WebRTCClient:
-        if (auto client = process.client<WebRTCClient::Client>(); client.has_value()) {
-            dbgln_if(WEBVIEW_PROCESS_DEBUG, "Restart WebRTCClient process");
-            if (auto on_death = move(client->on_death))
-                on_death();
-        }
         break;
     case ProcessType::Browser:
         dbgln("Invalid process type to be dying: Browser");

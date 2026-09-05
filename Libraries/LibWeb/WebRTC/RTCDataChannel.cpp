@@ -62,6 +62,17 @@ WebIDL::CallbackType* RTCDataChannel::onclose() { return event_handler_attribute
 void RTCDataChannel::set_onmessage(WebIDL::CallbackType* cb) { set_event_handler_attribute(HTML::EventNames::message, cb); }
 WebIDL::CallbackType* RTCDataChannel::onmessage() { return event_handler_attribute(HTML::EventNames::message); }
 
+void RTCDataChannel::close()
+{
+    if (m_ready_state == Bindings::RTCDataChannelState::Closing || m_ready_state == Bindings::RTCDataChannelState::Closed)
+        return;
+    m_ready_state = Bindings::RTCDataChannelState::Closing;
+    if (auto* client = WebRTCAgent::the().existing_client())
+        client->async_data_channel_close(m_channel_id);
+    else
+        m_ready_state = Bindings::RTCDataChannelState::Closed;
+}
+
 // https://www.w3.org/TR/webrtc/#dom-rtcdatachannel-send
 WebIDL::ExceptionOr<void> RTCDataChannel::send(RTCDataChannelSendData const& data)
 {

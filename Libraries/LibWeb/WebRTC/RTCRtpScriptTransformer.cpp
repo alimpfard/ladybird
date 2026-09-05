@@ -99,6 +99,10 @@ WebIDL::ExceptionOr<void> RTCRtpScriptTransformer::enqueue_encoded_frame(JS::Val
     if (!maybe_controller.has_value())
         return {};
     auto controller = maybe_controller->get<GC::Ref<Streams::ReadableStreamDefaultController>>();
+    // Encoded audio is real-time data. Bound unread frames to 200 ms at the
+    // normal 20 ms packet duration instead of replaying an ever-growing backlog.
+    if (controller->queue().size() >= 10)
+        (void)Streams::dequeue_value(*controller);
     ++m_last_received_frame_counter;
     TRY(Streams::readable_stream_default_controller_enqueue(relevant_realm(), controller, frame));
     ++m_last_enqueued_frame_counter;

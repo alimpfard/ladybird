@@ -3,13 +3,12 @@
 
 [Exposed=Window]
 interface RTCPeerConnectionIceEvent : Event {
-    [FIXME] constructor(DOMString type, optional RTCPeerConnectionIceEventInit eventInitDict = {});
-    [FIXME] readonly attribute RTCIceCandidate? candidate;
-    [FIXME] readonly attribute DOMString? url;
+    constructor(DOMString type, optional RTCPeerConnectionIceEventInit eventInitDict = {});
+    readonly attribute RTCIceCandidate? candidate;
+    readonly attribute DOMString? url;
 };
 
 dictionary RTCPeerConnectionIceEventInit : EventInit {
-    // FIXME: spec has `RTCIceCandidate? candidate`.
-    object? candidate;
+    RTCIceCandidate? candidate = null;
     DOMString? url;
 };

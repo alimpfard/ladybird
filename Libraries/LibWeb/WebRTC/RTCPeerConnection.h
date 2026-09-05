@@ -6,7 +6,9 @@
 
 #pragma once
 
+#include <AK/AtomicRefCounted.h>
 #include <AK/HashMap.h>
+#include <AK/HashTable.h>
 #include <AK/Utf16String.h>
 #include <LibSync/Mutex.h>
 #include <LibWeb/Bindings/Forward.h>
@@ -20,15 +22,20 @@
 #include <LibWeb/WebIDL/Promise.h>
 
 namespace Audio {
+
 class PlaybackStream;
 class SampleSpecification;
+
 }
 
 namespace Media {
+
 class AudioDecoder;
 namespace FFmpeg {
+
 class FFmpegAudioConverter;
 class FFmpegAudioEncoder;
+
 }
 }
 
@@ -77,6 +84,9 @@ public:
 
     GC::Ref<WebIDL::Promise> create_offer(RTCOfferOptions const&);
     GC::Ref<WebIDL::Promise> create_an_offer();
+    RTCConfiguration const& get_configuration() const { return m_configuration; }
+    void restart_ice();
+    bool m_restart_ice { false };
     GC::Ref<WebIDL::Promise> create_answer(RTCAnswerOptions const&);
     GC::Ref<WebIDL::Promise> create_an_answer();
     GC::Ref<WebIDL::Promise> set_local_description(RTCLocalSessionDescriptionInit const&);
@@ -104,14 +114,18 @@ public:
     WebIDL::ExceptionOr<GC::Ref<RTCDataChannel>> create_data_channel(Utf16String const& label, RTCDataChannelInit const&);
 
     Vector<GC::Ref<RTCRtpSender>> collect_senders() const;
+    WebIDL::ExceptionOr<void> remove_track(GC::Ref<RTCRtpSender>);
+    void stop_sender(RTCRtpSender&);
 
     GC::Ref<WebIDL::Promise> get_stats(GC::Ptr<MediaCapture::MediaStreamTrack>);
 
     void close();
+    void on_helper_died();
 
     u64 pc_id() const { return m_pc_id; }
 
     // Inbound IPC event hooks (called by WebRTCAgent's dispatch).
+    void on_stats_received(u64 request_id, String reports, String error);
     void on_signaling_state_event(String state);
     void on_connection_state_event(String state);
     void on_ice_gathering_state_event(String state);
@@ -150,6 +164,13 @@ private:
     virtual void visit_edges(JS::Cell::Visitor&) override;
 
     void close_the_connection_algorithm(bool disappear);
+    GC::Ref<WebIDL::Promise> chain_operation(GC::Ref<WebIDL::ReactionSteps>);
+    GC::Ptr<WebIDL::Promise> m_last_operation;
+    GC::Ref<WebIDL::Promise> create_offer_impl(RTCOfferOptions const&);
+    GC::Ref<WebIDL::Promise> create_answer_impl(RTCAnswerOptions const&);
+    GC::Ref<WebIDL::Promise> set_local_description_impl(RTCLocalSessionDescriptionInit const&);
+    GC::Ref<WebIDL::Promise> set_remote_description_impl(RTCSessionDescriptionInit const&);
+    GC::Ref<WebIDL::Promise> add_ice_candidate_impl(RTCIceCandidateInit const&);
 
     // The global this connection was created for; used to recover the realm for
     // promise/event work triggered by IPC.
@@ -193,7 +214,6 @@ public:
     void on_sender_transform_changed(RTCRtpSender&);
 
 private:
-
     struct PendingDescription {
         Bindings::RTCSdpType type;
         Utf16String sdp;
@@ -214,12 +234,15 @@ private:
     // Per-remote-receiver playback stack. We bypass the spec's MediaStream → audio-element
     // path entirely and just opus-decode + push PCM straight to libmedia's audio output.
     // Once we wire MediaStreamTrack as a real audio source, this should go away.
+    struct PlaybackBuffer : public AtomicRefCounted<PlaybackBuffer> {
+        Sync::Mutex mutex;
+        Vector<float> samples;
+    };
     struct ReceiverAudioPlayback {
         OwnPtr<Media::AudioDecoder> decoder;
         OwnPtr<Media::FFmpeg::FFmpegAudioConverter> converter;
         RefPtr<Audio::PlaybackStream> playback_stream;
-        Sync::Mutex pcm_mutex;
-        Vector<float> pcm_buffer;
+        NonnullRefPtr<PlaybackBuffer> buffer = adopt_ref(*new PlaybackBuffer);
         u8 channel_count { 0 };
         bool started { false };
     };
@@ -231,11 +254,18 @@ private:
     // PCM frames (which the track's source produces — mic, or a
     // MediaStreamAudioDestinationNode-fed track), accumulates 20 ms blocks, opus
     // encodes them, and routes each RTCEncodedAudioFrame through the sender's transform.
+    struct PendingAudioFrames : public AtomicRefCounted<PendingAudioFrames> {
+        Atomic<size_t> count { 0 };
+    };
     struct OutgoingAudioPipeline {
+        NonnullRefPtr<PendingAudioFrames> pending_frames = adopt_ref(*new PendingAudioFrames);
         RefPtr<MediaCapture::AudioFrameSink> sink;
         GC::Ptr<MediaCapture::MediaStreamTrack> track;
         OwnPtr<Media::FFmpeg::FFmpegAudioEncoder> encoder;
+        OwnPtr<Media::FFmpeg::FFmpegAudioConverter> converter;
+        u64 source_frames { 0 };
         u64 sender_id { 0 };
+        u64 generation { 0 };
         u32 next_rtp_timestamp { 0 };
         u16 next_sequence_number { 0 };
         // Float accumulator for 20 ms frames at the track's native channel layout.
@@ -244,6 +274,8 @@ private:
         u8 channels { 0 };
     };
     HashMap<u64, NonnullOwnPtr<OutgoingAudioPipeline>> m_outgoing_audio_pipelines;
+    HashTable<u64> m_requested_audio_senders;
+    HashTable<u64> m_ready_audio_senders;
     void start_outgoing_audio_for_sender(GC::Ref<RTCRtpSender>);
     void encode_and_route_outgoing_pcm(u64 sender_id, ByteBuffer pcm_s16le);
     void on_outgoing_encrypted_frame(u64 sender_id, ByteBuffer payload, u32 rtp_timestamp, u16 sequence_number, u8 payload_type);

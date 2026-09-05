@@ -5,11 +5,13 @@
  */
 
 #include <LibGC/Heap.h>
+#include <LibWeb/MediaCapture/MediaStreamTrack.h>
 #include <LibWeb/WebIDL/DOMException.h>
 #include <LibWeb/WebRTC/RTCPeerConnection.h>
 #include <LibWeb/WebRTC/RTCRtpReceiver.h>
 #include <LibWeb/WebRTC/RTCRtpSender.h>
 #include <LibWeb/WebRTC/RTCRtpTransceiver.h>
+#include <LibWeb/WebRTC/WebRTCAgent.h>
 
 namespace Web::WebRTC {
 
@@ -39,6 +41,16 @@ void RTCRtpTransceiver::visit_edges(JS::Cell::Visitor& visitor)
     visitor.visit(m_receiver);
 }
 
+void RTCRtpTransceiver::set_direction(Bindings::RTCRtpTransceiverDirection direction)
+{
+    if (m_stopping || m_connection->is_closed() || direction == m_direction)
+        return;
+    m_direction = direction;
+    if (auto* client = WebRTCAgent::the().existing_client())
+        client->async_set_transceiver_direction(m_connection->pc_id(), m_sender->sender_id(), idl_enum_to_string(direction).to_utf8());
+    m_connection->update_negotiation_needed_flag();
+}
+
 // https://www.w3.org/TR/webrtc/#dom-rtcrtptransceiver-stop
 WebIDL::ExceptionOr<void> RTCRtpTransceiver::stop_method()
 {
@@ -63,11 +75,13 @@ void RTCRtpTransceiver::stop_sending_and_receiving(bool disappear)
 {
     // 1. Let sender be transceiver.[[Sender]].
     // 2. Let receiver be transceiver.[[Receiver]].
-    // FIXME: 3. In parallel, stop sending media with sender, and send an RTCP BYE for each RTP stream that was being sent by sender, as specified in [RFC3550].
+    m_connection->stop_sender(*m_sender);
+    if (auto* client = WebRTCAgent::the().existing_client())
+        client->async_stop_transceiver(m_connection->pc_id(), m_sender->sender_id());
     // FIXME: 4. In parallel, stop receiving media with receiver.
     // 5. If disappear is false, execute the steps for receiver.[[ReceiverTrack]] to be ended. This fires an event.
     if (!disappear) {
-        // FIXME: end receiver.[[ReceiverTrack]].
+        m_receiver->track()->end();
     }
     // 6. Set transceiver.[[Direction]] to "inactive".
     m_direction = Bindings::RTCRtpTransceiverDirection::Inactive;

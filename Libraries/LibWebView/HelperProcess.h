@@ -13,7 +13,6 @@
 #include <LibRequests/RequestClient.h>
 #include <LibWeb/Bindings/MainThreadVM.h>
 #include <LibWeb/HTML/CrossProcessId.h>
-#include <LibWebRTCClient/Client.h>
 #include <LibWebView/Forward.h>
 #include <LibWebView/PrivateBrowsing.h>
 #include <LibWebView/WebContentClient.h>
@@ -34,7 +33,6 @@ WEBVIEW_API ErrorOr<NonnullRefPtr<Requests::RequestClient>> launch_request_serve
 #if defined(HAVE_WASM_COMPILER_SERVICE)
 WEBVIEW_API ErrorOr<NonnullRefPtr<WasmCompilerClient::Client>> launch_wasm_compiler_process();
 #endif
-WEBVIEW_API ErrorOr<NonnullRefPtr<WebRTCClient::Client>> launch_webrtc_client_process();
 
 WEBVIEW_API ErrorOr<IPC::TransportHandle> connect_new_request_server_client(IsPrivate);
 WEBVIEW_API ErrorOr<IPC::TransportHandle> connect_new_image_decoder_client();

@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/JsonArray.h>
+#include <AK/JsonObject.h>
 #include <LibCore/EventLoop.h>
 #include <LibGC/Heap.h>
 #include <LibJS/Runtime/Map.h>
@@ -11,24 +13,29 @@
 #include <LibMedia/Audio/PlaybackStream.h>
 #include <LibMedia/AudioBlock.h>
 #include <LibMedia/CodecID.h>
+#include <LibMedia/CodedFrame.h>
 #include <LibMedia/FFmpeg/FFmpegAudioConverter.h>
 #include <LibMedia/FFmpeg/FFmpegAudioDecoder.h>
 #include <LibMedia/FFmpeg/FFmpegAudioEncoder.h>
 #include <LibWeb/Bindings/RTCPeerConnection.h>
+#include <LibWeb/Bindings/WrapperWorld.h>
 #include <LibWeb/DOM/Event.h>
 #include <LibWeb/HTML/EventNames.h>
 #include <LibWeb/HTML/Scripting/Environments.h>
 #include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
 #include <LibWeb/HTML/WindowOrWorkerGlobalScope.h>
 #include <LibWeb/HighResolutionTime/TimeOrigin.h>
+#include <LibWeb/Infra/JSON.h>
 #include <LibWeb/MediaCapture/MediaStream.h>
 #include <LibWeb/MediaCapture/MediaStreamTrack.h>
 #include <LibWeb/WebIDL/ExceptionOr.h>
 #include <LibWeb/WebIDL/Promise.h>
 #include <LibWeb/WebRTC/RTCDataChannel.h>
+#include <LibWeb/WebRTC/RTCDataChannelEvent.h>
 #include <LibWeb/WebRTC/RTCEncodedAudioFrame.h>
 #include <LibWeb/WebRTC/RTCIceCandidate.h>
 #include <LibWeb/WebRTC/RTCPeerConnection.h>
+#include <LibWeb/WebRTC/RTCPeerConnectionIceEvent.h>
 #include <LibWeb/WebRTC/RTCRtpReceiver.h>
 #include <LibWeb/WebRTC/RTCRtpScriptTransform.h>
 #include <LibWeb/WebRTC/RTCRtpSender.h>
@@ -46,9 +53,39 @@ GC_DEFINE_ALLOCATOR(RTCPeerConnection);
 
 WebIDL::ExceptionOr<GC::Ref<RTCPeerConnection>> RTCPeerConnection::create_for_constructor(JS::Object& relevant_global_object, RTCConfiguration const& configuration)
 {
+    if (!WebRTCAgent::the().is_ready())
+        return WebIDL::OperationError::create("Unable to start the WebRTC helper"_utf16);
     auto* global_scope = HTML::window_or_worker_global_scope_from_global_object(relevant_global_object);
     VERIFY(global_scope);
     auto connection = GC::Heap::the().allocate<RTCPeerConnection>(global_scope->this_impl(), configuration);
+    JsonArray servers;
+    for (auto const& server : configuration.ice_servers) {
+        JsonArray urls;
+        server.urls.visit(
+            [&](Utf16String const& url) { urls.must_append(url.to_utf8()); },
+            [&](auto const& entries) { for (auto const& url : entries) urls.must_append(url.to_utf8()); });
+        JsonObject entry;
+        entry.set("urls"sv, move(urls));
+        entry.set("username"sv, server.username.value_or(Utf16String { }).to_utf8());
+        entry.set("credential"sv, server.credential.value_or(Utf16String { }).to_utf8());
+        servers.must_append(move(entry));
+    }
+    JsonObject config;
+    config.set("ice_servers"sv, move(servers));
+    config.set("ice_transport_policy"sv, idl_enum_to_string(configuration.ice_transport_policy).to_utf8());
+    config.set("bundle_policy"sv, idl_enum_to_string(configuration.bundle_policy).to_utf8());
+    config.set("ice_candidate_pool_size"sv, configuration.ice_candidate_pool_size);
+    if (!configuration.certificates.is_empty())
+        return WebIDL::NotSupportedError::create("Custom RTC certificates are not supported"_utf16);
+    auto result = WebRTCAgent::the().client()->try_create_peer_connection(connection->m_pc_id, config.serialized());
+    if (result.is_error()) {
+        connection->m_is_closed = true;
+        return WebIDL::OperationError::create("WebRTC helper disconnected during construction"_utf16);
+    }
+    if (!result.value().is_empty()) {
+        connection->m_is_closed = true;
+        return WebIDL::OperationError::create(Utf16String::from_utf8(result.value()));
+    }
     WebRTCAgent::the().register_peer_connection(connection->m_pc_id, connection);
     return connection;
 }
@@ -60,15 +97,15 @@ RTCPeerConnection::RTCPeerConnection(GC::Ref<DOM::EventTarget> relevant_global_o
 {
     auto& agent = WebRTCAgent::the();
     m_pc_id = agent.next_pc_id();
-    if (auto* client = agent.client())
-        client->async_create_peer_connection(m_pc_id);
 }
 
 RTCPeerConnection::~RTCPeerConnection()
 {
     auto& agent = WebRTCAgent::the();
-    if (auto* client = agent.client())
-        client->async_close_peer_connection(m_pc_id);
+    if (!m_is_closed) {
+        if (auto* client = agent.existing_client())
+            client->async_close_peer_connection(m_pc_id);
+    }
     agent.unregister_peer_connection(m_pc_id);
 }
 
@@ -87,6 +124,7 @@ void RTCPeerConnection::visit_edges(JS::Cell::Visitor& visitor)
     Base::visit_edges(visitor);
     visitor.visit(m_global_object);
     visitor.visit(m_sctp);
+    visitor.visit(m_last_operation);
     visitor.visit(m_transceivers);
     visitor.visit(m_data_channels);
     visitor.visit(m_data_channels_by_id);
@@ -98,6 +136,31 @@ void RTCPeerConnection::visit_edges(JS::Cell::Visitor& visitor)
     visitor.visit(m_remote_receivers_by_id);
     for (auto& [_, pipeline] : m_outgoing_audio_pipelines)
         visitor.visit(pipeline->track);
+}
+
+GC::Ref<WebIDL::Promise> RTCPeerConnection::chain_operation(GC::Ref<WebIDL::ReactionSteps> operation)
+{
+    if (m_is_closed)
+        return WebIDL::create_rejected_promise(relevant_realm(), WebIDL::InvalidStateError::create("RTCPeerConnection is closed"_utf16));
+    auto previous = m_last_operation;
+    if (!previous)
+        previous = WebIDL::create_resolved_promise(relevant_realm(), JS::js_undefined());
+    m_last_operation = WebIDL::react_to_promise(*previous, operation, operation);
+    return *m_last_operation;
+}
+
+void RTCPeerConnection::on_helper_died()
+{
+    HTML::TemporaryExecutionContext context(relevant_realm());
+    for (auto& [_, promise] : m_pending_void_requests)
+        WebIDL::reject_promise(relevant_realm(), *promise, WebIDL::OperationError::create("WebRTC helper disconnected"_utf16));
+    for (auto& [_, promise] : m_pending_description_requests)
+        WebIDL::reject_promise(relevant_realm(), *promise, WebIDL::OperationError::create("WebRTC helper disconnected"_utf16));
+    m_pending_void_requests.clear();
+    m_pending_description_requests.clear();
+    m_pending_description_payloads.clear();
+    close();
+    dispatch_event(DOM::Event::create(relevant_global_object(), HTML::EventNames::connectionstatechange));
 }
 
 // https://www.w3.org/TR/webrtc/#dom-rtcpeerconnection-close
@@ -126,11 +189,32 @@ void RTCPeerConnection::close_the_connection_algorithm(bool disappear)
     for (auto& transceiver : transceivers) {
         // 4.1. If transceiver.[[Stopped]] is true, abort these sub steps.
         if (transceiver->is_stopped())
-            break;
+            continue;
         // 4.2. Stop the RTCRtpTransceiver with transceiver and disappear.
         transceiver->stop(disappear);
     }
-    // TODO: 5. Set the [[ReadyState]] slot of each of connection's RTCDataChannels to "closed".
+    auto& agent = WebRTCAgent::the();
+    if (auto* client = agent.existing_client())
+        client->async_close_peer_connection(m_pc_id);
+    for (auto& [id, channel] : m_data_channels_by_id) {
+        channel->set_ready_state(Bindings::RTCDataChannelState::Closed);
+        agent.unregister_data_channel(id);
+    }
+    for (auto& [_, pipeline] : m_outgoing_audio_pipelines) {
+        if (pipeline->track && pipeline->sink)
+            pipeline->track->remove_audio_sink(*pipeline->sink);
+    }
+    m_outgoing_audio_pipelines.clear();
+    m_last_operation = nullptr;
+    m_pending_void_requests.clear();
+    m_pending_description_requests.clear();
+    m_pending_description_payloads.clear();
+    for (auto& [_, playback] : m_receiver_audio_playbacks) {
+        if (playback->playback_stream)
+            (void)playback->playback_stream->discard_buffer_and_suspend();
+    }
+    m_receiver_audio_playbacks.clear();
+    agent.unregister_peer_connection(m_pc_id);
     // 6. If connection.[[SctpTransport]] is not null...
     if (m_sctp) {
         // TODO: 6. ...tear down the underlying SCTP association by sending an SCTP ABORT chunk and set the [[SctpTransportState]] to "closed".
@@ -145,7 +229,14 @@ void RTCPeerConnection::close_the_connection_algorithm(bool disappear)
 }
 
 // https://www.w3.org/TR/webrtc/#dom-rtcpeerconnection-createoffer
-GC::Ref<WebIDL::Promise> RTCPeerConnection::create_offer(RTCOfferOptions const&)
+GC::Ref<WebIDL::Promise> RTCPeerConnection::create_offer(RTCOfferOptions const& options)
+{
+    return chain_operation(GC::create_function(heap(), [this, options](JS::Value) -> WebIDL::ExceptionOr<JS::Value> {
+        return create_offer_impl(options)->promise();
+    }));
+}
+
+GC::Ref<WebIDL::Promise> RTCPeerConnection::create_offer_impl(RTCOfferOptions const& options)
 {
     // 1. Let connection be the RTCPeerConnection object on which the method was invoked.
     auto& realm = relevant_realm();
@@ -156,6 +247,7 @@ GC::Ref<WebIDL::Promise> RTCPeerConnection::create_offer(RTCOfferOptions const&)
         return promise;
     }
     // FIXME: 3. Return the result of chaining the result of creating an offer with connection to connection's operations chain.
+    m_restart_ice |= options.ice_restart;
     return create_an_offer();
 }
 
@@ -178,13 +270,20 @@ GC::Ref<WebIDL::Promise> RTCPeerConnection::create_an_offer()
     auto request_id = agent.next_request_id();
     m_pending_description_requests.set(request_id, p);
     if (auto* client = agent.client())
-        client->async_create_offer(m_pc_id, request_id);
+        client->async_create_offer(m_pc_id, request_id, m_restart_ice);
     // 4. Return p.
     return p;
 }
 
 // https://www.w3.org/TR/webrtc/#dom-rtcpeerconnection-createanswer
-GC::Ref<WebIDL::Promise> RTCPeerConnection::create_answer(RTCAnswerOptions const&)
+GC::Ref<WebIDL::Promise> RTCPeerConnection::create_answer(RTCAnswerOptions const& options)
+{
+    return chain_operation(GC::create_function(heap(), [this, options](JS::Value) -> WebIDL::ExceptionOr<JS::Value> {
+        return create_answer_impl(options)->promise();
+    }));
+}
+
+GC::Ref<WebIDL::Promise> RTCPeerConnection::create_answer_impl(RTCAnswerOptions const&)
 {
     auto& realm = relevant_realm();
     // 1. Let connection be the RTCPeerConnection object on which the method was invoked.
@@ -225,6 +324,15 @@ GC::Ref<WebIDL::Promise> RTCPeerConnection::create_an_answer()
 // https://www.w3.org/TR/webrtc/#dom-rtcpeerconnection-setlocaldescription
 GC::Ref<WebIDL::Promise> RTCPeerConnection::set_local_description(RTCLocalSessionDescriptionInit const& description)
 {
+    return chain_operation(GC::create_function(heap(), [this, description](JS::Value) -> WebIDL::ExceptionOr<JS::Value> {
+        return set_local_description_impl(description)->promise();
+    }));
+}
+
+GC::Ref<WebIDL::Promise> RTCPeerConnection::set_local_description_impl(RTCLocalSessionDescriptionInit const& description)
+{
+    if (m_is_closed)
+        return WebIDL::create_rejected_promise(relevant_realm(), WebIDL::InvalidStateError::create("RTCPeerConnection is closed"_utf16));
     auto& realm = relevant_realm();
     // 1. Let description be the method's first argument.
     // 2. Let connection be the RTCPeerConnection object on which the method was invoked.
@@ -254,19 +362,16 @@ GC::Ref<WebIDL::Promise> RTCPeerConnection::set_local_description(RTCLocalSessio
         WebIDL::reject_promise(realm, rejected, WebIDL::InvalidModificationError::create("Local description SDP does not match last created answer"_utf16));
         return rejected;
     }
-    // 4.4. If sdp is the empty string, and type is "offer", then run the following sub steps:
-    if (sdp.is_empty() && type == Bindings::RTCSdpType::Offer) {
-        // 4.4.1. Set sdp to the value of connection.[[LastCreatedOffer]].
-        sdp = m_last_created_offer;
-        // FIXME: 4.4.2. If sdp is the empty string, or if it no longer accurately represents the offerer's system state of connection, then let p be the result of creating an offer with connection, and return the result of reacting to p with a fulfillment step that sets the local session description indicated by its first argument.
-    }
-    // 4.5. If sdp is the empty string, and type is "answer" or "pranswer", then run the following sub steps:
-    if (sdp.is_empty() && (type == Bindings::RTCSdpType::Answer || type == Bindings::RTCSdpType::Pranswer)) {
-        // 4.5.1. Set sdp to the value of connection.[[LastCreatedAnswer]].
-        sdp = m_last_created_answer;
-        // FIXME: 4.5.2. If sdp is the empty string, or if it no longer accurately represents the answerer's system state of connection, then let p be the result of creating an answer with connection, and return the result of reacting to p with the following fulfillment steps:
-        //   FIXME: 4.5.2.1. Let answer be the first argument to these fulfillment steps.
-        //   FIXME: 4.5.2.2. Return the result of setting the local session description indicated by {type, answer.sdp}.
+    if (sdp.is_empty() && type != Bindings::RTCSdpType::Rollback) {
+        auto generated = type == Bindings::RTCSdpType::Offer ? create_an_offer() : create_an_answer();
+        return WebIDL::react_to_promise(generated, GC::create_function(heap(), [this, type](JS::Value value) -> WebIDL::ExceptionOr<JS::Value> {
+            if (m_is_closed)
+                return WebIDL::InvalidStateError::create("RTCPeerConnection is closed"_utf16);
+            auto sdp_value = TRY(value.as_object().get("sdp"_utf16_fly_string));
+            auto generated_sdp = TRY(sdp_value.to_utf16_string(relevant_realm().vm()));
+            return set_a_local_description(type, generated_sdp)->promise();
+        }),
+            nullptr);
     }
     // 4.6. Return the result of setting the local session description indicated by {type, sdp}.
     return set_a_local_description(type, sdp);
@@ -289,6 +394,15 @@ GC::Ref<WebIDL::Promise> RTCPeerConnection::set_a_local_description(Bindings::RT
 // https://www.w3.org/TR/webrtc/#dom-rtcpeerconnection-setremotedescription
 GC::Ref<WebIDL::Promise> RTCPeerConnection::set_remote_description(RTCSessionDescriptionInit const& description)
 {
+    return chain_operation(GC::create_function(heap(), [this, description](JS::Value) -> WebIDL::ExceptionOr<JS::Value> {
+        return set_remote_description_impl(description)->promise();
+    }));
+}
+
+GC::Ref<WebIDL::Promise> RTCPeerConnection::set_remote_description_impl(RTCSessionDescriptionInit const& description)
+{
+    if (m_is_closed)
+        return WebIDL::create_rejected_promise(relevant_realm(), WebIDL::InvalidStateError::create("RTCPeerConnection is closed"_utf16));
     // 1. Let description be the method's first argument.
     // 2. Let connection be the RTCPeerConnection object on which the method was invoked.
     // FIXME: 3. Return the result of chaining the following steps to connection's operations chain:
@@ -351,6 +465,15 @@ Vector<GC::Ref<RTCRtpReceiver>> RTCPeerConnection::get_receivers() const
 // https://www.w3.org/TR/webrtc/#dom-rtcpeerconnection-addicecandidate
 GC::Ref<WebIDL::Promise> RTCPeerConnection::add_ice_candidate(RTCIceCandidateInit const& candidate)
 {
+    return chain_operation(GC::create_function(heap(), [this, candidate](JS::Value) -> WebIDL::ExceptionOr<JS::Value> {
+        return add_ice_candidate_impl(candidate)->promise();
+    }));
+}
+
+GC::Ref<WebIDL::Promise> RTCPeerConnection::add_ice_candidate_impl(RTCIceCandidateInit const& candidate)
+{
+    if (m_is_closed)
+        return WebIDL::create_rejected_promise(relevant_realm(), WebIDL::InvalidStateError::create("RTCPeerConnection is closed"_utf16));
     auto& realm = relevant_realm();
     // 1. Let candidate be the method's argument.
     // 2. Let connection be the RTCPeerConnection object on which the method was invoked.
@@ -362,9 +485,10 @@ GC::Ref<WebIDL::Promise> RTCPeerConnection::add_ice_candidate(RTCIceCandidateIni
     }
     // FIXME: 4. Return the result of chaining the following steps to connection's operations chain:
     auto p = WebIDL::create_promise(realm);
-    // FIXME: 4.1. If remoteDescription is null return a promise rejected with a newly created InvalidStateError.
-    //        We don't yet mirror [[CurrentRemoteDescription]]/[[PendingRemoteDescription]] from the
-    //        rust service — defer the check there (it'll come back as InvalidStateError via the result event).
+    if (!remote_description()) {
+        WebIDL::reject_promise(realm, p, WebIDL::InvalidStateError::create("Remote description is not set"_utf16));
+        return p;
+    }
     // FIXME: 4.2. If candidate.sdpMid is not null, run the following steps:
     //   FIXME: 4.2.1. If candidate.sdpMid is not equal to the mid of any media description in remoteDescription, return a promise rejected with a newly created OperationError.
     // FIXME: 4.3. Else, if candidate.sdpMLineIndex is not null, run the following steps:
@@ -412,7 +536,7 @@ WebIDL::ExceptionOr<GC::Ref<RTCRtpSender>> RTCPeerConnection::add_track(GC::Ref<
     // 6. Let senders be the result of executing the CollectSenders algorithm. If an RTCRtpSender for track already exists in senders, throw an InvalidAccessError.
     auto senders = collect_senders();
     for (auto const& existing : senders) {
-        if (existing->track() == track.ptr())
+        if (existing->track() == track)
             return WebIDL::InvalidAccessError::create("RTCRtpSender for track already exists"_utf16);
     }
     // 7. ...if any RTCRtpSender object in senders matches all the following criteria, let sender be that object, or null otherwise:
@@ -477,18 +601,11 @@ WebIDL::ExceptionOr<GC::Ref<RTCRtpSender>> RTCPeerConnection::add_track(GC::Ref<
         auto receiver = RTCRtpReceiver::create(kind);
         // FIXME: 9.3. Create an RTCRtpTransceiver with sender, receiver and an RTCRtpTransceiverDirection value of "sendrecv", and let transceiver be the result.
         auto transceiver = RTCRtpTransceiver::create(*this, *sender, receiver, Bindings::RTCRtpTransceiverDirection::Sendrecv, kind);
+        transceiver->set_transceiver_id(sender_id);
         // 9.4. Add transceiver to connection's set of transceivers.
         m_transceivers.append(transceiver);
     }
     // FIXME: 10. A track could have contents that are inaccessible to the application. ... Silence (audio), black frames (video) or equivalently absent content is sent in place of track content.
-    if (auto* client = agent.client()) {
-        if (kind == Bindings::MediaStreamTrackKind::Audio) {
-            // FIXME: honor the track's [[Source]] device id; for now we capture from the
-            //        default recording device. The actual capture pipeline is started by
-            //        on_sender_track_changed() below since set_track() drives that hook.
-            (void)client;
-        }
-    }
     // 11. Update the negotiation-needed flag for connection.
     update_negotiation_needed_flag();
     // 12. Return sender.
@@ -532,7 +649,6 @@ WebIDL::ExceptionOr<GC::Ref<RTCRtpTransceiver>> RTCPeerConnection::add_transceiv
     auto sender_id_for_new_sender = WebRTCAgent::the().next_sender_id();
     auto sender_ssrc_for_new_sender = WebRTCAgent::the().next_ssrc();
     auto sender = RTCRtpSender::create(*this, sender_id_for_new_sender, sender_ssrc_for_new_sender);
-    sender->set_track(track);
     Vector<Utf16String> stream_ids;
     for (auto const& stream : init.streams) {
         auto id = stream->id();
@@ -547,7 +663,7 @@ WebIDL::ExceptionOr<GC::Ref<RTCRtpTransceiver>> RTCPeerConnection::add_transceiv
     // 14. Add transceiver to connection's set of transceivers.
     m_transceivers.append(transceiver);
     auto& agent = WebRTCAgent::the();
-    auto transceiver_id = agent.next_sender_id();
+    auto transceiver_id = sender_id_for_new_sender;
     transceiver->set_transceiver_id(transceiver_id);
     if (auto* client = agent.client()) {
         client->async_add_transceiver(
@@ -556,6 +672,7 @@ WebIDL::ExceptionOr<GC::Ref<RTCRtpTransceiver>> RTCPeerConnection::add_transceiv
             kind == Bindings::MediaStreamTrackKind::Audio ? "audio"_string : "video"_string,
             idl_enum_to_string(direction).to_well_formed_utf8());
     }
+    sender->set_track(track);
     // 15. Update the negotiation-needed flag for connection.
     update_negotiation_needed_flag();
     // 16. Return transceiver.
@@ -662,117 +779,139 @@ Vector<GC::Ref<RTCRtpTransceiver>> RTCPeerConnection::collect_transceivers() con
 }
 
 // FIXME: https://www.w3.org/TR/webrtc/#update-the-negotiation-needed-flag
+void RTCPeerConnection::restart_ice()
+{
+    if (m_is_closed)
+        return;
+    m_restart_ice = true;
+    update_negotiation_needed_flag();
+}
+
 void RTCPeerConnection::update_negotiation_needed_flag()
 {
+    HTML::queue_a_task(HTML::Task::Source::Networking, nullptr, nullptr, GC::create_function(heap(), [this] {
+        if (!m_is_closed && m_signaling_state == Bindings::RTCSignalingState::Stable)
+            on_negotiation_needed_received();
+    }));
 }
 
 // https://www.w3.org/TR/webrtc/#dom-rtcpeerconnection-getstats
-GC::Ref<WebIDL::Promise> RTCPeerConnection::get_stats(GC::Ptr<MediaCapture::MediaStreamTrack>)
+GC::Ref<WebIDL::Promise> RTCPeerConnection::get_stats(GC::Ptr<MediaCapture::MediaStreamTrack> selector)
 {
-    auto& realm = relevant_realm();
-    auto& vm = realm.vm();
-
-    // 1. Let selector be the RTCRtpReceiver object on which the method was invoked.
-    // FIXME: honor the selector argument.
-
-    // 2. Let p be a new promise, and run the following steps in parallel:
-    auto p = WebIDL::create_promise(realm);
-    HTML::TemporaryExecutionContext context(realm);
-
-    // 2.1. Gather the stats indicated by selector according to the stats selection algorithm.
-    //
-    // Stats selection algorithm:
-    //     1. Let result be an empty RTCStatsReport.
-    //     2. If selector is null, gather stats for the whole connection, add them to result, return result, and abort these steps.
-    //     3. If selector is an RTCRtpSender, gather stats for and add the following objects to result:
-    //         All RTCOutboundRtpStreamStats objects representing RTP streams being sent by selector.
-    //         All stats objects referenced directly or indirectly by the RTCOutboundRtpStreamStats objects added.
-    //     4. If selector is an RTCRtpReceiver, gather stats for and add the following objects to result:
-    //         All RTCInboundRtpStreamStats objects representing RTP streams being received by selector.
-    //         All stats objects referenced directly or indirectly by the RTCInboundRtpStreamStats added.
-    //     5. Return result.
-    //
-    // FIXME: implement the full RTCStatsReport hierarchy. We currently fake just one outbound-rtp entry per
-    //        sender (with kind, mediaType, ssrc, timestamp) — enough for consumers like Discord that use the
-    //        report to discover their local SSRC for EncryptionWorker registration.
-    //
-    // FIXME: codegen doesn't yet support maplike with non-sequence values, so RTCStatsReport is an empty
-    //        platform interface. We instead resolve with a real `JS::Map` — `.values()`/`.entries()` work as
-    //        expected, but `instanceof RTCStatsReport` does not.
-    auto map = JS::Map::create(realm);
-    auto now = HighResolutionTime::unsafe_shared_current_time();
-
-    auto append_entry = [&](Utf16String const& id, Utf16FlyString const& type, GC::Ref<JS::Object> entry) {
-        MUST(entry->create_data_property("id"_utf16_fly_string, JS::PrimitiveString::create(vm, id)));
-        MUST(entry->create_data_property("type"_utf16_fly_string, JS::PrimitiveString::create(vm, type)));
-        MUST(entry->create_data_property("timestamp"_utf16_fly_string, JS::Value(now)));
-        map->map_set(JS::PrimitiveString::create(vm, id), entry);
-    };
-
-    for (auto& transceiver : m_transceivers) {
-        auto sender = transceiver->sender();
-        auto kind_str = transceiver->kind() == Bindings::MediaStreamTrackKind::Audio ? "audio"_utf16_fly_string : "video"_utf16_fly_string;
-        auto entry = JS::Object::create(realm, realm.intrinsics().object_prototype());
-        MUST(entry->create_data_property("ssrc"_utf16_fly_string, JS::Value(static_cast<double>(sender->ssrc()))));
-        MUST(entry->create_data_property("kind"_utf16_fly_string, JS::PrimitiveString::create(vm, kind_str)));
-        MUST(entry->create_data_property("mediaType"_utf16_fly_string, JS::PrimitiveString::create(vm, kind_str)));
-        auto id = Utf16String::formatted("outbound-rtp-{}", sender->ssrc());
-        append_entry(id, "outbound-rtp"_utf16_fly_string, entry);
+    auto promise = WebIDL::create_promise(relevant_realm());
+    if (selector) {
+        // The backend currently returns connection-wide reports. Do not silently
+        // return unrelated statistics when a caller requests a particular track.
+        WebIDL::reject_promise(relevant_realm(), promise, WebIDL::NotSupportedError::create("Track-scoped RTC statistics are not supported"_utf16));
+        return promise;
+    }
+    auto* client = WebRTCAgent::the().existing_client();
+    if (!client || m_is_closed) {
+        auto report = RTCStatsReport::create();
+        WebIDL::resolve_promise(relevant_realm(), promise, Bindings::wrap(Bindings::host_defined_wrapper_world(relevant_realm()), relevant_realm(), report));
+        return promise;
+    }
+    auto request_id = WebRTCAgent::the().next_request_id();
+    m_pending_description_requests.set(request_id, promise);
+    client->async_get_stats(m_pc_id, request_id);
+    return promise;
     }
 
-    // 2.2. Queue a global task on the networking task source given the current realm's global object as global to
-    //      resolve p with the resulting RTCStatsReport object, containing the gathered stats.
-    // FIXME: this should be queued on the networking task source rather than resolving inline.
-    WebIDL::resolve_promise(realm, p, map);
-
-    // 3. Return p.
-    return p;
-}
+    void RTCPeerConnection::on_stats_received(u64 request_id, String reports, String error)
+    {
+        auto pending = m_pending_description_requests.take(request_id);
+        if (!pending.has_value())
+            return;
+        auto& realm = relevant_realm();
+        HTML::TemporaryExecutionContext context(realm);
+        if (!error.is_empty()) {
+            WebIDL::reject_promise(realm, **pending, WebIDL::OperationError::create(Utf16String::from_utf8(error)));
+            return;
+        }
+        auto parsed = Infra::parse_json_string_to_javascript_value(realm, Utf16String::from_utf8(reports));
+        if (parsed.is_exception() || !parsed.value().is_object()) {
+            WebIDL::reject_promise(realm, **pending, WebIDL::OperationError::create("Invalid RTC statistics report"_utf16));
+            return;
+        }
+        auto& object = parsed.value().as_object();
+        auto report = RTCStatsReport::create();
+        for (auto key : MUST(object.enumerable_own_property_names(JS::Object::PropertyKind::Key))) {
+            auto name = MUST(key.to_utf16_string(realm.vm()));
+            auto entry = MUST(object.get(name));
+            if (entry.is_object())
+                report->set_entry(FlyString(name.to_utf8()), entry.as_object());
+        }
+        WebIDL::resolve_promise(realm, **pending, Bindings::wrap(Bindings::host_defined_wrapper_world(realm), realm, report));
+    }
 
 static Optional<Bindings::RTCSignalingState> parse_signaling_state(StringView s)
 {
-    if (s == "stable"sv) return Bindings::RTCSignalingState::Stable;
-    if (s == "have-local-offer"sv || s == "havelocaloffer"sv) return Bindings::RTCSignalingState::HaveLocalOffer;
-    if (s == "have-remote-offer"sv || s == "haveremoteoffer"sv) return Bindings::RTCSignalingState::HaveRemoteOffer;
-    if (s == "have-local-pranswer"sv || s == "havelocalpranswer"sv) return Bindings::RTCSignalingState::HaveLocalPranswer;
-    if (s == "have-remote-pranswer"sv || s == "haveremotepranswer"sv) return Bindings::RTCSignalingState::HaveRemotePranswer;
-    if (s == "closed"sv) return Bindings::RTCSignalingState::Closed;
+    if (s == "stable"sv)
+        return Bindings::RTCSignalingState::Stable;
+    if (s == "have-local-offer"sv || s == "havelocaloffer"sv)
+        return Bindings::RTCSignalingState::HaveLocalOffer;
+    if (s == "have-remote-offer"sv || s == "haveremoteoffer"sv)
+        return Bindings::RTCSignalingState::HaveRemoteOffer;
+    if (s == "have-local-pranswer"sv || s == "havelocalpranswer"sv)
+        return Bindings::RTCSignalingState::HaveLocalPranswer;
+    if (s == "have-remote-pranswer"sv || s == "haveremotepranswer"sv)
+        return Bindings::RTCSignalingState::HaveRemotePranswer;
+    if (s == "closed"sv)
+        return Bindings::RTCSignalingState::Closed;
     return {};
 }
 
 static Optional<Bindings::RTCPeerConnectionState> parse_connection_state(StringView s)
 {
-    if (s == "new"sv) return Bindings::RTCPeerConnectionState::New;
-    if (s == "connecting"sv) return Bindings::RTCPeerConnectionState::Connecting;
-    if (s == "connected"sv) return Bindings::RTCPeerConnectionState::Connected;
-    if (s == "disconnected"sv) return Bindings::RTCPeerConnectionState::Disconnected;
-    if (s == "failed"sv) return Bindings::RTCPeerConnectionState::Failed;
-    if (s == "closed"sv) return Bindings::RTCPeerConnectionState::Closed;
+    if (s == "new"sv)
+        return Bindings::RTCPeerConnectionState::New;
+    if (s == "connecting"sv)
+        return Bindings::RTCPeerConnectionState::Connecting;
+    if (s == "connected"sv)
+        return Bindings::RTCPeerConnectionState::Connected;
+    if (s == "disconnected"sv)
+        return Bindings::RTCPeerConnectionState::Disconnected;
+    if (s == "failed"sv)
+        return Bindings::RTCPeerConnectionState::Failed;
+    if (s == "closed"sv)
+        return Bindings::RTCPeerConnectionState::Closed;
     return {};
 }
 
 static Optional<Bindings::RTCIceGatheringState> parse_ice_gathering(StringView s)
 {
-    if (s == "new"sv) return Bindings::RTCIceGatheringState::New;
-    if (s == "gathering"sv) return Bindings::RTCIceGatheringState::Gathering;
-    if (s == "complete"sv) return Bindings::RTCIceGatheringState::Complete;
+    if (s == "new"sv)
+        return Bindings::RTCIceGatheringState::New;
+    if (s == "gathering"sv)
+        return Bindings::RTCIceGatheringState::Gathering;
+    if (s == "complete"sv)
+        return Bindings::RTCIceGatheringState::Complete;
     return {};
 }
 
 static Optional<Bindings::RTCIceConnectionState> parse_ice_connection(StringView s)
 {
-    if (s == "new"sv) return Bindings::RTCIceConnectionState::New;
-    if (s == "checking"sv) return Bindings::RTCIceConnectionState::Checking;
-    if (s == "connected"sv) return Bindings::RTCIceConnectionState::Connected;
-    if (s == "completed"sv) return Bindings::RTCIceConnectionState::Completed;
-    if (s == "disconnected"sv) return Bindings::RTCIceConnectionState::Disconnected;
-    if (s == "failed"sv) return Bindings::RTCIceConnectionState::Failed;
-    if (s == "closed"sv) return Bindings::RTCIceConnectionState::Closed;
+    if (s == "new"sv)
+        return Bindings::RTCIceConnectionState::New;
+    if (s == "checking"sv)
+        return Bindings::RTCIceConnectionState::Checking;
+    if (s == "connected"sv)
+        return Bindings::RTCIceConnectionState::Connected;
+    if (s == "completed"sv)
+        return Bindings::RTCIceConnectionState::Completed;
+    if (s == "disconnected"sv)
+        return Bindings::RTCIceConnectionState::Disconnected;
+    if (s == "failed"sv)
+        return Bindings::RTCIceConnectionState::Failed;
+    if (s == "closed"sv)
+        return Bindings::RTCIceConnectionState::Closed;
     return {};
 }
 
 void RTCPeerConnection::on_signaling_state_event(String state)
 {
+    if (m_is_closed)
+        return;
     if (auto parsed = parse_signaling_state(state); parsed.has_value()) {
         m_signaling_state = *parsed;
         HTML::TemporaryExecutionContext context(relevant_realm());
@@ -782,6 +921,8 @@ void RTCPeerConnection::on_signaling_state_event(String state)
 
 void RTCPeerConnection::on_connection_state_event(String state)
 {
+    if (m_is_closed)
+        return;
     if (auto parsed = parse_connection_state(state); parsed.has_value()) {
         m_connection_state = *parsed;
         HTML::TemporaryExecutionContext context(relevant_realm());
@@ -791,6 +932,8 @@ void RTCPeerConnection::on_connection_state_event(String state)
 
 void RTCPeerConnection::on_ice_gathering_state_event(String state)
 {
+    if (m_is_closed)
+        return;
     if (auto parsed = parse_ice_gathering(state); parsed.has_value()) {
         m_ice_gathering_state = *parsed;
         HTML::TemporaryExecutionContext context(relevant_realm());
@@ -800,6 +943,8 @@ void RTCPeerConnection::on_ice_gathering_state_event(String state)
 
 void RTCPeerConnection::on_ice_connection_state_event(String state)
 {
+    if (m_is_closed)
+        return;
     if (auto parsed = parse_ice_connection(state); parsed.has_value()) {
         m_ice_connection_state = *parsed;
         HTML::TemporaryExecutionContext context(relevant_realm());
@@ -807,11 +952,22 @@ void RTCPeerConnection::on_ice_connection_state_event(String state)
     }
 }
 
-void RTCPeerConnection::on_ice_candidate_received(Optional<String>, Optional<String>, Optional<u32>)
+void RTCPeerConnection::on_ice_candidate_received(Optional<String> candidate, Optional<String> sdp_mid, Optional<u32> sdp_mline_index)
 {
-    // FIXME: build an RTCIceCandidate from the parameters and dispatch an `icecandidate` event with it.
+    if (m_is_closed)
+        return;
     HTML::TemporaryExecutionContext context(relevant_realm());
-    dispatch_event(DOM::Event::create(relevant_global_object(), HTML::EventNames::icecandidate));
+    RTCPeerConnectionIceEventInit init;
+    if (candidate.has_value()) {
+        RTCIceCandidateInit candidate_init;
+        candidate_init.candidate = Utf16String::from_utf8(*candidate);
+        if (sdp_mid.has_value())
+            candidate_init.sdp_mid = Utf16String::from_utf8(*sdp_mid);
+        if (sdp_mline_index.has_value())
+            candidate_init.sdp_m_line_index = static_cast<u16>(*sdp_mline_index);
+        init.candidate = RTCIceCandidate::create(candidate_init);
+    }
+    dispatch_event(RTCPeerConnectionIceEvent::create(HTML::EventNames::icecandidate, init, HighResolutionTime::current_high_resolution_time(relevant_global_object())));
 }
 
 void RTCPeerConnection::on_ice_candidate_error_received(Optional<String>, Optional<u16>, String, u16, String)
@@ -823,6 +979,8 @@ void RTCPeerConnection::on_ice_candidate_error_received(Optional<String>, Option
 
 void RTCPeerConnection::on_negotiation_needed_received()
 {
+    if (m_is_closed)
+        return;
     HTML::TemporaryExecutionContext context(relevant_realm());
     dispatch_event(DOM::Event::create(relevant_global_object(), HTML::EventNames::negotiationneeded));
 }
@@ -1050,25 +1208,68 @@ GC::Ptr<MediaCapture::MediaStream> RTCPeerConnection::find_or_create_remote_stre
     return fresh;
 }
 
+void RTCPeerConnection::stop_sender(RTCRtpSender& sender)
+{
+    auto id = sender.sender_id();
+    auto pipeline = m_outgoing_audio_pipelines.take(id);
+    if (pipeline.has_value() && (*pipeline)->track && (*pipeline)->sink)
+        (*pipeline)->track->remove_audio_sink(*(*pipeline)->sink);
+    if (m_requested_audio_senders.contains(id)) {
+        if (auto* client = WebRTCAgent::the().existing_client())
+            client->async_remove_track(m_pc_id, id);
+    }
+    m_requested_audio_senders.remove(id);
+    m_ready_audio_senders.remove(id);
+}
+
+WebIDL::ExceptionOr<void> RTCPeerConnection::remove_track(GC::Ref<RTCRtpSender> sender)
+{
+    if (m_is_closed)
+        return WebIDL::InvalidStateError::create("RTCPeerConnection is closed"_utf16);
+    if (sender->connection().ptr() != this)
+        return WebIDL::InvalidAccessError::create("Sender belongs to another connection"_utf16);
+    if (!sender->track())
+        return { };
+    stop_sender(*sender);
+    sender->set_track(nullptr);
+    for (auto& transceiver : m_transceivers) {
+        if (transceiver->sender() != sender)
+            continue;
+        if (transceiver->direction() == Bindings::RTCRtpTransceiverDirection::Sendrecv)
+            transceiver->set_direction(Bindings::RTCRtpTransceiverDirection::Recvonly);
+        else if (transceiver->direction() == Bindings::RTCRtpTransceiverDirection::Sendonly)
+            transceiver->set_direction(Bindings::RTCRtpTransceiverDirection::Inactive);
+    }
+    update_negotiation_needed_flag();
+    return { };
+}
+
 void RTCPeerConnection::on_sender_track_changed(RTCRtpSender& sender)
 {
+    if (m_is_closed)
+        return;
+    auto sender_id = sender.sender_id();
+    auto old = m_outgoing_audio_pipelines.take(sender_id);
+    if (old.has_value() && (*old)->track && (*old)->sink)
+        (*old)->track->remove_audio_sink(*(*old)->sink);
     auto track = sender.track();
     if (!track || track->track_kind() != Bindings::MediaStreamTrackKind::Audio)
         return;
-    if (m_outgoing_audio_pipelines.contains(sender.sender_id()))
+    if (m_ready_audio_senders.contains(sender_id)) {
+        start_outgoing_audio_for_sender(sender);
         return;
-    // Tell the rust service to add a sending audio track for this sender. The
-    // service will allocate the wire-side SSRC and send it back via
-    // `on_audio_track_added` — at that point we update the sender's SSRC and
-    // start the encode pipeline. We defer the pipeline start so frames never
-    // flow with a stale SSRC (which would make Discord's EncryptionWorker drop
-    // them all because the userId mapping is keyed on the wire SSRC).
-    if (auto* client = WebRTCAgent::the().client())
-        client->async_add_audio_track(m_pc_id, sender.sender_id());
+    }
+    if (m_requested_audio_senders.contains(sender_id))
+        return;
+    m_requested_audio_senders.set(sender_id);
+    if (auto* client = WebRTCAgent::the().existing_client())
+        client->async_add_audio_track(m_pc_id, sender_id);
 }
 
 void RTCPeerConnection::on_audio_track_ssrc_assigned(u64 sender_id, u32 ssrc)
 {
+    if (m_is_closed)
+        return;
     GC::Ptr<RTCRtpSender> sender;
     for (auto& transceiver : m_transceivers) {
         if (transceiver->sender()->sender_id() == sender_id) {
@@ -1080,7 +1281,10 @@ void RTCPeerConnection::on_audio_track_ssrc_assigned(u64 sender_id, u32 ssrc)
         dbgln("RTCPeerConnection: on_audio_track_ssrc_assigned for unknown sender_id={}", sender_id);
         return;
     }
+    if (!m_requested_audio_senders.contains(sender_id))
+        return;
     sender->set_ssrc(ssrc);
+    m_ready_audio_senders.set(sender_id);
     if (m_outgoing_audio_pipelines.contains(sender_id))
         return;
     start_outgoing_audio_for_sender(*sender);
@@ -1096,8 +1300,9 @@ void RTCPeerConnection::on_sender_transform_changed(RTCRtpSender& sender)
     auto sender_id = sender.sender_id();
     if (script_transform->has_frame_written_callback())
         return;
-    script_transform->set_on_frame_written([this, sender_id](ByteBuffer payload, u32, u8 payload_type, u32 rtp_timestamp, u16 sequence_number) {
-        on_outgoing_encrypted_frame(sender_id, move(payload), rtp_timestamp, sequence_number, payload_type);
+    script_transform->set_on_frame_written([self = GC::Weak { *this }, sender_id](ByteBuffer payload, u32, u8 payload_type, u32 rtp_timestamp, u16 sequence_number) {
+        if (self)
+            self->on_outgoing_encrypted_frame(sender_id, move(payload), rtp_timestamp, sequence_number, payload_type);
     });
 }
 
@@ -1116,9 +1321,14 @@ void RTCPeerConnection::start_outgoing_audio_for_sender(GC::Ref<RTCRtpSender> se
         dbgln("RTCPeerConnection: opus encoder init failed for sender_id={}: {}", sender_id, encoder_or_err.error().description());
         return;
     }
+    auto converter = Media::FFmpeg::FFmpegAudioConverter::try_create();
+    if (converter.is_error() || converter.value()->set_output_sample_specification(sample_spec).is_error())
+        return;
     auto pipeline = make<OutgoingAudioPipeline>();
+    pipeline->converter = converter.release_value();
     pipeline->encoder = encoder_or_err.release_value();
     pipeline->sender_id = sender_id;
+    pipeline->generation = WebRTCAgent::the().next_request_id();
     pipeline->track = track;
     auto* pipeline_ptr = pipeline.ptr();
 
@@ -1127,35 +1337,33 @@ void RTCPeerConnection::start_outgoing_audio_for_sender(GC::Ref<RTCRtpSender> se
     // Hop to the current Core::EventLoop for encode + JS-realm operations.
     auto main_loop_weak = Core::EventLoop::current_weak();
     auto sink = adopt_ref(*new MediaCapture::AudioFrameSink);
-    sink->on_frames = [this, sender_id, pipeline_ptr, main_loop_weak](float const* samples, size_t frame_count, u8 channels, u32 /*sample_rate*/) {
-        // FIXME: resample if the track's rate differs from 48 kHz (currently we assume 48 kHz).
-        if (channels == 0 || frame_count == 0)
+    sink->on_frames = [pc_id = m_pc_id, sender_id, pipeline_ptr, main_loop_weak](float const* samples, size_t frame_count, u8 channels, u32 sample_rate) {
+        if (channels == 0 || frame_count == 0 || sample_rate == 0)
             return;
-
-        constexpr u32 SAMPLE_RATE = 48000;
-        constexpr size_t CHANNEL_COUNT = 2; // opus stereo
-        constexpr size_t SAMPLES_PER_FRAME = 960; // 20 ms @ 48 kHz
-        constexpr size_t INTERLEAVED_SAMPLES = SAMPLES_PER_FRAME * CHANNEL_COUNT;
-        (void)SAMPLE_RATE;
-
-        // FIXME: ad-hoc input gain — see the matching note in AnalyserNode::current_time_domain_data.
-        constexpr float CAPTURE_GAIN = 50.0f;
-
-        auto& accum = pipeline_ptr->float_accumulator;
-        if (pipeline_ptr->channels != CHANNEL_COUNT) {
-            pipeline_ptr->channels = CHANNEL_COUNT;
-            accum.clear();
+        constexpr size_t CHANNEL_COUNT = 2;
+        constexpr size_t INTERLEAVED_SAMPLES = 960 * CHANNEL_COUNT;
+        Media::AudioBlock input;
+        auto timestamp = AK::Duration::from_microseconds(static_cast<i64>(pipeline_ptr->source_frames) * 1'000'000 / sample_rate);
+        pipeline_ptr->source_frames += frame_count;
+        input.initialize(Audio::SampleSpecification(sample_rate, Audio::ChannelMap::stereo()), timestamp, frame_count);
+        for (size_t c = 0; c < CHANNEL_COUNT; ++c) {
+            auto output = input.channel_data(c);
+            for (size_t f = 0; f < frame_count; ++f)
+                output[f] = samples[f * channels + (c < channels ? c : 0)];
         }
-        accum.ensure_capacity(accum.size() + frame_count * CHANNEL_COUNT);
-        for (size_t f = 0; f < frame_count; ++f) {
-            // Up/down-mix to the encoder's stereo: replicate channel 0 if mono input,
-            // take the first two channels otherwise (drop the rest). Apply make-up gain.
-            float l = samples[f * channels + 0] * CAPTURE_GAIN;
-            float r = (channels >= 2 ? samples[f * channels + 1] : samples[f * channels + 0]) * CAPTURE_GAIN;
-            l = AK::clamp(l, -1.0f, 1.0f);
-            r = AK::clamp(r, -1.0f, 1.0f);
-            accum.append(l);
-            accum.append(r);
+        if (pipeline_ptr->converter->push_block(input).is_error())
+            return;
+        auto& accum = pipeline_ptr->float_accumulator;
+        while (true) {
+            Media::AudioBlock converted;
+            if (pipeline_ptr->converter->retrieve_block(converted).is_error() || converted.is_empty())
+                break;
+            auto left = converted.channel_data(0);
+            auto right = converted.channel_data(1);
+            for (size_t f = 0; f < converted.frame_count(); ++f) {
+                accum.append(AK::clamp(left[f], -1.0f, 1.0f));
+                accum.append(AK::clamp(right[f], -1.0f, 1.0f));
+            }
         }
         // Hand off any complete 20 ms frames to the main loop for encode.
         while (accum.size() >= INTERLEAVED_SAMPLES) {
@@ -1169,10 +1377,18 @@ void RTCPeerConnection::start_outgoing_audio_for_sender(GC::Ref<RTCRtpSender> se
             accum.remove(0, INTERLEAVED_SAMPLES);
 
             auto strong = main_loop_weak->take();
-            if (!strong)
+            if (!strong || pipeline_ptr->pending_frames->count.load() >= 5)
                 continue;
-            strong->deferred_invoke([this, sender_id, buffer = move(buffer)]() mutable {
-                encode_and_route_outgoing_pcm(sender_id, move(buffer));
+            pipeline_ptr->pending_frames->count.fetch_add(1);
+            strong->deferred_invoke([pc_id, sender_id, pending = pipeline_ptr->pending_frames, captured_at = MonotonicTime::now(), generation = pipeline_ptr->generation, buffer = move(buffer)]() mutable {
+                pending->count.fetch_sub(1);
+                auto self = WebRTCAgent::the().find_peer_connection(pc_id);
+                if (!self || self->m_is_closed || (MonotonicTime::now() - captured_at).to_milliseconds() > 200)
+                    return;
+                auto pipeline = self->m_outgoing_audio_pipelines.find(sender_id);
+                if (pipeline == self->m_outgoing_audio_pipelines.end() || pipeline->value->generation != generation)
+                    return;
+                self->encode_and_route_outgoing_pcm(sender_id, move(buffer));
             });
         }
     };
@@ -1183,6 +1399,8 @@ void RTCPeerConnection::start_outgoing_audio_for_sender(GC::Ref<RTCRtpSender> se
 
 void RTCPeerConnection::encode_and_route_outgoing_pcm(u64 sender_id, ByteBuffer pcm_s16le)
 {
+    if (m_is_closed)
+        return;
     auto pipeline_iter = m_outgoing_audio_pipelines.find(sender_id);
     if (pipeline_iter == m_outgoing_audio_pipelines.end())
         return;
@@ -1247,13 +1465,12 @@ void RTCPeerConnection::encode_and_route_outgoing_pcm(u64 sender_id, ByteBuffer 
         auto seq = pipeline.next_sequence_number++;
         pipeline.next_rtp_timestamp += SAMPLES_PER_FRAME;
 
-        // Without a script transform we'd need to send straight to rust as raw opus
-        // — but discord requires DAVE encryption, so dropping the frame is correct
-        // for this MVP. FIXME: for non-DAVE peers we should fall through to a
-        // direct-to-rust IPC path.
         auto script_transform = sender->script_transform();
-        if (!script_transform)
+        if (!script_transform) {
+            if (sender->transform().has<Empty>())
+                on_outgoing_encrypted_frame(sender_id, move(packet.data), rtp_ts, seq, 111);
             continue;
+        }
 
         script_transform->enqueue_encoded_audio_frame(move(packet.data), sender->ssrc(), 111 /* opus */, rtp_ts, seq);
     }
@@ -1261,6 +1478,8 @@ void RTCPeerConnection::encode_and_route_outgoing_pcm(u64 sender_id, ByteBuffer 
 
 void RTCPeerConnection::on_outgoing_encrypted_frame(u64 sender_id, ByteBuffer payload, u32 rtp_timestamp, u16 sequence_number, u8 payload_type)
 {
+    if (m_is_closed)
+        return;
     (void)rtp_timestamp;
     (void)sequence_number;
     (void)payload_type;
@@ -1274,9 +1493,16 @@ void RTCPeerConnection::on_outgoing_encrypted_frame(u64 sender_id, ByteBuffer pa
     client->async_audio_track_encoded_frame(sender_id, FRAME_DURATION_MICROS, payload.bytes());
 }
 
-void RTCPeerConnection::on_remote_track_ended(u64)
+void RTCPeerConnection::on_remote_track_ended(u64 receiver_id)
 {
-    // FIXME: end the corresponding receiver's [[ReceiverTrack]] (fires `ended` on the MediaStreamTrack).
+    if (m_is_closed)
+        return;
+    HTML::TemporaryExecutionContext context(relevant_realm());
+    if (auto receiver = m_remote_receivers_by_id.get(receiver_id); receiver.has_value())
+        (*receiver)->track()->end();
+    auto playback = m_receiver_audio_playbacks.take(receiver_id);
+    if (playback.has_value() && (*playback)->playback_stream)
+        (void)(*playback)->playback_stream->discard_buffer_and_suspend();
 }
 
 void RTCPeerConnection::on_encoded_audio_frame_received(u64 receiver_id, u32 ssrc, u32 rtp_timestamp, u16 sequence_number, u8 payload_type, ByteBuffer payload)
@@ -1288,15 +1514,16 @@ void RTCPeerConnection::on_encoded_audio_frame_received(u64 receiver_id, u32 ssr
 
     auto transform = receiver->transform();
     auto* script_transform_ref = transform.get_pointer<GC::Ref<RTCRtpScriptTransform>>();
-    if (!script_transform_ref)
+    if (!script_transform_ref) {
+        if (transform.has<Empty>())
+            feed_decoded_audio(receiver_id, move(payload), rtp_timestamp);
         return;
+    }
     auto& script_transform = **script_transform_ref;
-
-    // FIXME: route the worker's transformed frame back into the decode/playback pipeline
-    //        instead of dropping it on the floor.
     if (!script_transform.has_frame_written_callback()) {
-        script_transform.set_on_frame_written([this, receiver_id](ByteBuffer transformed_payload, u32, u8, u32 rtp_timestamp, u16) {
-            feed_decoded_audio(receiver_id, move(transformed_payload), rtp_timestamp);
+        script_transform.set_on_frame_written([self = GC::Weak { *this }, receiver_id](ByteBuffer transformed_payload, u32, u8, u32 rtp_timestamp, u16) {
+            if (self)
+                self->feed_decoded_audio(receiver_id, move(transformed_payload), rtp_timestamp);
         });
     }
 
@@ -1308,6 +1535,8 @@ void RTCPeerConnection::on_encoded_audio_frame_received(u64 receiver_id, u32 ssr
 //        carry the audio data and HTMLMediaElement.srcObject playback to drain it.
 void RTCPeerConnection::feed_decoded_audio(u64 receiver_id, ByteBuffer payload, u32 rtp_timestamp)
 {
+    if (m_is_closed)
+        return;
     auto playback_iter = m_receiver_audio_playbacks.find(receiver_id);
     auto* playback = playback_iter == m_receiver_audio_playbacks.end() ? nullptr : playback_iter->value.ptr();
     if (!playback) {
@@ -1326,12 +1555,12 @@ void RTCPeerConnection::feed_decoded_audio(u64 receiver_id, ByteBuffer payload, 
         m_receiver_audio_playbacks.set(receiver_id, move(fresh));
         playback = fresh_ptr;
 
-        auto data_callback = [playback, receiver_id](Span<float> buffer) -> ReadonlySpan<float> {
-            Sync::MutexLocker locker(playback->pcm_mutex);
-            auto available = playback->pcm_buffer.size();
+        auto data_callback = [buffer_state = playback->buffer, receiver_id](Span<float> buffer) -> ReadonlySpan<float> {
+            Sync::MutexLocker locker(buffer_state->mutex);
+            auto available = buffer_state->samples.size();
             auto take = AK::min(available, buffer.size());
-            memcpy(buffer.data(), playback->pcm_buffer.data(), take * sizeof(float));
-            playback->pcm_buffer.remove(0, take);
+            memcpy(buffer.data(), buffer_state->samples.data(), take * sizeof(float));
+            buffer_state->samples.remove(0, take);
             // Pad the rest of the buffer with silence so PulseAudio keeps requesting
             // data — returning a short span makes pa_stream_cancel_write fire and the
             // stream stops being polled, which bricks playback after the first frame.
@@ -1344,7 +1573,13 @@ void RTCPeerConnection::feed_decoded_audio(u64 receiver_id, ByteBuffer payload, 
         };
         constexpr u32 target_latency_ms = 100;
         auto promise = Audio::PlaybackStream::create_platform_or_null(Audio::OutputState::Suspended, target_latency_ms, move(data_callback));
-        promise->when_resolved([playback, receiver_id](auto& stream) {
+        promise->when_resolved([self = GC::Weak { *this }, receiver_id](auto& stream) {
+            if (!self || self->m_is_closed)
+                return;
+            auto entry = self->m_receiver_audio_playbacks.find(receiver_id);
+            if (entry == self->m_receiver_audio_playbacks.end())
+                return;
+            auto* playback = entry->value.ptr();
             playback->playback_stream = stream;
             dbgln("RTCPeerConnection: playback stream resolved receiver={} spec={}", receiver_id, stream->sample_specification());
             // Set up the resampler so the decoder's 48 kHz stereo opus matches whatever PA gave us.
@@ -1369,7 +1604,8 @@ void RTCPeerConnection::feed_decoded_audio(u64 receiver_id, ByteBuffer payload, 
         return;
 
     auto timestamp = AK::Duration::from_milliseconds(static_cast<i64>(rtp_timestamp / 48));
-    if (auto result = playback->decoder->receive_coded_data(timestamp, payload.bytes()); result.is_error()) {
+    Media::CodedFrame coded_frame { Media::CodecID::Opus, timestamp, timestamp, {}, Media::FrameFlags::Keyframe, MUST(FixedArray<u8>::create(payload.bytes())) };
+    if (auto result = playback->decoder->receive_coded_data(coded_frame); result.is_error()) {
         static size_t logged = 0;
         if (logged++ < 3)
             dbgln("RTCPeerConnection: opus receive_coded_data failed: {}", result.error().description());
@@ -1406,24 +1642,30 @@ void RTCPeerConnection::feed_decoded_audio(u64 receiver_id, ByteBuffer payload, 
         }
         if (converted.is_empty())
             continue;
-        Sync::MutexLocker locker(playback->pcm_mutex);
+        Sync::MutexLocker locker(playback->buffer->mutex);
         playback->channel_count = converted.channel_count();
         // AudioBlock is planar; the playback buffer is interleaved float, so interleave on append.
-        auto base = playback->pcm_buffer.size();
-        playback->pcm_buffer.resize(base + converted.sample_count());
-        converted.copy_to_interleaved(playback->pcm_buffer.span().slice(base));
+        auto max_samples = static_cast<size_t>(converted.sample_specification().sample_rate()) * converted.channel_count() / 5;
+        if (playback->buffer->samples.size() > max_samples)
+            playback->buffer->samples.remove(0, playback->buffer->samples.size() - max_samples);
+        auto base = playback->buffer->samples.size();
+        playback->buffer->samples.resize(base + converted.sample_count());
+        converted.copy_to_interleaved(playback->buffer->samples.span().slice(base));
         static size_t logged = 0;
         if (logged++ < 5)
             dbgln("RTCPeerConnection: feed_decoded_audio receiver={} samples={} channels={} spec={} buffer_total={}",
-                receiver_id, converted.sample_count(), converted.channel_count(), converted.sample_specification(), playback->pcm_buffer.size());
+                receiver_id, converted.sample_count(), converted.channel_count(), converted.sample_specification(), playback->buffer->samples.size());
     }
 }
 
 static Bindings::RTCSdpType parse_sdp_type(StringView s)
 {
-    if (s == "answer"sv) return Bindings::RTCSdpType::Answer;
-    if (s == "pranswer"sv) return Bindings::RTCSdpType::Pranswer;
-    if (s == "rollback"sv) return Bindings::RTCSdpType::Rollback;
+    if (s == "answer"sv)
+        return Bindings::RTCSdpType::Answer;
+    if (s == "pranswer"sv)
+        return Bindings::RTCSdpType::Pranswer;
+    if (s == "rollback"sv)
+        return Bindings::RTCSdpType::Rollback;
     return Bindings::RTCSdpType::Offer;
 }
 
@@ -1479,10 +1721,24 @@ void RTCPeerConnection::on_set_local_description_result_received(u64 request_id,
         return;
     }
     if (payload.has_value() && payload->is_local) {
-        // FIXME: spec splits this between [[CurrentLocalDescription]] and [[PendingLocalDescription]]
-        //        based on the answered/pending state. For now stash on [[CurrentLocalDescription]].
-        m_current_local_description = RTCSessionDescription::create(RTCSessionDescriptionInit { .sdp = payload->sdp, .type = payload->type });
-        m_pending_local_description = nullptr;
+        auto description = RTCSessionDescription::create(RTCSessionDescriptionInit { .sdp = payload->sdp, .type = payload->type });
+        switch (payload->type) {
+        case Bindings::RTCSdpType::Offer:
+        case Bindings::RTCSdpType::Pranswer:
+            m_pending_local_description = description;
+            break;
+        case Bindings::RTCSdpType::Answer:
+            m_current_local_description = description;
+            m_current_remote_description = m_pending_remote_description;
+            m_pending_local_description = nullptr;
+            m_pending_remote_description = nullptr;
+            m_restart_ice = false;
+            break;
+        case Bindings::RTCSdpType::Rollback:
+            m_pending_local_description = nullptr;
+            m_pending_remote_description = nullptr;
+            break;
+        }
     }
     WebIDL::resolve_promise(realm, promise_ref, JS::js_undefined());
 }
@@ -1501,10 +1757,24 @@ void RTCPeerConnection::on_set_remote_description_result_received(u64 request_id
         return;
     }
     if (payload.has_value() && !payload->is_local) {
-        // FIXME: spec splits this between [[CurrentRemoteDescription]] and [[PendingRemoteDescription]]
-        //        based on the answered/pending state. For now stash on [[CurrentRemoteDescription]].
-        m_current_remote_description = RTCSessionDescription::create(RTCSessionDescriptionInit { .sdp = payload->sdp, .type = payload->type });
-        m_pending_remote_description = nullptr;
+        auto description = RTCSessionDescription::create(RTCSessionDescriptionInit { .sdp = payload->sdp, .type = payload->type });
+        switch (payload->type) {
+        case Bindings::RTCSdpType::Offer:
+        case Bindings::RTCSdpType::Pranswer:
+            m_pending_remote_description = description;
+            break;
+        case Bindings::RTCSdpType::Answer:
+            m_current_remote_description = description;
+            m_current_local_description = m_pending_local_description;
+            m_pending_local_description = nullptr;
+            m_pending_remote_description = nullptr;
+            m_restart_ice = false;
+            break;
+        case Bindings::RTCSdpType::Rollback:
+            m_pending_local_description = nullptr;
+            m_pending_remote_description = nullptr;
+            break;
+        }
     }
     WebIDL::resolve_promise(realm, promise_ref, JS::js_undefined());
 }
@@ -1523,12 +1793,26 @@ void RTCPeerConnection::on_add_ice_candidate_result_received(u64 request_id, boo
         WebIDL::resolve_promise(realm, promise_ref, JS::js_undefined());
 }
 
-void RTCPeerConnection::on_remote_data_channel_received(u64, String, bool, Optional<u16>, Optional<u16>, String, bool, Optional<u16>)
+void RTCPeerConnection::on_remote_data_channel_received(u64 channel_id, String label, bool ordered, Optional<u16> max_packet_life_time, Optional<u16> max_retransmits, String protocol, bool negotiated, Optional<u16> id)
 {
-    // FIXME: build an RTCDataChannel from the parameters, append to [[DataChannels]],
-    //        and fire an RTCDataChannelEvent("datachannel").
+    if (m_is_closed)
+        return;
     HTML::TemporaryExecutionContext context(relevant_realm());
-    dispatch_event(DOM::Event::create(relevant_global_object(), HTML::EventNames::datachannel));
+    auto channel = RTCDataChannel::create(m_global_object);
+    channel->set_channel_id(channel_id);
+    channel->set_label(Utf16String::from_utf8(label));
+    channel->set_ordered(ordered);
+    channel->set_max_packet_life_time(max_packet_life_time);
+    channel->set_max_retransmits(max_retransmits);
+    channel->set_protocol(Utf16String::from_utf8(protocol));
+    channel->set_negotiated(negotiated);
+    channel->set_id(id);
+    channel->set_ready_state(Bindings::RTCDataChannelState::Open);
+    m_data_channels.append(channel);
+    m_data_channels_by_id.set(channel_id, channel);
+    WebRTCAgent::the().register_data_channel(channel_id, channel);
+    RTCDataChannelEventInit init { .channel = channel };
+    dispatch_event(RTCDataChannelEvent::create(HTML::EventNames::datachannel, init, HighResolutionTime::current_high_resolution_time(relevant_global_object())));
 }
 
 #define EVENT_HANDLER(name, event_name)                                                                                             \

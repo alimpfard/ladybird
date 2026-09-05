@@ -10,9 +10,12 @@
 #include <LibWeb/MediaCapture/MediaStreamTrack.h>
 #include <LibWeb/WebIDL/Promise.h>
 #include <LibWeb/WebRTC/RTCPeerConnection.h>
+#include <LibWeb/WebRTC/RTCRtpReceiver.h>
 #include <LibWeb/WebRTC/RTCRtpScriptTransform.h>
 #include <LibWeb/WebRTC/RTCRtpSender.h>
+#include <LibWeb/WebRTC/RTCRtpTransceiver.h>
 #include <LibWeb/WebRTC/RTCSFrameSenderTransform.h>
+#include <LibWeb/WebRTC/WebRTCAgent.h>
 
 namespace Web::WebRTC {
 
@@ -38,6 +41,7 @@ RTCRtpSender::RTCRtpSender(GC::Ref<RTCPeerConnection> connection, u64 sender_id,
 void RTCRtpSender::set_ssrc(u32 ssrc)
 {
     m_ssrc = ssrc;
+    m_ssrc_confirmed = true;
     if (m_send_encodings.is_empty())
         m_send_encodings.append({});
     m_send_encodings[0].ssrc = m_ssrc;
@@ -86,6 +90,8 @@ GC::Ptr<RTCRtpScriptTransform> RTCRtpSender::script_transform()
 
 void RTCRtpSender::set_transform(RTCRtpSenderTransform value)
 {
+    if (auto old_transform = script_transform())
+        old_transform->set_on_frame_written({ });
     m_transform = value.visit(
         [](Empty) -> GC::Ptr<Bindings::Wrappable> { return nullptr; },
         [](GC::Ref<RTCSFrameSenderTransform> const& t) -> GC::Ptr<Bindings::Wrappable> { return t.ptr(); },
@@ -96,10 +102,25 @@ void RTCRtpSender::set_transform(RTCRtpSenderTransform value)
 
 GC::Ref<WebIDL::Promise> RTCRtpSender::replace_track(GC::Ptr<MediaCapture::MediaStreamTrack> with_track)
 {
-    // FIXME: Implement the full spec algorithm. For now, swap the track and resolve.
-    set_track(with_track);
     auto& realm = relevant_realm();
     auto promise = WebIDL::create_promise(realm);
+    if (m_connection->is_closed()) {
+        WebIDL::reject_promise(realm, promise, WebIDL::InvalidStateError::create("RTCPeerConnection is closed"_utf16));
+        return promise;
+    }
+    for (auto const& transceiver : m_connection->get_transceivers()) {
+        if (transceiver->sender().ptr() != this)
+            continue;
+        if (transceiver->is_stopping() || transceiver->is_stopped()) {
+            WebIDL::reject_promise(realm, promise, WebIDL::InvalidStateError::create("Transceiver is stopped"_utf16));
+            return promise;
+        }
+        if (with_track && with_track->track_kind() != transceiver->receiver()->track()->track_kind()) {
+            WebIDL::reject_promise_with_exception(realm, promise, WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, "Replacement track has a different kind"_utf16 });
+            return promise;
+        }
+    }
+    set_track(with_track);
     WebIDL::resolve_promise(realm, promise, JS::js_undefined());
     return promise;
 }
@@ -154,6 +175,15 @@ GC::Ref<WebIDL::Promise> RTCRtpSender::set_parameters(RTCRtpSendParameters const
 // https://w3c.github.io/webrtc-pc/#dom-rtcrtpsender-getparameters
 RTCRtpSendParameters RTCRtpSender::get_parameters()
 {
+    // Applications can read encodings immediately after addTrack, before the
+    // asynchronous acknowledgement. DAVE must register the actual wire SSRC.
+    if (!m_ssrc_confirmed && !m_connection->is_closed()) {
+        if (auto* client = WebRTCAgent::the().existing_client()) {
+            auto result = client->try_get_sender_ssrc(m_sender_id);
+            if (!result.is_error() && result.value() != 0)
+                set_ssrc(result.value());
+        }
+    }
     // 1. Let sender be the RTCRtpSender object on which the getter was invoked.
 
     // 2. If sender.[[LastReturnedParameters]] is not null, return sender.[[LastReturnedParameters]], and abort these steps.

@@ -51,6 +51,7 @@ private:
     GC::Ref<RTCPeerConnection> m_connection;
     u64 m_sender_id { 0 };
     u32 m_ssrc { 0 };
+    bool m_ssrc_confirmed { false };
 
     // [[SenderTrack]]
     GC::Ptr<MediaCapture::MediaStreamTrack> m_track;

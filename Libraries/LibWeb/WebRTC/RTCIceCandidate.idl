@@ -3,9 +3,9 @@
 [Exposed=Window]
 interface RTCIceCandidate {
     constructor(optional RTCIceCandidateInit candidateInitDict = {});
-    [FIXME] readonly attribute DOMString candidate;
-    [FIXME] readonly attribute DOMString? sdpMid;
-    [FIXME] readonly attribute unsigned short? sdpMLineIndex;
+    readonly attribute DOMString candidate;
+    readonly attribute DOMString? sdpMid;
+    readonly attribute unsigned short? sdpMLineIndex;
     readonly attribute DOMString? foundation;
     [FIXME] readonly attribute RTCIceComponent? component;
     [FIXME] readonly attribute unsigned long? priority;
@@ -16,10 +16,10 @@ interface RTCIceCandidate {
     [FIXME] readonly attribute RTCIceTcpCandidateType? tcpType;
     [FIXME] readonly attribute DOMString? relatedAddress;
     [FIXME] readonly attribute unsigned short? relatedPort;
-    [FIXME] readonly attribute DOMString? usernameFragment;
+    readonly attribute DOMString? usernameFragment;
     readonly attribute RTCIceServerTransportProtocol? relayProtocol;
     [FIXME] readonly attribute DOMString? url;
-    [FIXME] RTCIceCandidateInit toJSON();
+    RTCIceCandidateInit toJSON();
 };
 
 dictionary RTCIceCandidateInit {

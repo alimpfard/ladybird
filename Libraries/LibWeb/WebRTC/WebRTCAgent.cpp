@@ -6,14 +6,22 @@
 
 #include <AK/Format.h>
 #include <AK/LexicalPath.h>
+#include <AK/ScopeGuard.h>
 #include <LibCore/Environment.h>
 #include <LibCore/Process.h>
 #include <LibCore/Socket.h>
 #include <LibCore/System.h>
 #include <LibFileSystem/FileSystem.h>
 #include <LibIPC/Transport.h>
+#include <LibJS/Runtime/ArrayBuffer.h>
+#include <LibJS/Runtime/PrimitiveString.h>
+#include <LibThreading/Thread.h>
+#include <LibWeb/Bindings/Intrinsics.h>
+#include <LibWeb/Bindings/WrapperWorld.h>
 #include <LibWeb/DOM/Event.h>
+#include <LibWeb/FileAPI/Blob.h>
 #include <LibWeb/HTML/EventNames.h>
+#include <LibWeb/HTML/MessageEvent.h>
 #include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
 #include <LibWeb/WebRTC/RTCDataChannel.h>
 #include <LibWeb/WebRTC/RTCPeerConnection.h>
@@ -44,6 +52,13 @@ void WebRTCAgent::register_peer_connection(u64 pc_id, GC::Ref<RTCPeerConnection>
     m_peer_connections.set(pc_id, pc);
 }
 
+GC::Ptr<RTCPeerConnection> WebRTCAgent::find_peer_connection(u64 pc_id)
+{
+    if (auto connection = m_peer_connections.get(pc_id); connection.has_value())
+        return connection->ptr();
+    return nullptr;
+}
+
 void WebRTCAgent::unregister_peer_connection(u64 pc_id)
 {
     m_peer_connections.remove(pc_id);
@@ -59,11 +74,21 @@ void WebRTCAgent::unregister_data_channel(u64 channel_id)
     m_data_channels.remove(channel_id);
 }
 
+void WebRTCAgent::close_connections_for_global(DOM::EventTarget& global)
+{
+    auto connections = m_peer_connections;
+    for (auto& [_, connection] : connections) {
+        if (connection->relevant_global_impl().ptr() == &global)
+            connection->close();
+    }
+}
+
 void WebRTCAgent::ensure_client()
 {
     if (m_client || m_attempted_to_launch)
         return;
     m_attempted_to_launch = true;
+    ScopeGuard reset_attempt = [&] { m_attempted_to_launch = false; };
 
     auto exe_path_result = Core::System::current_executable_path();
     if (exe_path_result.is_error()) {
@@ -89,6 +114,13 @@ void WebRTCAgent::ensure_client()
         return;
     }
 
+    auto previous_takeover = Core::Environment::get("SOCKET_TAKEOVER"sv).map([](auto value) { return MUST(String::from_utf8(value)); });
+    ScopeGuard restore_environment = [&] {
+        if (previous_takeover.has_value())
+            (void)Core::Environment::set("SOCKET_TAKEOVER"sv, *previous_takeover, Core::Environment::Overwrite::Yes);
+        else
+            (void)Core::Environment::unset("SOCKET_TAKEOVER"sv);
+    };
     auto takeover_string = MUST(String::formatted("WebRTCClient:{}", socket_fds[1]));
     if (auto rc = Core::Environment::set("SOCKET_TAKEOVER"sv, takeover_string, Core::Environment::Overwrite::Yes); rc.is_error()) {
         (void)Core::System::close(socket_fds[0]);
@@ -102,7 +134,7 @@ void WebRTCAgent::ensure_client()
     for (auto const& path : candidate_paths) {
         if (!FileSystem::exists(path))
             continue;
-        Core::ProcessSpawnOptions options { .name = "WebRTCClient"sv, .executable = path, .arguments = arguments };
+        Core::ProcessSpawnOptions options { .name = "WebRTCClient"sv, .executable = path, .die_with_parent = true, .arguments = arguments };
         auto result = Core::Process::spawn(options);
         if (!result.is_error()) {
             spawned = result.release_value();
@@ -117,6 +149,12 @@ void WebRTCAgent::ensure_client()
     }
 
     (void)Core::System::close(socket_fds[1]);
+    auto reaper = Threading::Thread::construct("WebRTC reaper"sv, [process = move(*spawned)]() -> intptr_t {
+        (void)process.wait_for_termination();
+        return 0;
+    });
+    reaper->start();
+    reaper->detach();
 
     auto ipc_socket = Core::LocalSocket::adopt_fd(socket_fds[0]);
     if (ipc_socket.is_error()) {
@@ -131,6 +169,13 @@ void WebRTCAgent::ensure_client()
     auto transport = make<IPC::Transport>(ipc_socket.release_value());
     m_client = adopt_ref(*new WebRTCClient::Client(move(transport)));
     wire_event_handlers();
+    m_client->on_death = [this] {
+        m_client = nullptr;
+        m_attempted_to_launch = false;
+        auto connections = m_peer_connections;
+        for (auto& [_, connection] : connections)
+            connection->on_helper_died();
+    };
 }
 
 #define ROUTE_PC_EVENT(slot, method)                                            \
@@ -141,6 +186,7 @@ void WebRTCAgent::ensure_client()
 
 void WebRTCAgent::wire_event_handlers()
 {
+    ROUTE_PC_EVENT(on_stats_result, on_stats_received);
     ROUTE_PC_EVENT(on_signaling_state_change, on_signaling_state_event);
     ROUTE_PC_EVENT(on_connection_state_change, on_connection_state_event);
     ROUTE_PC_EVENT(on_ice_gathering_state_change, on_ice_gathering_state_event);
@@ -194,18 +240,25 @@ void WebRTCAgent::wire_event_handlers()
             (*channel)->dispatch_event(DOM::Event::create((*channel)->relevant_global_object(), HTML::EventNames::bufferedamountlow));
         }
     };
-    m_client->on_data_channel_message_text_event = [this](u64 channel_id, String) {
+    m_client->on_data_channel_message_text_event = [this](u64 channel_id, String text) {
         if (auto channel = m_data_channels.get(channel_id); channel.has_value()) {
-            HTML::TemporaryExecutionContext context((*channel)->relevant_realm());
-            // FIXME: dispatch a MessageEvent("message") carrying the string payload; bare Event for now.
-            (*channel)->dispatch_event(DOM::Event::create((*channel)->relevant_global_object(), HTML::EventNames::message));
+            auto& realm = (*channel)->relevant_realm();
+            HTML::TemporaryExecutionContext context(realm);
+            HTML::MessageEventInit init;
+            init.data = JS::PrimitiveString::create(realm.vm(), Utf16String::from_utf8(text));
+            (*channel)->dispatch_event(HTML::MessageEvent::create((*channel)->relevant_global_object(), HTML::EventNames::message, init));
         }
     };
-    m_client->on_data_channel_message_binary_event = [this](u64 channel_id, ByteBuffer) {
+    m_client->on_data_channel_message_binary_event = [this](u64 channel_id, ByteBuffer bytes) {
         if (auto channel = m_data_channels.get(channel_id); channel.has_value()) {
-            HTML::TemporaryExecutionContext context((*channel)->relevant_realm());
-            // FIXME: dispatch a MessageEvent("message") carrying an ArrayBuffer/Blob payload; bare Event for now.
-            (*channel)->dispatch_event(DOM::Event::create((*channel)->relevant_global_object(), HTML::EventNames::message));
+            auto& realm = (*channel)->relevant_realm();
+            HTML::TemporaryExecutionContext context(realm);
+            HTML::MessageEventInit init;
+            if ((*channel)->binary_type() == Bindings::BinaryType::Blob)
+                init.data = Bindings::wrap(Bindings::host_defined_wrapper_world(realm), realm, FileAPI::Blob::create(move(bytes), String { }));
+            else
+                init.data = JS::ArrayBuffer::create(realm, bytes);
+            (*channel)->dispatch_event(HTML::MessageEvent::create((*channel)->relevant_global_object(), HTML::EventNames::message, init));
         }
     };
 }

@@ -28,7 +28,7 @@ public:
     GC::Ref<RTCRtpSender> sender() const { return m_sender; }
     GC::Ref<RTCRtpReceiver> receiver() const { return m_receiver; }
     Bindings::RTCRtpTransceiverDirection direction() const { return m_direction; }
-    void set_direction(Bindings::RTCRtpTransceiverDirection direction) { m_direction = direction; }
+    void set_direction(Bindings::RTCRtpTransceiverDirection);
     Bindings::MediaStreamTrackKind kind() const { return m_kind; }
     Optional<Bindings::RTCRtpTransceiverDirection> current_direction() const { return m_current_direction; }
     bool is_stopped() const { return m_stopped; }

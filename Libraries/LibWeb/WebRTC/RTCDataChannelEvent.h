@@ -20,9 +20,13 @@ class RTCDataChannelEvent final : public DOM::Event {
 
 public:
     [[nodiscard]] static GC::Ref<RTCDataChannelEvent> create(Utf16FlyString const& event_name, RTCDataChannelEventInit const&, HighResolutionTime::DOMHighResTimeStamp);
+    static GC::Ref<RTCDataChannelEvent> create_for_constructor(Utf16String const& type, RTCDataChannelEventInit const& init, HighResolutionTime::DOMHighResTimeStamp time_stamp) { return create(Utf16FlyString { type }, init, time_stamp); }
+    GC::Ref<RTCDataChannel> channel() const { return m_channel; }
     virtual ~RTCDataChannelEvent() override;
 
 private:
+    virtual void visit_edges(GC::Cell::Visitor&) override;
+    GC::Ref<RTCDataChannel> m_channel;
     RTCDataChannelEvent(Utf16FlyString const& event_name, RTCDataChannelEventInit const&, HighResolutionTime::DOMHighResTimeStamp);
 };
 

@@ -26,8 +26,8 @@ interface RTCPeerConnection : EventTarget {
     readonly attribute RTCPeerConnectionState connectionState;
     [FIXME] readonly attribute boolean? canTrickleIceCandidates;
 
-    [FIXME] undefined restartIce();
-    [FIXME] RTCConfiguration getConfiguration();
+    undefined restartIce();
+    RTCConfiguration getConfiguration();
     [FIXME] undefined setConfiguration(optional RTCConfiguration configuration = {});
     undefined close();
 
@@ -67,7 +67,7 @@ interface RTCPeerConnection : EventTarget {
     //        (talky.io, janus, ...) use. Two overloads cover both call shapes.
     RTCRtpSender addTrack(MediaStreamTrack track, MediaStream stream);
     RTCRtpSender addTrack(MediaStreamTrack track, optional sequence<MediaStream> streams = []);
-    [FIXME] undefined removeTrack(RTCRtpSender sender);
+    undefined removeTrack(RTCRtpSender sender);
     RTCRtpTransceiver addTransceiver((MediaStreamTrack or DOMString) trackOrKind,
             optional RTCRtpTransceiverInit init = {});
     attribute EventHandler ontrack;

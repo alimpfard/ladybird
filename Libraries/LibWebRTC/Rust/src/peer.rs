@@ -44,6 +44,10 @@ pub fn build_default_api() -> Result<API> {
             None,
         )?;
     }
+    let registry = webrtc::api::interceptor_registry::register_default_interceptors(
+        webrtc::interceptor::registry::Registry::new(),
+        &mut media_engine,
+    )?;
     let mut setting_engine = SettingEngine::default();
     // Restrict ICE to IPv4. Link-local IPv6 binds need a scope id that webrtc-rs
     // doesn't pass through, so any v6 host candidate fails to bind and we end up
@@ -55,6 +59,7 @@ pub fn build_default_api() -> Result<API> {
     setting_engine.set_ice_multicast_dns_mode(MulticastDnsMode::Disabled);
     Ok(APIBuilder::new()
         .with_media_engine(media_engine)
+        .with_interceptor_registry(registry)
         .with_setting_engine(setting_engine)
         .build())
 }

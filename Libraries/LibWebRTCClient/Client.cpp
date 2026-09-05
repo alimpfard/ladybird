@@ -14,6 +14,12 @@ Client::Client(NonnullOwnPtr<IPC::Transport> transport)
 {
 }
 
+void Client::on_stats(u64 pc_id, u64 request_id, String reports, String error)
+{
+    if (on_stats_result)
+        on_stats_result(pc_id, request_id, move(reports), move(error));
+}
+
 void Client::die()
 {
     if (auto callback = move(on_death))

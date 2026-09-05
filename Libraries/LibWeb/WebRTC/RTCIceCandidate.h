@@ -24,11 +24,17 @@ public:
 
     virtual ~RTCIceCandidate() override;
 
+    Utf16String const& candidate() const { return m_init.candidate; }
+    Optional<Utf16String> sdp_mid() const { return m_init.sdp_mid; }
+    Optional<u16> sdp_m_line_index() const { return m_init.sdp_m_line_index; }
+    Optional<Utf16String> username_fragment() const { return m_init.username_fragment; }
+    RTCIceCandidateInit to_json() const { return m_init; }
     Optional<Utf16String> foundation() const { return {}; }
     Optional<Bindings::RTCIceServerTransportProtocol> relay_protocol() const { return {}; }
 
 private:
-    RTCIceCandidate();
+    explicit RTCIceCandidate(RTCIceCandidateInit);
+    RTCIceCandidateInit m_init;
 };
 
 }

@@ -347,12 +347,6 @@ ErrorOr<NonnullRefPtr<WebView::CompositorClient>> launch_compositor_process()
     return client;
 }
 
-ErrorOr<NonnullRefPtr<WebRTCClient::Client>> launch_webrtc_client_process()
-{
-    Vector<ByteString> arguments;
-    return launch_server_process<WebRTCClient::Client>("WebRTCClient"sv, arguments);
-}
-
 ErrorOr<NonnullRefPtr<WebWorkerClient>> launch_web_worker_process(Web::HTML::AgentType type, IsPrivate is_private, Web::HTML::WorkerAgentId agent_id)
 {
     auto const& browser_options = WebView::Application::browser_options();

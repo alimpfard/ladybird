@@ -9,6 +9,7 @@
 #include <AK/Utf16String.h>
 #include <LibJS/Forward.h>
 #include <LibWeb/Bindings/RTCDataChannel.h>
+#include <LibWeb/Bindings/WebSocket.h>
 #include <LibWeb/DOM/EventTarget.h>
 #include <LibWeb/Forward.h>
 #include <LibWeb/WebIDL/Buffers.h>
@@ -61,6 +62,17 @@ public:
     void set_channel_id(u64 v) { m_channel_id = v; }
     void set_ready_state(Bindings::RTCDataChannelState v) { m_ready_state = v; }
 
+    Utf16String const& label() const { return m_label; }
+    bool ordered() const { return m_ordered; }
+    Optional<u16> max_packet_life_time() const { return m_max_packet_life_time; }
+    Optional<u16> max_retransmits() const { return m_max_retransmits; }
+    Utf16String const& protocol() const { return m_protocol; }
+    bool negotiated() const { return m_negotiated; }
+    Optional<u16> id() const { return m_id; }
+    Bindings::BinaryType binary_type() const { return m_binary_type; }
+    void set_binary_type(Bindings::BinaryType type) { m_binary_type = move(type); }
+    void close();
+
     Bindings::RTCDataChannelState ready_state() const { return m_ready_state; }
     WebIDL::UnsignedLong buffered_amount() const { return m_buffered_amount; }
     WebIDL::UnsignedLong buffered_amount_low_threshold() const { return m_buffered_amount_low_threshold; }
@@ -111,6 +123,7 @@ private:
     // [[IsTransferable]]
     bool m_is_transferable { true };
     u64 m_channel_id { 0 };
+    Bindings::BinaryType m_binary_type { Bindings::BinaryType::Arraybuffer };
 };
 
 }

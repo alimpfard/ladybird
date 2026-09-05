@@ -1,5 +1,6 @@
 endpoint WebRTCClientClient
 {
+    on_stats(u64 pc_id, u64 request_id, String reports, String error) =|
     on_signaling_state(u64 pc_id, String state) =|
     on_connection_state(u64 pc_id, String state) =|
     on_ice_gathering_state(u64 pc_id, String state) =|

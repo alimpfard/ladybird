@@ -27,6 +27,8 @@ public:
 
     bool is_ready();
     WebRTCClient::Client* client();
+    WebRTCClient::Client* existing_client() { return m_client.ptr(); }
+    void close_connections_for_global(DOM::EventTarget&);
 
     u64 next_pc_id() { return ++m_next_pc_id; }
     u64 next_request_id() { return ++m_next_request_id; }
@@ -38,6 +40,7 @@ public:
 
     void register_peer_connection(u64 pc_id, GC::Ref<RTCPeerConnection>);
     void unregister_peer_connection(u64 pc_id);
+    GC::Ptr<RTCPeerConnection> find_peer_connection(u64 pc_id);
 
     void register_data_channel(u64 channel_id, GC::Ref<RTCDataChannel>);
     void unregister_data_channel(u64 channel_id);
