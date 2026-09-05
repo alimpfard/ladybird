@@ -1561,6 +1561,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ipc_compositorfontclient"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_compositorfontserver"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
 name = "ipc_compositorwebcontentclient"
 version = "0.1.0"
 dependencies = [
@@ -1631,6 +1645,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ipc_wasmcompilerclient"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_wasmcompilerserver"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
 name = "ipc_webcontentclient"
 version = "0.1.0"
 dependencies = [
@@ -1639,6 +1667,20 @@ dependencies = [
 
 [[package]]
 name = "ipc_webcontentserver"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_webdriverbrowserclient"
+version = "0.1.0"
+dependencies = [
+ "libipc",
+]
+
+[[package]]
+name = "ipc_webdriverbrowserserver"
 version = "0.1.0"
 dependencies = [
  "libipc",
