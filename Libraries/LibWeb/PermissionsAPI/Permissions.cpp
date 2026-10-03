@@ -191,4 +191,38 @@ void permission_query_algorithm(PermissionDescriptor const& permission_desc, Per
     status.set_state(permission_state(permission_desc));
 }
 
+// https://w3c.github.io/permissions/#dfn-set-a-permission
+ErrorOr<void, WebDriver::Error> set_permission_for_webdriver(JsonObject const& descriptor, StringView state, URL::Origin const& top_level_origin, URL::Origin const& origin)
+{
+    // The descriptor is converted to an IDL value of the permission descriptor type matching its name; conversion
+    // failures are invalid argument errors.
+    auto name = descriptor.get_string("name"sv);
+    if (!name.has_value())
+        return WebDriver::Error::from_code(WebDriver::ErrorCode::InvalidArgument, "Permission descriptor must have a 'name' string"sv);
+    auto name_utf16 = Utf16String::from_utf8(*name);
+    if (!is_permission_supported(name_utf16))
+        return WebDriver::Error::from_code(WebDriver::ErrorCode::InvalidArgument, "Unsupported permission name"sv);
+    PermissionDescriptor typed_descriptor { .name = name_utf16 };
+
+    PermissionState permission_state;
+    if (state == "granted"sv)
+        permission_state = PermissionState::Granted;
+    else if (state == "denied"sv)
+        permission_state = PermissionState::Denied;
+    else if (state == "prompt"sv)
+        permission_state = PermissionState::Prompt;
+    else
+        return WebDriver::Error::from_code(WebDriver::ErrorCode::InvalidArgument, "Permission state must be 'granted', 'denied' or 'prompt'"sv);
+
+    // To set a permission for descriptor to state with key:
+    // 1. Let key be the result of generating a permission key for descriptor with the top-level origin and origin.
+    auto key = permission_key_generation_algorithm(top_level_origin, origin);
+
+    // 2. Set a permission store entry with descriptor, key, and state.
+    PermissionStore::the().set_permission_store_entry(typed_descriptor, key, permission_state);
+
+    // FIXME: 3. Fire a change event at every PermissionStatus whose query matches descriptor and key.
+    return {};
+}
+
 }
