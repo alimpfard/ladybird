@@ -29,6 +29,10 @@ public:
 private:
     DevToolsConsoleClient(JS::Console&, PageClient&, ConsoleGlobalEnvironmentExtensions&);
 
+    static String webdriver_console_log_text(GC::RootVector<JS::Value> const& formatted_arguments);
+    void emit_webdriver_console_log_entry(JS::Console::LogLevel, GC::RootVector<JS::Value> const& arguments, Optional<String> text = {});
+    void emit_webdriver_javascript_log_entry(Utf16View name, Utf16View message, JS::ErrorData const&);
+
     virtual void handle_result(JS::Value) override;
     virtual void report_exception(Utf16View name, Utf16View message, JS::ErrorData const&, bool) override;
     virtual void end_group() override { }

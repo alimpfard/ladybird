@@ -59,7 +59,8 @@ JS::ThrowCompletionOr<JS::Value> WorkerDebugConsoleClient::printer(JS::Console::
         return JS::js_undefined();
     }
 
-    auto output = TRY(generically_format_values(arguments.get<GC::RootVector<JS::Value>>()));
+    auto const& argument_values = arguments.has<JS::Console::Log>() ? arguments.get<JS::Console::Log>().formatted_arguments : arguments.get<GC::RootVector<JS::Value>>();
+    auto output = TRY(generically_format_values(argument_values));
     m_console->output_debug_message(log_level, output);
     return JS::js_undefined();
 }

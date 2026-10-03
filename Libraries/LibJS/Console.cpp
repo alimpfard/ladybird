@@ -379,6 +379,7 @@ ThrowCompletionOr<Value> Console::trace()
     // 2. Optionally, let formattedData be the result of Formatter(data), and incorporate formattedData as a label for trace.
     if (vm.argument_count() > 0) {
         auto data = vm_arguments();
+        trace.arguments = data;
         auto formatted_data = TRY(m_client->formatter(data));
         trace.label = TRY(value_vector_to_string(formatted_data));
     }
@@ -523,6 +524,7 @@ ThrowCompletionOr<Value> Console::group()
     // 2. If data is not empty, let groupLabel be the result of Formatter(data).
     Utf16String group_label {};
     auto data = vm_arguments();
+    group.arguments = data;
     if (!data.is_empty()) {
         if (m_client) {
             auto formatted_data = TRY(m_client->formatter(data));
@@ -561,6 +563,7 @@ ThrowCompletionOr<Value> Console::group_collapsed()
     // 2. If data is not empty, let groupLabel be the result of Formatter(data).
     Utf16String group_label {};
     auto data = vm_arguments();
+    group.arguments = data;
     if (!data.is_empty()) {
         if (m_client) {
             auto formatted_data = TRY(m_client->formatter(data));
@@ -833,12 +836,12 @@ ThrowCompletionOr<Value> ConsoleClient::logger(Console::LogLevel log_level, GC::
     if (rest_size == 0) {
         GC::RootVector<Value> first_as_vector;
         first_as_vector.append(first);
-        return printer(log_level, move(first_as_vector));
+        return printer(log_level, Console::Log { args, move(first_as_vector) });
     }
     // 5. Otherwise, perform Printer(logLevel, Formatter(args)).
     else {
         auto formatted = TRY(formatter(args));
-        TRY(printer(log_level, formatted));
+        TRY(printer(log_level, Console::Log { args, move(formatted) }));
     }
 
     // 6. Return undefined.

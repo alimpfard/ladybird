@@ -16,6 +16,7 @@
 #include <AK/Vector.h>
 #include <LibCore/ElapsedTimer.h>
 #include <LibGC/CellAllocator.h>
+#include <LibGC/RootVector.h>
 #include <LibJS/ConsoleLogLevel.h>
 #include <LibJS/Export.h>
 #include <LibJS/Forward.h>
@@ -38,6 +39,8 @@ public:
 
     struct Group {
         Utf16String label;
+        // The data the group was created with, for clients that report the call itself.
+        GC::RootVector<Value> arguments;
     };
 
     struct TraceFrame {
@@ -50,6 +53,14 @@ public:
     struct Trace {
         Utf16String label;
         Vector<TraceFrame> stack;
+        // The data the trace was created with, for clients that report the call itself.
+        GC::RootVector<Value> arguments;
+    };
+
+    // The arguments of a logging function: the data it was called with, and that data after Formatter.
+    struct Log {
+        GC::RootVector<Value> arguments;
+        GC::RootVector<Value> formatted_arguments;
     };
 
     void set_client(ConsoleClient& client) { m_client = &client; }
@@ -105,7 +116,7 @@ class JS_API ConsoleClient : public Cell {
     GC_DECLARE_ALLOCATOR(ConsoleClient);
 
 public:
-    using PrinterArguments = Variant<Console::Group, Console::Trace, GC::RootVector<Value>>;
+    using PrinterArguments = Variant<Console::Group, Console::Trace, Console::Log, GC::RootVector<Value>>;
 
     ThrowCompletionOr<Value> logger(Console::LogLevel log_level, GC::RootVector<Value> const& args);
     ThrowCompletionOr<GC::RootVector<Value>> formatter(GC::RootVector<Value> const& args);
