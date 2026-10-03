@@ -19,6 +19,8 @@ struct WebDriverSessionConfig {
     JsonValue timeouts;
     // https://w3c.github.io/webdriver-bidi/#bidi-session
     bool bidi_session { false };
+    // https://w3c.github.io/webdriver-bidi/#preload-script-map
+    JsonValue preload_scripts;
 };
 
 }

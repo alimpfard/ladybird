@@ -28,7 +28,9 @@ CommandPromise browsing_context_navigate(BiDiConnection&, RefPtr<Session>, JsonO
 CommandPromise permissions_set_permission(BiDiConnection&, RefPtr<Session>, JsonObject const& parameters);
 
 // https://w3c.github.io/webdriver-bidi/#module-script
+CommandPromise script_add_preload_script(BiDiConnection&, RefPtr<Session>, JsonObject const& parameters);
 CommandPromise script_call_function(BiDiConnection&, RefPtr<Session>, JsonObject const& parameters);
+CommandPromise script_remove_preload_script(BiDiConnection&, RefPtr<Session>, JsonObject const& parameters);
 CommandPromise script_evaluate(BiDiConnection&, RefPtr<Session>, JsonObject const& parameters);
 
 }

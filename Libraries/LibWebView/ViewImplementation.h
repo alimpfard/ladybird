@@ -360,7 +360,7 @@ public:
     bool register_session_store_tab_for_testing(Badge<WebContentPage>);
     String session_store_tab_state_for_testing(Badge<WebContentPage>) const;
     void did_start_webdriver_navigation();
-    void load_for_webdriver_navigation(URL::URL const&);
+    Utf16String load_for_webdriver_navigation(URL::URL const&);
     String ui_process_session_history_for_testing(Badge<WebContentPage>) const;
     JsonValue webdriver_session_history() const;
     void wait_for_webdriver_navigation_completion(Optional<u64> page_load_timeout, Function<void(Web::WebDriver::Response)>);
@@ -386,6 +386,7 @@ public:
     };
     static Optional<WebDriverBiDiContext> find_webdriver_bidi_context(StringView navigable_id);
     String webdriver_bidi_navigable_id(CanonicalNavigable const&) const;
+    URL::URL webdriver_bidi_navigable_url(CanonicalNavigable const&) const;
     // https://w3c.github.io/webdriver-bidi/#get-the-navigable-info
     JsonObject webdriver_bidi_navigable_info(CanonicalNavigable const&, Optional<u64> max_depth, bool include_parent_id) const;
     void run_webdriver_bidi_command(u64 command_id, Web::HTML::CrossProcessId navigable_id, String const& method, JsonValue parameters);

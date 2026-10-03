@@ -113,6 +113,7 @@ private:
     virtual void run_webdriver_command(Web::PageId page_id, u64 command_id, Optional<Web::HTML::CrossProcessId> navigable_id, String name, JsonValue payload, Vector<String> arguments) override;
     virtual void run_webdriver_bidi_command(Web::PageId page_id, u64 command_id, Web::HTML::CrossProcessId navigable_id, String method, JsonValue parameters) override;
     virtual void webdriver_set_permission(Web::PageId page_id, JsonValue descriptor, String state, String origin, String embedded_origin) override;
+    virtual void set_webdriver_preload_scripts(Web::PageId page_id, JsonValue scripts) override;
     virtual void set_webdriver_session_config(Web::PageId page_id, Web::WebDriver::UserPromptHandler user_prompt_handler, Web::WebDriver::PageLoadStrategy page_load_strategy, bool strict_file_interactability, JsonValue timeouts, bool bidi_session) override;
     virtual void run_webdriver_user_prompt_handling(Web::PageId page_id, u64 request_id) override;
     virtual void did_handle_webdriver_mouse_event(Web::PageId page_id, u64 request_id) override;

@@ -690,6 +690,8 @@ public:
     virtual void page_did_unhover_link() { }
     virtual void page_did_change_favicon(Gfx::Bitmap const&) { }
     virtual void page_did_request_alert(Utf16String const&) { }
+    // https://w3c.github.io/webdriver-bidi/#events
+    virtual void page_did_emit_webdriver_bidi_event(String const& /* method */, JsonValue /* params */) { }
     virtual void page_did_request_confirm(Utf16String const&) { }
     virtual void page_did_request_prompt(Utf16String const&, Utf16String const&) { }
     virtual void page_did_request_set_prompt_text(Utf16String const&) { }

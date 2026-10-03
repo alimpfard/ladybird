@@ -1241,6 +1241,24 @@ void Application::notify_webdriver_navigable_destroyed(ViewImplementation const&
     connection->async_bidi_event("browsingContext.contextDestroyed"_string, view.webdriver_bidi_navigable_info(navigable, {}, true), { view.handle() });
 }
 
+// https://w3c.github.io/webdriver-bidi/#navigation-status
+// The navigate steps the UI process runs for a navigable report their navigation's progress here.
+void Application::notify_webdriver_navigation_event(ViewImplementation const& view, CanonicalNavigable const& navigable, StringView method, Utf16String const& navigation_id, URL::URL const& url)
+{
+    auto* connection = webdriver_browser_connection();
+    if (!connection)
+        return;
+
+    // https://w3c.github.io/webdriver-bidi/#get-the-navigation-info
+    JsonObject params;
+    params.set("context"sv, view.webdriver_bidi_navigable_id(navigable));
+    params.set("navigation"sv, navigation_id.to_utf8());
+    params.set("url"sv, url.serialize());
+    params.set("timestamp"sv, UnixDateTime::now().milliseconds_since_epoch());
+    params.set("userContext"sv, "default"sv);
+    connection->async_bidi_event(MUST(String::from_utf8(method)), move(params), { view.handle() });
+}
+
 void Application::webdriver_browser_connection_died(Badge<WebDriverBrowserConnection>)
 {
     m_webdriver_browser_connection = nullptr;
@@ -1258,6 +1276,7 @@ void Application::push_webdriver_session_config(WebContentPage& page)
 {
     auto const& config = m_webdriver_session_config;
     page.async_set_webdriver_session_config(config.user_prompt_handler, config.page_load_strategy, config.strict_file_interactability, config.timeouts, config.bidi_session);
+    page.async_set_webdriver_preload_scripts(config.preload_scripts);
 }
 
 void Application::update_webdriver_session_config(Badge<WebDriverBrowserConnection>, Function<void(WebDriverSessionConfig&)> update)

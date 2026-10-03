@@ -261,6 +261,41 @@ def run_test(webdriver_binary):
         assert response["result"]["contexts"][0]["url"] == "data:text/html,<title>tab</title>", response
         response = bidi.send("browsingContext.navigate", {"context": new_tab, "url": "not a url"})
         assert response["type"] == "error" and response["error"] == "invalid argument", response
+
+        # Navigations report their progress as events, and a frame navigates too.
+        response = bidi.send("session.subscribe", {"events": ["browsingContext.navigationStarted", "browsingContext.load"]})
+        assert response["type"] == "success", response
+        response = bidi.send("browsingContext.navigate", {"context": frame, "url": "data:text/html,<title>frame</title>", "wait": "complete"})
+        assert response["type"] == "success", response
+        navigation = response["result"]["navigation"]
+        event = bidi.wait_for_event("browsingContext.navigationStarted")
+        assert event["params"]["context"] == frame and event["params"]["navigation"] == navigation, event
+        event = bidi.wait_for_event("browsingContext.load")
+        assert event["params"]["context"] == frame and event["params"]["navigation"] == navigation, event
+        response = bidi.send("browsingContext.getTree", {"root": frame})
+        assert response["result"]["contexts"][0]["url"] == "data:text/html,<title>frame</title>", response
+        response = bidi.send("browsingContext.navigate", {"context": new_tab, "url": "data:text/html,<title>top</title>"})
+        assert response["type"] == "success", response
+        navigation = response["result"]["navigation"]
+        event = bidi.wait_for_event("browsingContext.navigationStarted")
+        assert event["params"]["context"] == new_tab and event["params"]["navigation"] == navigation, event
+        event = bidi.wait_for_event("browsingContext.load")
+        assert event["params"]["context"] == new_tab and event["params"]["navigation"] == navigation, event
+        response = bidi.send("session.unsubscribe", {"events": ["browsingContext.navigationStarted", "browsingContext.load"]})
+        assert response["type"] == "success", response
+
+        # A preload script runs in every new window before its own scripts.
+        response = bidi.send("script.addPreloadScript", {"functionDeclaration": "() => { window.preloaded = document.readyState; }"})
+        assert response["type"] == "success", response
+        preload_script = response["result"]["script"]
+        response = bidi.send("browsingContext.navigate", {"context": new_tab, "url": "data:text/html,<script>window.seen = window.preloaded</script>", "wait": "complete"})
+        assert response["type"] == "success", response
+        response = bidi.send("script.evaluate", {"expression": "window.seen", "awaitPromise": False, "target": {"context": new_tab}})
+        assert response["result"]["result"] == {"type": "string", "value": "loading"}, response
+        response = bidi.send("script.removePreloadScript", {"script": preload_script})
+        assert response["type"] == "success", response
+        response = bidi.send("script.removePreloadScript", {"script": preload_script})
+        assert response["type"] == "error" and response["error"] == "no such script", response
         response = bidi.send("browsingContext.close", {"context": frame})
         assert response["type"] == "error" and response["error"] == "invalid argument", response
         response = bidi.send("browsingContext.close", {"context": new_tab})

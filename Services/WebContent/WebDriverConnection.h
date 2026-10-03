@@ -102,6 +102,7 @@ private:
     Web::WebDriver::Response set_permission(JsonValue payload);
 
     void bidi_handle_user_prompt(u64 command_id, JsonObject const& parameters);
+    void bidi_navigate(u64 command_id, Web::HTML::LocalNavigable&, JsonObject const& parameters);
 
     void set_current_browsing_context(Web::HTML::Navigable const&);
     Web::HTML::BrowsingContext& current_browsing_context() { return *m_current_browsing_context; }

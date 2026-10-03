@@ -28,6 +28,7 @@
 #include <LibCore/Timer.h>
 #include <LibFileSystem/FileSystem.h>
 #include <LibIPC/Transport.h>
+#include <LibURL/Parser.h>
 #include <LibWebCommon/WebDriver/Proxy.h>
 #include <LibWebCommon/WebDriver/TimeoutsConfiguration.h>
 #include <LibWebCommon/WebDriver/UserPrompt.h>
@@ -1019,19 +1020,48 @@ NonnullRefPtr<Session::WebDriverPromise> Session::wait_for_window_closed(String 
     return promise;
 }
 
-// https://w3c.github.io/webdriver-bidi/#await-a-navigation
-NonnullRefPtr<Session::WebDriverPromise> Session::navigate_window(String window_handle, URL::URL url, StringView wait_condition)
+// https://w3c.github.io/webdriver-bidi/#command-browsingContext-navigate
+NonnullRefPtr<Session::WebDriverPromise> Session::navigate_context(String context_id, String url, StringView wait_condition)
 {
-    // 1. Let navigation id be the string representation of a UUID based on truly random, or pseudo-random numbers.
-    auto navigation_id = generate_random_uuid();
-
+    // 12. Return the result of await a navigation with navigable, request and wait condition.
+    // https://w3c.github.io/webdriver-bidi/#await-a-navigation
     // 2. Navigate navigable with resource request, and using navigable's active document as the source Document,
     //    with navigation id navigation id, and history handling behavior history handling.
-    auto navigate_promise = perform_browser_command([this, window_handle, url](u64 command_id) {
-        m_browser_connection->async_navigate_to(command_id, window_handle, url);
-    });
+    // NB: A top-level traversable is navigated by the browser process, any other navigable by the process hosting its
+    //     document; both answer with the navigation's id.
+    NonnullRefPtr<WebDriverPromise> navigate_promise = [&]() -> NonnullRefPtr<WebDriverPromise> {
+        if (has_window_handle(context_id)) {
+            return perform_browser_command([this, context_id, url](u64 command_id) {
+                m_browser_connection->async_bidi_navigate_to(command_id, context_id, url);
+            });
+        }
 
-    auto result = [navigation_id = move(navigation_id), url = url.serialize()]() {
+        JsonObject parameters;
+        parameters.set("url"sv, url);
+        return run_bidi_content_command(context_id, "browsingContext.navigate"_string, move(parameters));
+    }();
+
+    auto promise = WebDriverPromise::construct();
+    promise->add_child(navigate_promise);
+    navigate_promise->when_resolved([this_ref = NonnullRefPtr { *this }, promise, url, wait_condition = MUST(String::from_utf8(wait_condition))](JsonValue& result) {
+                        auto navigation_id = result.is_string() ? result.as_string() : result.as_object().get_string("navigation"sv).value_or({});
+                        auto navigated_url = result.is_object() ? result.as_object().get_string("url"sv).value_or(url) : url;
+
+                        auto awaited = this_ref->await_a_navigation(move(navigation_id), move(navigated_url), wait_condition);
+                        promise->add_child(awaited);
+                        awaited->when_resolved([promise](JsonValue& body) { promise->resolve(move(body)); })
+                            .when_rejected([promise](Web::WebDriver::Error& error) { promise->reject(Web::WebDriver::Error(error)); });
+                    })
+        .when_rejected([promise](Web::WebDriver::Error& error) {
+            promise->reject(Web::WebDriver::Error(error));
+        });
+    return promise;
+}
+
+// https://w3c.github.io/webdriver-bidi/#await-a-navigation
+NonnullRefPtr<Session::WebDriverPromise> Session::await_a_navigation(String navigation_id, String url, StringView wait_condition)
+{
+    auto result = [](String const& navigation_id, String const& url) {
         // Let body be a map matching the browsingContext.NavigateResult production, with the navigation field set
         // to navigation id, and the url field set to the result of the URL serializer given navigation status's url.
         JsonObject body;
@@ -1041,24 +1071,124 @@ NonnullRefPtr<Session::WebDriverPromise> Session::navigate_window(String window_
     };
 
     // 8. If wait condition is "committed", let event name be "committed".
-    // NB: The response to a navigation request is sent once the navigation has started.
-    if (wait_condition == "none"sv) {
-        return continue_with_promise(move(navigate_promise), [result = move(result)] {
-            return WebDriverPromise::resolved(result());
-        });
-    }
+    // AD-HOC: Answer once the navigation has started instead, as other browsers do: A client that asked not to wait
+    //         gets to act, closing the window say, while the navigation's response is still on its way.
+    if (wait_condition == "none"sv)
+        return WebDriverPromise::resolved(result(navigation_id, url));
 
     // 9. Otherwise, if wait condition is "interactive", let event name be "domContentLoaded".
     // 10. Otherwise, let event name be "load".
-    // FIXME: Return at "interactive" when asked to; the browser only reports the load completing.
-    auto wait_promise = continue_with_promise(move(navigate_promise), [this_ref = NonnullRefPtr { *this }, window_handle] {
-        return this_ref->perform_browser_command([this_ref, window_handle](u64 command_id) {
-            this_ref->m_browser_connection->async_wait_for_navigation_completion(command_id, window_handle, this_ref->page_load_timeout());
+    auto event_name = wait_condition == "interactive"sv ? "browsingContext.domContentLoaded"_string : "browsingContext.load"_string;
+
+    // 11. Let (event received, status) be await given «event name, "download started", "navigation aborted",
+    //     "navigation failed"» and navigation id.
+    // NB: A navigation that only changed the fragment completed with its fragmentNavigated event.
+    auto matches = [&](JsonObject const& event) {
+        if (event.get_string("navigation"sv) != navigation_id)
+            return false;
+        auto method = event.get_string("method"sv).value();
+        return method == event_name || method.is_one_of("browsingContext.fragmentNavigated"sv, "browsingContext.navigationFailed"sv, "browsingContext.navigationAborted"sv);
+    };
+    for (auto const& event : m_recent_navigation_events) {
+        if (!matches(event))
+            continue;
+        auto method = event.get_string("method"sv).value();
+        if (method.is_one_of("browsingContext.navigationFailed"sv, "browsingContext.navigationAborted"sv))
+            return WebDriverPromise::rejected(Web::WebDriver::Error::from_code(Web::WebDriver::ErrorCode::UnknownError, "Navigation failed"sv));
+        return WebDriverPromise::resolved(result(navigation_id, event.get_string("url"sv).value_or(url)));
+    }
+
+    auto promise = WebDriverPromise::construct();
+    PendingNavigation pending { navigation_id, event_name, promise, nullptr };
+    pending.timer = Core::Timer::create_single_shot(page_load_timeout().value_or(300'000), [this, promise, navigation_id] {
+        m_pending_navigations.remove_all_matching([&](auto const& pending) { return pending.promise.ptr() == promise.ptr(); });
+        promise->reject(Web::WebDriver::Error::from_code(Web::WebDriver::ErrorCode::Timeout, "Navigation timed out"sv));
+    });
+    pending.timer->start();
+    m_pending_navigations.append(move(pending));
+    return promise;
+}
+
+Session::NavigationEventDisposition Session::settle_pending_navigation(String const& method, JsonValue const& params)
+{
+    if (!method.starts_with_bytes("browsingContext."sv) || !params.is_object())
+        return NavigationEventDisposition::Emit;
+    auto navigation_id = params.as_object().get_string("navigation"sv);
+    if (!navigation_id.has_value())
+        return NavigationEventDisposition::Emit;
+
+    // Both the browser process and the process hosting the document can notice that a navigation failed; one report
+    // is enough.
+    static constexpr u32 RECENT_NAVIGATION_EVENTS_LIMIT = 64;
+    JsonObject event = params.as_object();
+    event.set("method"sv, method);
+    if (method.is_one_of("browsingContext.navigationFailed"sv, "browsingContext.navigationAborted"sv)) {
+        auto already_reported = m_recent_navigation_events.find_if([&](auto const& recent) {
+            return recent.get_string("navigation"sv) == navigation_id && recent.get_string("method"sv).has_value() && recent.get_string("method"sv)->is_one_of("browsingContext.navigationFailed"sv, "browsingContext.navigationAborted"sv, "browsingContext.load"sv);
         });
+        if (!already_reported.is_end())
+            return NavigationEventDisposition::Duplicate;
+    }
+    if (m_recent_navigation_events.size() >= RECENT_NAVIGATION_EVENTS_LIMIT)
+        m_recent_navigation_events.remove(0);
+    m_recent_navigation_events.append(event);
+
+    m_pending_navigations.remove_all_matching([&](PendingNavigation& pending) {
+        if (pending.navigation_id != *navigation_id)
+            return false;
+        bool failed = method.is_one_of("browsingContext.navigationFailed"sv, "browsingContext.navigationAborted"sv);
+        if (method != pending.event_name && method != "browsingContext.fragmentNavigated"sv && !failed)
+            return false;
+
+        pending.timer->stop();
+        if (failed) {
+            pending.promise->reject(Web::WebDriver::Error::from_code(Web::WebDriver::ErrorCode::UnknownError, "Navigation failed"sv));
+        } else {
+            JsonObject body;
+            body.set("navigation"sv, *navigation_id);
+            body.set("url"sv, params.as_object().get_string("url"sv).value_or({}));
+            pending.promise->resolve(JsonValue { move(body) });
+        }
+        return true;
     });
-    return continue_with_promise(move(wait_promise), [result = move(result)] {
-        return WebDriverPromise::resolved(result());
-    });
+    return NavigationEventDisposition::Emit;
+}
+
+// https://w3c.github.io/webdriver-bidi/#command-script-addPreloadScript
+String Session::add_preload_script(JsonObject preload_script)
+{
+    // 10. Let script be the string representation of a UUID.
+    auto script = generate_random_uuid();
+    preload_script.set("script"sv, script);
+
+    // 11. Let preload script map be session's preload script map.
+    // 12. Set preload script map[script] to a struct with function declaration function declaration, arguments
+    //     arguments, contexts navigables, sandbox sandbox, and user contexts user contexts.
+    m_preload_scripts.set(script, move(preload_script));
+    push_preload_scripts();
+    return script;
+}
+
+// https://w3c.github.io/webdriver-bidi/#command-script-removePreloadScript
+ErrorOr<void, Web::WebDriver::Error> Session::remove_preload_script(StringView script)
+{
+    // 3. If preload script map does not contain script, return error with error code no such script.
+    if (!m_preload_scripts.remove(script))
+        return Web::WebDriver::Error { 404, "no such script"_string, "Unknown preload script"_string, {} };
+
+    // 4. Remove script from preload script map.
+    push_preload_scripts();
+    return {};
+}
+
+void Session::push_preload_scripts()
+{
+    if (!m_browser_connection)
+        return;
+    JsonArray scripts;
+    for (auto const& [script, preload_script] : m_preload_scripts)
+        scripts.must_append(preload_script);
+    m_browser_connection->async_set_preload_scripts(move(scripts));
 }
 
 NonnullRefPtr<Session::WebDriverPromise> Session::set_permission(JsonValue descriptor, String state, String origin, String embedded_origin)
@@ -1522,6 +1652,10 @@ NonnullRefPtr<Session::WebDriverPromise> Session::emit_context_created_events_fo
 
 void Session::did_receive_bidi_event(String method, JsonValue params, Vector<String> related_top_level_traversable_ids)
 {
+    // A navigation this session is waiting on completes with its events, whether or not they are subscribed to.
+    if (settle_pending_navigation(method, params) == NavigationEventDisposition::Duplicate)
+        return;
+
     JsonObject body;
     body.set("type"sv, "event"sv);
     body.set("method"sv, method);

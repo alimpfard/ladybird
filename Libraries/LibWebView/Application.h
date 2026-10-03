@@ -202,6 +202,7 @@ public:
     void notify_webdriver_window_closed(String const& handle, JsonObject navigable_info);
     void notify_webdriver_navigable_created(ViewImplementation const&, CanonicalNavigable const&);
     void notify_webdriver_navigable_destroyed(ViewImplementation const&, CanonicalNavigable const&);
+    void notify_webdriver_navigation_event(ViewImplementation const&, CanonicalNavigable const&, StringView method, Utf16String const& navigation_id, URL::URL const&);
     void webdriver_browser_connection_died(Badge<WebDriverBrowserConnection>);
     void push_webdriver_session_config(ViewImplementation&);
     void push_webdriver_session_config(WebContentPage&);

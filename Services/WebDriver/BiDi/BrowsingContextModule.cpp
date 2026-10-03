@@ -5,7 +5,6 @@
  */
 
 #include <AK/JsonObject.h>
-#include <LibURL/Parser.h>
 #include <WebDriver/BiDi/Modules.h>
 #include <WebDriver/Session.h>
 
@@ -88,32 +87,9 @@ CommandPromise browsing_context_navigate(BiDiConnection&, RefPtr<Session> sessio
     auto url = TRY_OR_REJECT(get_required_string(parameters, "url"sv));
 
     // 2. Let navigable be the result of trying to get a navigable with navigable id.
-    // FIXME: Navigate child navigables too; the browser only navigates top-level traversables for WebDriver.
-    if (!session->has_window_handle(navigable_id)) {
-        auto promise = Session::WebDriverPromise::construct();
-        auto lookup = session->get_browsing_context_tree(navigable_id, 0);
-        promise->add_child(lookup);
-        lookup->when_resolved([promise](JsonValue&) {
-                  promise->reject(Web::WebDriver::Error::from_code(Web::WebDriver::ErrorCode::UnsupportedOperation, "Only a top-level browsing context can be navigated"sv));
-              })
-            .when_rejected([promise](Web::WebDriver::Error& error) {
-                promise->reject(Web::WebDriver::Error(error));
-            });
-        return promise;
-    }
-
-    // 7. Let document be navigable's active document.
-    // 8. Let base be document's base URL.
-    // 9. Let url record be the result of applying the URL parser to url, with base URL base.
-    // 10. If url record is failure, return error with error code invalid argument.
-    // FIXME: Resolve relative URLs against the active document's base URL.
-    auto url_record = URL::Parser::basic_parse(url);
-    if (!url_record.has_value())
-        return rejected(Web::WebDriver::Error::from_code(Web::WebDriver::ErrorCode::InvalidArgument, "Parameter 'url' is not a valid URL"sv));
-
-    // 11. Let request be a new request whose URL is url record.
+    // 7-11. The process hosting navigable's active document parses url against its base URL and navigates.
     // 12. Return the result of await a navigation with navigable, request and wait condition.
-    return session->navigate_window(move(navigable_id), url_record.release_value(), wait_condition);
+    return session->navigate_context(move(navigable_id), move(url), wait_condition);
 }
 
 // https://w3c.github.io/webdriver-bidi/#command-browsingContext-create

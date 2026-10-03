@@ -476,6 +476,12 @@ void ConnectionFromClient::run_webdriver_bidi_command(Web::PageId page_id, u64 c
     page->run_webdriver_bidi_command(command_id, navigable_id, move(method), move(parameters));
 }
 
+void ConnectionFromClient::set_webdriver_preload_scripts(Web::PageId page_id, JsonValue scripts)
+{
+    if (auto page = this->page(page_id); page.has_value())
+        page->set_webdriver_preload_scripts(move(scripts));
+}
+
 void ConnectionFromClient::webdriver_set_permission(Web::PageId, JsonValue descriptor, String state, String origin, String embedded_origin)
 {
     // NB: The permission store is shared by every page of this process.

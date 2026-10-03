@@ -250,6 +250,7 @@
 #include <LibWeb/UIEvents/PointerTypes.h>
 #include <LibWeb/UIEvents/TextEvent.h>
 #include <LibWeb/ViewTransition/ViewTransition.h>
+#include <LibWeb/WebDriver/BiDi/Events.h>
 #include <LibWeb/WebIDL/AbstractOperations.h>
 #include <LibWeb/WebIDL/DOMException.h>
 #include <LibWeb/WebIDL/ExceptionOr.h>
@@ -4411,6 +4412,19 @@ EventTarget* Document::get_parent(Event const& event)
 }
 
 // https://html.spec.whatwg.org/multipage/document-lifecycle.html#completely-loaded
+// https://w3c.github.io/webdriver-bidi/#event-browsingContext-domContentLoaded
+// The remote end event trigger is the WebDriver BiDi DOM content loaded steps given navigable and navigation status.
+void Document::report_webdriver_bidi_dom_content_loaded()
+{
+    if (m_reported_webdriver_bidi_dom_content_loaded)
+        return;
+    auto navigable = this->navigable();
+    if (!navigable || !m_navigation_id.has_value())
+        return;
+    m_reported_webdriver_bidi_dom_content_loaded = true;
+    WebDriver::BiDi::emit_navigation_event(*navigable, "browsingContext.domContentLoaded"sv, *m_navigation_id, url());
+}
+
 bool Document::is_completely_loaded() const
 {
     return m_completely_loaded_time.has_value();
@@ -4458,6 +4472,23 @@ void Document::completely_finish_loading()
             return document_observer.document_completely_loaded();
         });
     };
+
+    // https://w3c.github.io/webdriver-bidi/#event-browsingContext-load
+    // The remote end event trigger is the WebDriver BiDi load complete steps given navigable and navigation status.
+    // 7. If document's during-loading navigation ID for WebDriver BiDi is non-null, then:
+    if (m_navigation_id.has_value()) {
+        // AD-HOC: A document that finished loading before it was fully active never got to fire DOMContentLoaded.
+        //         Its content has been loaded all the same.
+        report_webdriver_bidi_dom_content_loaded();
+
+        // 1. Invoke WebDriver BiDi load complete with document's node navigable and a new WebDriver BiDi navigation
+        //    status whose id is document's during-loading navigation ID for WebDriver BiDi, status is "complete", and
+        //    url is document's URL.
+        WebDriver::BiDi::emit_navigation_event(*navigable, "browsingContext.load"sv, *m_navigation_id, url());
+
+        // 2. Set document's during-loading navigation ID for WebDriver BiDi to null.
+        m_navigation_id = {};
+    }
 
     // 1. Assert: document's browsing context is non-null.
     VERIFY(browsing_context());
@@ -6221,6 +6252,20 @@ void Document::make_active()
     // 4. Set window's relevant settings object's execution ready flag.
     HTML::relevant_settings_object(window).execution_ready = true;
 
+    // https://w3c.github.io/webdriver-bidi/#event-browsingContext-navigationCommitted
+    // The remote end event trigger is the WebDriver BiDi navigation committed steps given navigable and navigation
+    // status, step 8.2 of update document for history step application. See the note there.
+    // NB: The initial about:blank document of a new navigable has no navigation; nothing to report for it.
+    if (current_navigable && m_navigation_id.has_value())
+        WebDriver::BiDi::emit_navigation_event(*current_navigable, "browsingContext.navigationCommitted"sv, *m_navigation_id, url());
+
+    // https://w3c.github.io/webdriver-bidi/#preload-scripts
+    // A preload script is one which runs on creation of a new Window, before any author-defined script have run.
+    if (!m_ran_webdriver_bidi_preload_scripts) {
+        m_ran_webdriver_bidi_preload_scripts = true;
+        WebDriver::BiDi::run_preload_scripts(*this);
+    }
+
     if (m_needs_to_call_page_did_load) {
         navigable()->page().client().page_did_finish_loading(navigable()->id(), m_navigation_id);
         m_needs_to_call_page_did_load = false;
@@ -6979,9 +7024,11 @@ void Document::update_for_history_step_application(NonnullRefPtr<HTML::SessionHi
 
     // 8. If documentIsNew is true, then:
     if (document_is_new) {
-        // FIXME: 1. Assert: document's during-loading navigation ID for WebDriver BiDi is not null.
-        // FIXME: 2. Invoke WebDriver BiDi navigation committed with navigable and a new WebDriver BiDi navigation
-        //           status whose id is document's during-loading navigation ID for WebDriver BiDi, status is "committed", and url is document's URL
+        // 1. Assert: document's during-loading navigation ID for WebDriver BiDi is not null.
+        // 2. Invoke WebDriver BiDi navigation committed with navigable and a new WebDriver BiDi navigation
+        //    status whose id is document's during-loading navigation ID for WebDriver BiDi, status is "committed", and url is document's URL
+        // NB: Reported by make active above: An empty document can finish loading, which lets go of the navigation
+        //     id, between being made active and this step.
 
         // 3. Try to scroll to the fragment for document.
         try_to_scroll_to_the_fragment();

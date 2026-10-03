@@ -160,8 +160,10 @@ void CanonicalNavigable::begin_navigation(Web::HTML::PreparedNavigationDescripto
     // 9. If navigable's active document's unload counter is greater than 0, then invoke WebDriver BiDi navigation failed
     //    with navigable and a WebDriver BiDi navigation status whose id is navigationId, status is "canceled", and url
     //    is url, and return.
-    if (traversable.is_unloading_document_of(id()))
+    if (traversable.is_unloading_document_of(id())) {
+        notify_webdriver_navigation_event("browsingContext.navigationFailed"sv, navigation_id, url);
         return;
+    }
 
     // NB: A navigation from the browser's UI navigates a traversable, which has no container. A child's container ended
     //     lazy loading, steps 10 and 11, when the document that was lost loaded, and the process populating its next
@@ -212,8 +214,9 @@ void CanonicalNavigable::begin_navigation(Web::HTML::PreparedNavigationDescripto
     // 16. Let targetSnapshotParams be the result of snapshotting target snapshot params given navigable.
     auto target_snapshot_params = snapshot_target_snapshot_params();
 
-    // FIXME: 17. Invoke WebDriver BiDi navigation started with navigable and a new WebDriver BiDi navigation status whose
-    //            id is navigationId, status is "pending", and url is url.
+    // 17. Invoke WebDriver BiDi navigation started with navigable and a new WebDriver BiDi navigation status whose
+    //     id is navigationId, status is "pending", and url is url.
+    notify_webdriver_navigation_event("browsingContext.navigationStarted"sv, navigation_id, url);
 
     // 18. If navigable's ongoing navigation is "traversal", then:
     if (ongoing_navigation_is_traversal()) {
@@ -301,6 +304,12 @@ void CanonicalNavigable::begin_navigation(Web::HTML::PreparedNavigationDescripto
     set_navigation_population_worker(*worker);
     worker->async_set_ongoing_navigation(id(), navigation_id);
     worker->begin_navigation_unload_check(*this, navigation_id);
+}
+
+void CanonicalNavigable::notify_webdriver_navigation_event(StringView method, Utf16String const& navigation_id, URL::URL const& url)
+{
+    if (auto view = top_level_traversable().view(); view.has_value())
+        Application::the().notify_webdriver_navigation_event(*view, *this, method, navigation_id, url);
 }
 
 void CanonicalNavigable::begin_navigation_waiting_for_traversal()
@@ -1146,6 +1155,8 @@ void CanonicalNavigable::did_commit_navigation(CanonicalSessionHistoryEntry& ent
         };
     }
 
+    if (commits_ongoing_navigation && m_ongoing_navigation.has_value())
+        m_ongoing_navigation->has_committed = true;
     clear_ongoing_navigation();
 }
 
@@ -1190,9 +1201,15 @@ void CanonicalNavigable::clear_ongoing_navigation_state()
 
 void CanonicalNavigable::clear_ongoing_navigation()
 {
-    // The document populated for the navigation is not going to be activated.
-    if (m_ongoing_navigation.has_value())
+    if (m_ongoing_navigation.has_value()) {
+        // The document populated for the navigation is not going to be activated.
         abandon_populated_document(m_ongoing_navigation->populated_document);
+
+        // https://w3c.github.io/webdriver-bidi/#navigation-status
+        // A navigation that started but never activated a document was canceled, superseded, or lost its process.
+        if (m_ongoing_navigation->has_started && !m_ongoing_navigation->has_committed && m_ongoing_navigation->navigation_id.has_value())
+            notify_webdriver_navigation_event("browsingContext.navigationFailed"sv, *m_ongoing_navigation->navigation_id, m_ongoing_navigation->url.value_or(URL::about_blank()));
+    }
     clear_ongoing_navigation_state();
 }
 

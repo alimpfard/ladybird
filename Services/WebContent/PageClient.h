@@ -62,6 +62,7 @@ public:
     void run_webdriver_command(u64 command_id, Optional<Web::HTML::CrossProcessId> navigable_id, String const& name, JsonValue payload, Vector<String> arguments);
     void run_webdriver_bidi_command(u64 command_id, Web::HTML::CrossProcessId navigable_id, String method, JsonValue parameters);
     void webdriver_bidi_event(String method, JsonValue params);
+    void set_webdriver_preload_scripts(JsonValue scripts);
     WebDriverConnection* webdriver() { return m_webdriver.ptr(); }
     void webdriver_did_set_current_browsing_context(u64 command_id, Web::HTML::CrossProcessId navigable_id);
     void did_handle_webdriver_mouse_event(u64 request_id);
@@ -265,6 +266,7 @@ private:
     virtual void page_did_unregister_download(u64 download_id) override;
     virtual bool page_is_download_canceled(u64 download_id) const override;
     virtual void page_did_request_alert(Utf16String const&) override;
+    virtual void page_did_emit_webdriver_bidi_event(String const& method, JsonValue params) override;
     virtual void page_did_request_confirm(Utf16String const&) override;
     virtual void page_did_request_prompt(Utf16String const&, Utf16String const&) override;
     virtual void page_did_request_set_prompt_text(Utf16String const&) override;

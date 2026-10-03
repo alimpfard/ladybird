@@ -80,6 +80,7 @@ endpoint WebContentServer routed by Web::PageId page_id
     run_webdriver_command(Web::PageId page_id, u64 command_id, Optional<Web::HTML::CrossProcessId> navigable_id, String name, JsonValue payload, Vector<String> arguments) =|
     run_webdriver_bidi_command(Web::PageId page_id, u64 command_id, Web::HTML::CrossProcessId navigable_id, String method, JsonValue parameters) =|
     webdriver_set_permission(Web::PageId page_id, JsonValue descriptor, String state, String origin, String embedded_origin) =|
+    set_webdriver_preload_scripts(Web::PageId page_id, JsonValue scripts) =|
     run_webdriver_user_prompt_handling(Web::PageId page_id, u64 request_id) =|
     did_handle_webdriver_mouse_event(Web::PageId page_id, u64 request_id) =|
     set_webdriver_session_config(Web::PageId page_id, Web::WebDriver::UserPromptHandler user_prompt_handler, Web::WebDriver::PageLoadStrategy page_load_strategy, bool strict_file_interactability, JsonValue timeouts, bool bidi_session) =|

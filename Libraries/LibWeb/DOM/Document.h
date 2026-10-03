@@ -619,6 +619,12 @@ public:
     // Scripts WebDriver BiDi created to run in this document. Like a script element keeps the script it ran, the
     // document keeps these, so that functions and jobs created by them can refer back to their script record.
     void add_webdriver_bidi_script(HTML::ClassicScript& script) { m_webdriver_bidi_scripts.append(script); }
+    void report_webdriver_bidi_dom_content_loaded();
+    bool ran_webdriver_bidi_preload_scripts() const { return m_ran_webdriver_bidi_preload_scripts; }
+    void set_ran_webdriver_bidi_preload_scripts() { m_ran_webdriver_bidi_preload_scripts = true; }
+
+    // The id of the navigation that created this document, if a navigation did.
+    Optional<Utf16String> const& navigation_id() const { return m_navigation_id; }
 
     Vector<GC::Ref<HTML::HTMLScriptElement>>& scripts_to_execute_as_soon_as_possible() { return m_scripts_to_execute_as_soon_as_possible; }
 
@@ -1689,6 +1695,8 @@ private:
     Vector<GC::Ref<HTML::HTMLScriptElement>> m_scripts_to_execute_when_parsing_has_finished;
 
     Vector<GC::Ref<HTML::ClassicScript>> m_webdriver_bidi_scripts;
+    bool m_ran_webdriver_bidi_preload_scripts { false };
+    bool m_reported_webdriver_bidi_dom_content_loaded { false };
 
     // https://html.spec.whatwg.org/multipage/scripting.html#list-of-scripts-that-will-execute-in-order-as-soon-as-possible
     Vector<GC::Ref<HTML::HTMLScriptElement>> m_scripts_to_execute_in_order_as_soon_as_possible;

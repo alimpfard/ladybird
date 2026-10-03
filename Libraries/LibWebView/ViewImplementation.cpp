@@ -2592,6 +2592,20 @@ String ViewImplementation::webdriver_bidi_navigable_id(CanonicalNavigable const&
     return MUST(String::formatted("{}", navigable.id()));
 }
 
+// The URL a WebDriver BiDi client sees the navigable at: That of the navigation it started, until the navigation
+// commits or fails, so that a navigation it was told not to wait for is reflected right away, as in other browsers.
+// Otherwise the active document's URL.
+URL::URL ViewImplementation::webdriver_bidi_navigable_url(CanonicalNavigable const& navigable) const
+{
+    if (auto const& ongoing = navigable.ongoing_navigation(); ongoing.has_value() && ongoing->has_started && !ongoing->has_committed && ongoing->url.has_value())
+        return *ongoing->url;
+
+    // NB: The active session history entry carries the document's URL, which may have changed since its creation.
+    if (auto entry = navigable.active_session_history_entry())
+        return entry->url;
+    return navigable.active_document().creation_url();
+}
+
 // https://w3c.github.io/webdriver-bidi/#get-the-navigable-info
 JsonObject ViewImplementation::webdriver_bidi_navigable_info(CanonicalNavigable const& navigable, Optional<u64> max_depth, bool include_parent_id) const
 {
@@ -2609,10 +2623,7 @@ JsonObject ViewImplementation::webdriver_bidi_navigable_info(CanonicalNavigable 
 
     // 4. Let document be navigable's active document.
     // 5. Let url be the result of running the URL serializer, given document's URL.
-    // NB: The active session history entry carries the document's URL, which may have changed since its creation.
-    auto url = navigable.active_session_history_entry()
-        ? navigable.active_session_history_entry()->url.serialize()
-        : navigable.active_document().creation_url().serialize();
+    auto url = webdriver_bidi_navigable_url(navigable).serialize();
 
     // 6. Let child infos be null.
     JsonValue child_infos;
@@ -2918,6 +2929,9 @@ void ViewImplementation::did_close_browsing_context(Badge<WebContentPage>)
 {
     reject_pending_selection_requests();
 
+    // A navigation still under way is reported as failed while the window still has its handle to name it by.
+    traversable().clear_ongoing_navigation();
+
     auto navigable_info = webdriver_bidi_navigable_info(traversable(), {}, true);
     auto window_handle = move(m_client_state.client_handle);
 
@@ -2979,11 +2993,13 @@ Optional<ViewImplementation&> ViewImplementation::find_view_by_handle(StringView
     return {};
 }
 
-void ViewImplementation::load_for_webdriver_navigation(URL::URL const& url)
+Utf16String ViewImplementation::load_for_webdriver_navigation(URL::URL const& url)
 {
     auto navigation = traversable().prepare_navigation(url);
+    auto navigation_id = navigation.navigation_id;
     prepare_for_navigation_after_crash(NavigationToRetry { url, prepare_navigation_to_retry(navigation) });
     traversable().begin_navigation(move(navigation));
+    return navigation_id;
 }
 
 void ViewImplementation::did_start_webdriver_navigation()

@@ -92,6 +92,7 @@
 #include <LibWeb/UIEvents/EventNames.h>
 #include <LibWeb/UIEvents/InputEvent.h>
 #include <LibWeb/UIEvents/InputTypes.h>
+#include <LibWeb/WebDriver/BiDi/Events.h>
 #include <LibWeb/WebIDL/Promise.h>
 #include <LibWeb/XHR/FormData.h>
 #include <LibWebCommon/CSS/SystemColor.h>
@@ -3137,6 +3138,11 @@ void LocalNavigable::queue_navigation_and_traversal_task_for_session_history_ent
             //    external software.
             output->document = attempt_to_create_a_non_fetch_scheme_document(navigation_params.get<GC::Ref<NonFetchSchemeNavigationParams>>());
 
+            // AD-HOC: The URL was handed off to external software, or went unhandled, so this navigable is left as it
+            //         was: Tell WebDriver BiDi the navigation is over, as it would be had an error page been shown.
+            if (!output->document && navigation_id.has_value())
+                WebDriver::BiDi::emit_navigation_event(*this, "browsingContext.navigationFailed"sv, *navigation_id, url);
+
             // 2. Set saveExtraDocumentState to false.
             output->save_extra_document_state = false;
         }
@@ -3185,6 +3191,11 @@ void LocalNavigable::queue_navigation_and_traversal_task_for_session_history_ent
             if (output->document)
                 output->document->make_unsalvageable("navigation-failure"_utf16);
 
+            // AD-HOC: Step 4.2 below only reports a failed navigation that got a response. Report one that got none
+            //         too — a network error, say — since the navigation is just as over for a WebDriver BiDi client.
+            if (navigation_id.has_value())
+                WebDriver::BiDi::emit_navigation_event(*this, "browsingContext.navigationFailed"sv, *navigation_id, error_url);
+
             // 3. Set saveExtraDocumentState to false.
             output->save_extra_document_state = false;
 
@@ -3201,7 +3212,8 @@ void LocalNavigable::queue_navigation_and_traversal_task_for_session_history_ent
                     },
                     [](auto const&) {});
 
-                // FIXME: 2. Invoke WebDriver BiDi navigation failed with navigable and a new WebDriver BiDi navigation status whose id is navigationId, status is "canceled", and url is navigationParams's response's URL.
+                // 2. Invoke WebDriver BiDi navigation failed with navigable and a new WebDriver BiDi navigation status whose id is navigationId, status is "canceled", and url is navigationParams's response's URL.
+                // NB: Reported above, for a navigation that got no response as well.
             }
         }
 
@@ -3700,8 +3712,9 @@ void LocalNavigable::begin_navigation(PreparedNavigation navigation)
     // 16. Let targetSnapshotParams be the result of snapshotting target snapshot params given navigable.
     auto target_snapshot_params = snapshot_target_snapshot_params(*this);
 
-    // FIXME: 17. Invoke WebDriver BiDi navigation started with navigable and a new WebDriver BiDi navigation status whose id
+    // 17. Invoke WebDriver BiDi navigation started with navigable and a new WebDriver BiDi navigation status whose id
     //     is navigationId, status is "pending", and url is url.
+    WebDriver::BiDi::emit_navigation_event(*this, "browsingContext.navigationStarted"sv, navigation.navigation_id, navigation.url);
 
     // 18. If navigable's ongoing navigation is "traversal", then:
     if (ongoing_navigation().has<Traversal>()) {
@@ -4006,9 +4019,9 @@ void LocalNavigable::navigate_to_a_fragment(URL::URL const& url, HistoryHandling
     //    historyHandling, and userInvolvement.
     page().history_executor().finalize_same_document_navigation(*this, history_entry, entry_to_replace, history_handling, user_involvement, move(previous_entry_persisted_state));
 
-    // FIXME: Invoke WebDriver BiDi fragment navigated with navigable and a new WebDriver BiDi navigation status whose
-    //        id is navigationId, url is url, and status is "complete".
-    (void)navigation_id;
+    // Invoke WebDriver BiDi fragment navigated with navigable and a new WebDriver BiDi navigation status whose id is
+    // navigationId, url is url, and status is "complete".
+    WebDriver::BiDi::emit_navigation_event(*this, "browsingContext.fragmentNavigated"sv, navigation_id, url);
 }
 
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#evaluate-a-javascript:-url

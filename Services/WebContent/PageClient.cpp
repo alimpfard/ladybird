@@ -56,6 +56,7 @@
 #include <LibWeb/Painting/DocumentPaintState.h>
 #include <LibWeb/Platform/EventLoopPlugin.h>
 #include <LibWeb/Streams/ReadableStreamDefaultReader.h>
+#include <LibWeb/WebDriver/BiDi/Events.h>
 #include <LibWeb/WebDriver/UserPrompt.h>
 #include <LibWeb/WebIDL/Promise.h>
 #include <LibWebCommon/HTML/NavigationPopulationRequest.h>
@@ -1926,7 +1927,20 @@ void PageClient::run_webdriver_bidi_command(u64 command_id, Web::HTML::CrossProc
 
 void PageClient::webdriver_bidi_event(String method, JsonValue params)
 {
+    // Only a BiDi session receives events.
+    if (!m_webdriver_bidi_session)
+        return;
     client().async_webdriver_bidi_event(m_id, move(method), move(params));
+}
+
+void PageClient::page_did_emit_webdriver_bidi_event(String const& method, JsonValue params)
+{
+    webdriver_bidi_event(method, move(params));
+}
+
+void PageClient::set_webdriver_preload_scripts(JsonValue scripts)
+{
+    Web::WebDriver::BiDi::set_preload_scripts(move(scripts));
 }
 
 void PageClient::webdriver_did_set_current_browsing_context(u64 command_id, Web::HTML::CrossProcessId navigable_id)

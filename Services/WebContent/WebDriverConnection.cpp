@@ -12,6 +12,7 @@
 #include <AK/JsonObject.h>
 #include <AK/JsonValue.h>
 #include <AK/LexicalPath.h>
+#include <AK/Random.h>
 #include <AK/RefCounted.h>
 #include <AK/Time.h>
 #include <AK/Utf16FlyString.h>
@@ -2860,8 +2861,62 @@ void WebDriverConnection::run_bidi_command(u64 command_id, Web::HTML::CrossProce
         bidi_handle_user_prompt(command_id, parameters.as_object());
         return;
     }
+    if (method == "browsingContext.navigate"sv) {
+        bidi_navigate(command_id, *navigable, parameters.as_object());
+        return;
+    }
 
     complete(Web::WebDriver::Error::from_code(Web::WebDriver::ErrorCode::UnknownCommand, "Unknown WebDriver BiDi command"sv));
+}
+
+// https://w3c.github.io/webdriver-bidi/#command-browsingContext-navigate
+void WebDriverConnection::bidi_navigate(u64 command_id, Web::HTML::LocalNavigable& navigable, JsonObject const& parameters)
+{
+    auto complete = [this, command_id](Web::WebDriver::Response response) {
+        m_page_client->webdriver_command_complete(command_id, move(response));
+    };
+
+    // 6. Let url be the value of the url field of command parameters.
+    auto url = parameters.get_string("url"sv);
+    if (!url.has_value()) {
+        complete(Web::WebDriver::Error::from_code(Web::WebDriver::ErrorCode::InvalidArgument, "Parameter 'url' must be a string"sv));
+        return;
+    }
+
+    // 7. Let document be navigable's active document.
+    auto document = navigable.active_document();
+
+    // 8. Let base be document's base URL.
+    // 9. Let url record be the result of applying the URL parser to url, with base URL base.
+    auto url_record = document->encoding_parse_url(Utf16String::from_utf8(*url));
+
+    // 10. If url record is failure, return error with error code invalid argument.
+    if (!url_record.has_value()) {
+        complete(Web::WebDriver::Error::from_code(Web::WebDriver::ErrorCode::InvalidArgument, "Parameter 'url' is not a valid URL"sv));
+        return;
+    }
+
+    // https://w3c.github.io/webdriver-bidi/#await-a-navigation
+    // 1. Let navigation id be the string representation of a UUID based on truly random, or pseudo-random numbers.
+    auto navigation_id = Utf16String::from_utf8(generate_random_uuid());
+
+    // 2. Navigate navigable with resource request, and using navigable's active document as the source Document,
+    //    with navigation id navigation id, and history handling behavior history handling.
+    Web::HTML::NavigateParams navigate_params;
+    navigate_params.url = *url_record;
+    navigate_params.source_document = document;
+    navigate_params.navigation_id = navigation_id;
+    auto result = navigable.navigate(move(navigate_params));
+    if (result.is_exception()) {
+        complete(Web::WebDriver::Error::from_code(Web::WebDriver::ErrorCode::UnknownError, "Navigation failed to start"sv));
+        return;
+    }
+
+    // NB: The driver awaits the navigation's events, which name this navigation id.
+    JsonObject body;
+    body.set("navigation"sv, navigation_id.to_utf8());
+    body.set("url"sv, url_record->serialize());
+    complete(JsonValue { move(body) });
 }
 
 // https://w3c.github.io/webdriver-bidi/#command-browsingContext-handleUserPrompt

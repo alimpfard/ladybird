@@ -23,7 +23,9 @@ static constexpr auto s_commands = Array {
     Command { "browsingContext.handleUserPrompt"sv, browsing_context_handle_user_prompt },
     Command { "browsingContext.navigate"sv, browsing_context_navigate },
     Command { "permissions.setPermission"sv, permissions_set_permission },
+    Command { "script.addPreloadScript"sv, script_add_preload_script },
     Command { "script.callFunction"sv, script_call_function },
+    Command { "script.removePreloadScript"sv, script_remove_preload_script },
     Command { "script.evaluate"sv, script_evaluate },
 };
 

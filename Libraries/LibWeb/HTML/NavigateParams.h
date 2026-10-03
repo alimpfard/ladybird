@@ -41,6 +41,8 @@ struct NavigateParams {
     GC::Ptr<DOM::Element> source_element = nullptr;
     InitialInsertion initial_insertion = InitialInsertion::No;
     GC::Ptr<NavigationAPIMethodTracker> api_method_tracker = nullptr;
+    // The navigation id WebDriver BiDi gave the navigation, which it reports back as the navigation's id.
+    Optional<Utf16String> navigation_id = {};
 
     void visit_edges(GC::Cell::Visitor&);
 };

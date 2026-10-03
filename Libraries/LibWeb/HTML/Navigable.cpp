@@ -209,7 +209,7 @@ WebIDL::ExceptionOr<void> Navigable::navigate(NavigateParams params)
         .form_data_entry_list = move(params.form_data_entry_list),
         .referrer_policy = params.referrer_policy,
         .user_involvement = params.user_involvement,
-        .navigation_id = move(snapshots.navigation_id),
+        .navigation_id = params.navigation_id.has_value() ? params.navigation_id.release_value() : move(snapshots.navigation_id),
         .source_element = params.source_element,
         .initial_insertion = params.initial_insertion,
         .api_method_tracker = params.api_method_tracker,

@@ -27,6 +27,12 @@ private:
 
     virtual void close_session() override;
     virtual void navigate_to(u64 command_id, String window_handle, URL::URL url) override;
+    virtual void bidi_navigate_to(u64 command_id, String window_handle, String url) override;
+    enum class NavigateResult {
+        NavigationId,
+        NavigationIdAndUrl,
+    };
+    void navigate_window(u64 command_id, String window_handle, URL::URL, NavigateResult);
     virtual void refresh(u64 command_id, String window_handle) override;
     virtual void wait_for_navigation_completion(u64 command_id, String window_handle, Optional<u64> page_load_timeout) override;
     virtual void traverse_history(u64 command_id, String window_handle, i32 delta, bool handle_user_prompts) override;
@@ -41,6 +47,7 @@ private:
     virtual void set_strict_file_interactability(bool strict_file_interactability) override;
     virtual void set_timeouts_configuration(JsonValue timeouts) override;
     virtual void set_bidi_session(bool bidi_session) override;
+    virtual void set_preload_scripts(JsonValue scripts) override;
     virtual void get_browsing_context_tree(u64 command_id, Optional<String> root, Optional<u64> max_depth) override;
     virtual void get_top_level_traversables_for_contexts(u64 command_id, Vector<String> context_ids) override;
     virtual void run_bidi_content_command(u64 command_id, String context_id, String method, JsonValue parameters) override;

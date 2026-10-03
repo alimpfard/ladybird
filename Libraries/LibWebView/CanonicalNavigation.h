@@ -48,6 +48,8 @@ public:
     Optional<Web::HTML::PreparedNavigationDescriptor> retry {};
     u64 sequence_number { 0 };
     bool has_started { false };
+    // Whether the navigation's document was activated. Its session history entry then holds what WebDriver asks after.
+    bool has_committed { false };
     Phase phase { Phase::Started };
     OwnPtr<NavigationLoader> loader {};
     RefPtr<WebContentPage> population_worker {};

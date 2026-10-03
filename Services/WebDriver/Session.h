@@ -103,7 +103,11 @@ public:
     // Resolves once the browser has reported that the window with the given handle closed.
     NonnullRefPtr<WebDriverPromise> wait_for_window_closed(String handle);
     // https://w3c.github.io/webdriver-bidi/#command-browsingContext-navigate
-    NonnullRefPtr<WebDriverPromise> navigate_window(String window_handle, URL::URL, StringView wait_condition);
+    NonnullRefPtr<WebDriverPromise> navigate_context(String context_id, String url, StringView wait_condition);
+
+    // https://w3c.github.io/webdriver-bidi/#preload-script-map
+    String add_preload_script(JsonObject preload_script);
+    ErrorOr<void, Web::WebDriver::Error> remove_preload_script(StringView script);
     Vector<String> window_handles() const { return m_windows.keys(); }
     // https://w3c.github.io/permissions/#webdriver-bidi-command-permissions-setPermission
     NonnullRefPtr<WebDriverPromise> set_permission(JsonValue descriptor, String state, String origin, String embedded_origin);
@@ -208,6 +212,26 @@ private:
     };
     HashMap<String, Vector<WindowHandleBecameAvailableCallback>> m_window_handle_became_available_callbacks;
     HashMap<String, Vector<NonnullRefPtr<WebDriverPromise>>> m_window_closed_promises;
+
+    // https://w3c.github.io/webdriver-bidi/#await-a-navigation
+    struct PendingNavigation {
+        String navigation_id;
+        String event_name;
+        NonnullRefPtr<WebDriverPromise> promise;
+        RefPtr<Core::Timer> timer;
+    };
+    NonnullRefPtr<WebDriverPromise> await_a_navigation(String navigation_id, String url, StringView wait_condition);
+    enum class NavigationEventDisposition {
+        Emit,
+        Duplicate,
+    };
+    NavigationEventDisposition settle_pending_navigation(String const& method, JsonValue const& params);
+    Vector<PendingNavigation> m_pending_navigations;
+    // Navigation events the browser reported before their navigation command was answered.
+    Vector<JsonObject> m_recent_navigation_events;
+
+    void push_preload_scripts();
+    HashMap<String, JsonObject> m_preload_scripts;
     WindowHandleBecameAvailableCallbackID m_next_window_handle_became_available_callback_id { 1 };
 
     // https://w3c.github.io/webdriver-bidi/#session-websocket-connections

@@ -44,6 +44,7 @@
 #include <LibWeb/HTML/HTMLOptionElement.h>
 #include <LibWeb/HTML/HTMLScriptElement.h>
 #include <LibWeb/HTML/HTMLTemplateElement.h>
+#include <LibWeb/HTML/LocalNavigable.h>
 #include <LibWeb/HTML/Parser/HTMLEncodingDetection.h>
 #include <LibWeb/HTML/Parser/HTMLParser.h>
 #include <LibWeb/HTML/Parser/HTMLToken.h>
@@ -58,6 +59,7 @@
 #include <LibWeb/Namespace.h>
 #include <LibWeb/Platform/EventLoopPlugin.h>
 #include <LibWeb/SVG/SVGScriptElement.h>
+#include <LibWeb/WebDriver/BiDi/Events.h>
 #include <LibWebCommon/Infra/CharacterTypes.h>
 #include <LibWebCommon/Infra/Strings.h>
 
@@ -793,6 +795,11 @@ void HTMLParserEndState::advance_to_dom_content_loaded_phase()
             HighResolutionTime::current_high_resolution_time(relevant_global_object(*document)));
         content_loaded_event->set_bubbles(true);
         document->dispatch_event(content_loaded_event);
+
+        // 1. If document's during-loading navigation ID for WebDriver BiDi is non-null, then invoke WebDriver BiDi DOM
+        //    content loaded with document's node navigable, and a new WebDriver BiDi navigation status whose id is
+        //    document's during-loading navigation ID for WebDriver BiDi, status is "pending", and url is document's URL.
+        document->report_webdriver_bidi_dom_content_loaded();
 
         // 3. Set the Document's load timing info's DOM content loaded event end time to the current high resolution time given the Document's relevant global object.
         document->load_timing_info().dom_content_loaded_event_end_time = HighResolutionTime::current_high_resolution_time(relevant_global_object(*document));

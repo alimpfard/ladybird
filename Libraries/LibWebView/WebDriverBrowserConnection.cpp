@@ -7,7 +7,9 @@
 #include <AK/HashTable.h>
 #include <AK/JsonArray.h>
 #include <AK/JsonObject.h>
+#include <AK/QuickSort.h>
 #include <LibCore/EventLoop.h>
+#include <LibURL/Parser.h>
 #include <LibWebView/Application.h>
 #include <LibWebView/CanonicalTraversable.h>
 #include <LibWebView/ViewImplementation.h>
@@ -51,6 +53,11 @@ void WebDriverBrowserConnection::close_session()
 // 10.1 Navigate To, https://w3c.github.io/webdriver/#navigate-to
 void WebDriverBrowserConnection::navigate_to(u64 command_id, String window_handle, URL::URL url)
 {
+    navigate_window(command_id, move(window_handle), move(url), NavigateResult::NavigationId);
+}
+
+void WebDriverBrowserConnection::navigate_window(u64 command_id, String window_handle, URL::URL url, NavigateResult navigate_result)
+{
     // 1. If the current top-level browsing context is no longer open, return error with error code no such window.
     auto view = ViewImplementation::find_view_by_handle(window_handle);
     if (!view.has_value()) {
@@ -60,7 +67,7 @@ void WebDriverBrowserConnection::navigate_to(u64 command_id, String window_handl
 
     // 4. Handle any user prompts and return its value if it is an error.
     auto strong_this = NonnullRefPtr { *this };
-    view->run_webdriver_user_prompt_handling([strong_this, command_id, view_id = view->view_id(), url = move(url)](Web::WebDriver::Response response) {
+    view->run_webdriver_user_prompt_handling([strong_this, command_id, view_id = view->view_id(), url = move(url), navigate_result](Web::WebDriver::Response response) {
         if (response.is_error()) {
             strong_this->async_command_complete(command_id, move(response));
             return;
@@ -88,13 +95,46 @@ void WebDriverBrowserConnection::navigate_to(u64 command_id, String window_handl
             && url.equals(current_url, URL::ExcludeFragment::Yes);
         if (url.scheme() != "javascript"sv && !is_same_document_fragment_navigation)
             view->did_start_webdriver_navigation();
-        view->load_for_webdriver_navigation(url);
+        auto navigation_id = view->load_for_webdriver_navigation(url);
 
         // FIXME: 10. If the current top-level browsing context contains a refresh state pragma directive of time 1 second or less, wait until the refresh timeout has elapsed, a new navigate has begun, and return to the first step of this algorithm.
 
         // 11. Return success with data null.
-        strong_this->async_command_complete(command_id, JsonValue {});
+        // NB: WebDriver BiDi names the navigation it started by its id, so that is the data; a navigation it asked for
+        //     by a relative URL also learns the URL it resolved to.
+        if (navigate_result == NavigateResult::NavigationId) {
+            strong_this->async_command_complete(command_id, JsonValue { navigation_id.to_utf8() });
+            return;
+        }
+        JsonObject result;
+        result.set("navigation"sv, navigation_id.to_utf8());
+        result.set("url"sv, url.serialize());
+        strong_this->async_command_complete(command_id, JsonValue { move(result) });
     });
+}
+
+// https://w3c.github.io/webdriver-bidi/#command-browsingContext-navigate
+void WebDriverBrowserConnection::bidi_navigate_to(u64 command_id, String window_handle, String url)
+{
+    auto view = ViewImplementation::find_view_by_handle(window_handle);
+    if (!view.has_value()) {
+        async_command_complete(command_id, Web::WebDriver::Error::from_code(Web::WebDriver::ErrorCode::NoSuchWindow, "Window not found"sv));
+        return;
+    }
+
+    // 7. Let document be navigable's active document.
+    // 8. Let base URL be document's document base URL.
+    // 9. Let url record be the result of running the URL parser with input url and base URL base URL.
+    // 10. If url record is failure, return error with error code invalid argument.
+    // NB: The document's URL stands in for its base URL, which the process hosting the document knows.
+    auto url_record = URL::Parser::basic_parse(url, view->webdriver_bidi_navigable_url(view->traversable()));
+    if (!url_record.has_value()) {
+        async_command_complete(command_id, Web::WebDriver::Error::from_code(Web::WebDriver::ErrorCode::InvalidArgument, "Parameter 'url' is not a valid URL"sv));
+        return;
+    }
+
+    // 11. Navigate navigable to url record with ...
+    navigate_window(command_id, move(window_handle), url_record.release_value(), NavigateResult::NavigationIdAndUrl);
 }
 
 // 10.5 Refresh, https://w3c.github.io/webdriver/#dfn-refresh
@@ -256,6 +296,13 @@ void WebDriverBrowserConnection::set_bidi_session(bool bidi_session)
     });
 }
 
+void WebDriverBrowserConnection::set_preload_scripts(JsonValue scripts)
+{
+    Application::the().update_webdriver_session_config({}, [scripts = move(scripts)](auto& config) {
+        config.preload_scripts = scripts;
+    });
+}
+
 void WebDriverBrowserConnection::set_timeouts_configuration(JsonValue timeouts)
 {
     Application::the().update_webdriver_session_config({}, [timeouts = move(timeouts)](auto& config) {
@@ -339,10 +386,15 @@ void WebDriverBrowserConnection::get_browsing_context_tree(u64 command_id, Optio
         }
         navigables_infos.must_append(context->view.webdriver_bidi_navigable_info(context->navigable, max_depth, true));
     } else {
+        // NB: Listed in the order the windows were opened, as clients expect the window they just opened last.
+        Vector<ViewImplementation*> views;
         ViewImplementation::for_each_view([&](ViewImplementation& view) {
-            navigables_infos.must_append(view.webdriver_bidi_navigable_info(view.traversable(), max_depth, true));
+            views.append(&view);
             return IterationDecision::Continue;
         });
+        quick_sort(views, [](auto* a, auto* b) { return a->view_id() < b->view_id(); });
+        for (auto* view : views)
+            navigables_infos.must_append(view->webdriver_bidi_navigable_info(view->traversable(), max_depth, true));
     }
 
     // 7. Let body be a map matching the browsingContext.GetTreeResult production, with the contexts field set to

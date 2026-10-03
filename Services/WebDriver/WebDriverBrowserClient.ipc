@@ -7,6 +7,7 @@
 endpoint WebDriverBrowserClient {
     close_session() =|
     navigate_to(u64 command_id, String window_handle, URL::URL url) =|
+    bidi_navigate_to(u64 command_id, String window_handle, String url) =|
     refresh(u64 command_id, String window_handle) =|
     wait_for_navigation_completion(u64 command_id, String window_handle, Optional<u64> page_load_timeout) =|
     traverse_history(u64 command_id, String window_handle, i32 delta, bool handle_user_prompts) =|
@@ -21,6 +22,7 @@ endpoint WebDriverBrowserClient {
     set_strict_file_interactability(bool strict_file_interactability) =|
     set_timeouts_configuration(JsonValue timeouts) =|
     set_bidi_session(bool bidi_session) =|
+    set_preload_scripts(JsonValue scripts) =|
     get_browsing_context_tree(u64 command_id, Optional<String> root, Optional<u64> max_depth) =|
     get_top_level_traversables_for_contexts(u64 command_id, Vector<String> context_ids) =|
     run_bidi_content_command(u64 command_id, String context_id, String method, JsonValue parameters) =|

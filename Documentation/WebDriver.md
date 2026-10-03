@@ -152,9 +152,12 @@ messages defined by the specification. The implemented commands are the
 `session` module (`status`, `new`, `end`, `subscribe`, `unsubscribe`),
 `browsingContext.create`, `browsingContext.close`, `browsingContext.getTree`,
 `browsingContext.handleUserPrompt`, `browsingContext.navigate`,
-`script.callFunction`, `script.evaluate`
-and `permissions.setPermission`; the emitted events are
-`browsingContext.contextCreated`, `browsingContext.contextDestroyed`,
+`script.addPreloadScript`, `script.callFunction`, `script.evaluate`,
+`script.removePreloadScript` and `permissions.setPermission`; the emitted
+events are `browsingContext.contextCreated`, `browsingContext.contextDestroyed`,
+`browsingContext.navigationStarted`, `browsingContext.navigationCommitted`,
+`browsingContext.navigationFailed`, `browsingContext.fragmentNavigated`,
+`browsingContext.domContentLoaded`, `browsingContext.load`,
 `browsingContext.userPromptOpened`, `browsingContext.userPromptClosed` and
 `log.entryAdded`. The classic `POST /session/{session id}/permissions`
 extension command from the Permissions specification is supported as well. Classic HTTP commands and BiDi commands can be used on the
