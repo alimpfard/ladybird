@@ -49,7 +49,7 @@ void ConsoleObject::initialize(Realm& realm)
     define_native_function(realm, vm.names.trace, trace, 0, attr);
     define_native_function(realm, vm.names.warn, warn, 0, attr);
     define_native_function(realm, vm.names.dir, dir, 0, attr);
-    define_native_function(realm, vm.names.dirxml, dir, 0, attr);
+    define_native_function(realm, vm.names.dirxml, dirxml, 0, attr);
     define_native_function(realm, vm.names.count, count, 0, attr);
     define_native_function(realm, vm.names.countReset, count_reset, 0, attr);
     define_native_function(realm, vm.names.group, group, 0, attr);
