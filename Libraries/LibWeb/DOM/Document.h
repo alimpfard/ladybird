@@ -615,6 +615,11 @@ public:
     void add_script_to_execute_when_parsing_has_finished(Badge<HTML::HTMLScriptElement>, HTML::HTMLScriptElement&);
     Vector<GC::Ref<HTML::HTMLScriptElement>>& scripts_to_execute_when_parsing_has_finished() { return m_scripts_to_execute_when_parsing_has_finished; }
 
+    // https://w3c.github.io/webdriver-bidi/#module-script
+    // Scripts WebDriver BiDi created to run in this document. Like a script element keeps the script it ran, the
+    // document keeps these, so that functions and jobs created by them can refer back to their script record.
+    void add_webdriver_bidi_script(HTML::ClassicScript& script) { m_webdriver_bidi_scripts.append(script); }
+
     Vector<GC::Ref<HTML::HTMLScriptElement>>& scripts_to_execute_as_soon_as_possible() { return m_scripts_to_execute_as_soon_as_possible; }
 
     Vector<GC::Ref<HTML::HTMLScriptElement>>& scripts_to_execute_in_order_as_soon_as_possible() { return m_scripts_to_execute_in_order_as_soon_as_possible; }
@@ -1682,6 +1687,8 @@ private:
     GC::Ptr<SVG::SVGScriptElement> m_pending_parsing_blocking_svg_script;
 
     Vector<GC::Ref<HTML::HTMLScriptElement>> m_scripts_to_execute_when_parsing_has_finished;
+
+    Vector<GC::Ref<HTML::ClassicScript>> m_webdriver_bidi_scripts;
 
     // https://html.spec.whatwg.org/multipage/scripting.html#list-of-scripts-that-will-execute-in-order-as-soon-as-possible
     Vector<GC::Ref<HTML::HTMLScriptElement>> m_scripts_to_execute_in_order_as_soon_as_possible;

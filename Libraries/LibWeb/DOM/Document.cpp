@@ -862,6 +862,7 @@ void Document::visit_edges(Cell::Visitor& visitor)
     visitor.visit(m_visual_viewport);
     visitor.visit(m_default_timeline);
     visitor.visit(m_scripts_to_execute_when_parsing_has_finished);
+    visitor.visit(m_webdriver_bidi_scripts);
     visitor.visit(m_scripts_to_execute_in_order_as_soon_as_possible);
     visitor.visit(m_scripts_to_execute_as_soon_as_possible);
     visitor.visit(m_node_iterators);
