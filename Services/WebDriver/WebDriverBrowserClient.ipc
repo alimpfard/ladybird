@@ -20,4 +20,9 @@ endpoint WebDriverBrowserClient {
     set_page_load_strategy(Web::WebDriver::PageLoadStrategy page_load_strategy) =|
     set_strict_file_interactability(bool strict_file_interactability) =|
     set_timeouts_configuration(JsonValue timeouts) =|
+    set_bidi_session(bool bidi_session) =|
+    get_browsing_context_tree(u64 command_id, Optional<String> root, Optional<u64> max_depth) =|
+    get_top_level_traversables_for_contexts(u64 command_id, Vector<String> context_ids) =|
+    run_bidi_content_command(u64 command_id, String context_id, String method, JsonValue parameters) =|
+    set_permission(u64 command_id, JsonValue descriptor, String state, String origin, String embedded_origin) =|
 }

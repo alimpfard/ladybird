@@ -1178,14 +1178,67 @@ WebDriverBrowserConnection* Application::webdriver_browser_connection()
 
 void Application::notify_webdriver_window_created(String const& handle)
 {
-    if (auto* connection = webdriver_browser_connection())
-        connection->async_did_create_window(handle);
+    auto* connection = webdriver_browser_connection();
+    if (!connection)
+        return;
+    connection->async_did_create_window(handle);
+
+    // https://w3c.github.io/webdriver-bidi/#event-browsingContext-contextCreated
+    // The remote end event trigger is the WebDriver BiDi navigable created steps given navigable, has planned
+    // navigation, and optional opener navigable.
+    if (auto view = ViewImplementation::find_view_by_handle(handle); view.has_value()) {
+        // https://w3c.github.io/webdriver-bidi/#emit-a-context-created-event
+        // 1. Let params be the result of get the navigable info given navigable, 0, and true.
+        auto params = view->webdriver_bidi_navigable_info(view->traversable(), 0, true);
+        // 2. Set params["hasPlannedNavigation"] to has planned navigation.
+        params.set("hasPlannedNavigation"sv, false);
+        // 3. Let related navigables be a set containing navigable.
+        connection->async_bidi_event("browsingContext.contextCreated"_string, move(params), { handle });
+    }
 }
 
-void Application::notify_webdriver_window_closed(String const& handle)
+void Application::notify_webdriver_window_closed(String const& handle, JsonObject navigable_info)
 {
-    if (auto* connection = webdriver_browser_connection())
-        connection->async_did_close_window(handle);
+    auto* connection = webdriver_browser_connection();
+    if (!connection)
+        return;
+
+    // https://w3c.github.io/webdriver-bidi/#event-browsingContext-contextDestroyed
+    // 1. Let params be the result of get the navigable info, given navigable, null, and true.
+    // 3. Let related navigables be a set containing navigable's parent, if that is not null, or an empty set
+    //    otherwise.
+    connection->async_bidi_event("browsingContext.contextDestroyed"_string, move(navigable_info), {});
+
+    connection->async_did_close_window(handle);
+}
+
+// https://w3c.github.io/webdriver-bidi/#event-browsingContext-contextCreated
+void Application::notify_webdriver_navigable_created(ViewImplementation const& view, CanonicalNavigable const& navigable)
+{
+    auto* connection = webdriver_browser_connection();
+    if (!connection)
+        return;
+
+    // https://w3c.github.io/webdriver-bidi/#emit-a-context-created-event
+    // 1. Let params be the result of get the navigable info given navigable, 0, and true.
+    auto params = view.webdriver_bidi_navigable_info(navigable, 0, true);
+    // 2. Set params["hasPlannedNavigation"] to has planned navigation.
+    params.set("hasPlannedNavigation"sv, false);
+    // 3. Let related navigables be a set containing navigable.
+    connection->async_bidi_event("browsingContext.contextCreated"_string, move(params), { view.handle() });
+}
+
+// https://w3c.github.io/webdriver-bidi/#event-browsingContext-contextDestroyed
+void Application::notify_webdriver_navigable_destroyed(ViewImplementation const& view, CanonicalNavigable const& navigable)
+{
+    auto* connection = webdriver_browser_connection();
+    if (!connection)
+        return;
+
+    // 1. Let params be the result of get the navigable info, given navigable, null, and true.
+    // 3. Let related navigables be a set containing navigable's parent, if that is not null, or an empty set
+    //    otherwise.
+    connection->async_bidi_event("browsingContext.contextDestroyed"_string, view.webdriver_bidi_navigable_info(navigable, {}, true), { view.handle() });
 }
 
 void Application::webdriver_browser_connection_died(Badge<WebDriverBrowserConnection>)
@@ -1204,7 +1257,7 @@ void Application::push_webdriver_session_config(ViewImplementation& view)
 void Application::push_webdriver_session_config(WebContentPage& page)
 {
     auto const& config = m_webdriver_session_config;
-    page.async_set_webdriver_session_config(config.user_prompt_handler, config.page_load_strategy, config.strict_file_interactability, config.timeouts);
+    page.async_set_webdriver_session_config(config.user_prompt_handler, config.page_load_strategy, config.strict_file_interactability, config.timeouts, config.bidi_session);
 }
 
 void Application::update_webdriver_session_config(Badge<WebDriverBrowserConnection>, Function<void(WebDriverSessionConfig&)> update)
@@ -1228,6 +1281,12 @@ void Application::complete_webdriver_content_command(u64 command_id, Web::WebDri
 {
     if (m_webdriver_browser_connection)
         m_webdriver_browser_connection->async_command_complete(command_id, move(response));
+}
+
+void Application::emit_webdriver_bidi_event(String method, JsonValue params, Vector<String> related_top_level_traversable_ids)
+{
+    if (auto* connection = webdriver_browser_connection())
+        connection->async_bidi_event(move(method), move(params), move(related_top_level_traversable_ids));
 }
 
 void Application::reset_private_browsing_session()

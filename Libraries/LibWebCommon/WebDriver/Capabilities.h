@@ -17,6 +17,8 @@ namespace Web::WebDriver {
 enum class SessionFlags {
     Default = 0x0,
     Http = 0x1,
+    // https://w3c.github.io/webdriver-bidi/#session
+    BiDi = 0x2,
 };
 AK_ENUM_BITWISE_OPERATORS(SessionFlags);
 

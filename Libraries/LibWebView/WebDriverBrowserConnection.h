@@ -40,6 +40,11 @@ private:
     virtual void set_page_load_strategy(Web::WebDriver::PageLoadStrategy page_load_strategy) override;
     virtual void set_strict_file_interactability(bool strict_file_interactability) override;
     virtual void set_timeouts_configuration(JsonValue timeouts) override;
+    virtual void set_bidi_session(bool bidi_session) override;
+    virtual void get_browsing_context_tree(u64 command_id, Optional<String> root, Optional<u64> max_depth) override;
+    virtual void get_top_level_traversables_for_contexts(u64 command_id, Vector<String> context_ids) override;
+    virtual void run_bidi_content_command(u64 command_id, String context_id, String method, JsonValue parameters) override;
+    virtual void set_permission(u64 command_id, JsonValue descriptor, String state, String origin, String embedded_origin) override;
 };
 
 }

@@ -199,13 +199,16 @@ public:
     void reset_private_browsing_session();
 
     void notify_webdriver_window_created(String const& handle);
-    void notify_webdriver_window_closed(String const& handle);
+    void notify_webdriver_window_closed(String const& handle, JsonObject navigable_info);
+    void notify_webdriver_navigable_created(ViewImplementation const&, CanonicalNavigable const&);
+    void notify_webdriver_navigable_destroyed(ViewImplementation const&, CanonicalNavigable const&);
     void webdriver_browser_connection_died(Badge<WebDriverBrowserConnection>);
     void push_webdriver_session_config(ViewImplementation&);
     void push_webdriver_session_config(WebContentPage&);
     void update_webdriver_session_config(Badge<WebDriverBrowserConnection>, Function<void(WebDriverSessionConfig&)> update);
     Optional<u64> webdriver_page_load_timeout() const;
     void complete_webdriver_content_command(u64 command_id, Web::WebDriver::Response);
+    void emit_webdriver_bidi_event(String method, JsonValue params, Vector<String> related_top_level_traversable_ids);
 
     Web::CompositorContextId allocate_compositor_context_id();
     ErrorOr<void> connect_web_content_to_compositor(WebContentClient&);

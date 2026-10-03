@@ -329,11 +329,11 @@ static JsonValue match_capabilities(JsonObject const& capabilities, SessionFlags
             if (name == "webSocketUrl"sv) {
                 // 1. If value is false, return success with data null.
                 if (!value.as_bool())
-                    return AK::Error::from_string_literal("webSocketUrl");
+                    return {};
 
-                // 2. Return success with data value.
-                // FIXME: Remove this when we support BIDI communication.
-                return AK::Error::from_string_literal("webSocketUrl");
+                // 2. Return success with data true.
+                matched_capabilities.set(name, true);
+                return {};
             }
         }
 

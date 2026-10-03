@@ -68,11 +68,14 @@
 #include <LibWeb/HighResolutionTime/TimeOrigin.h>
 #include <LibWeb/Loader/FileRequest.h>
 #include <LibWeb/Page/Page.h>
+#include <LibWeb/PermissionsAPI/Permissions.h>
 #include <LibWeb/Platform/EventLoopPlugin.h>
 #include <LibWeb/Platform/Timer.h>
 #include <LibWeb/UIEvents/EventNames.h>
 #include <LibWeb/UIEvents/MouseEvent.h>
 #include <LibWeb/WebDriver/Actions.h>
+#include <LibWeb/WebDriver/BiDi/RemoteValue.h>
+#include <LibWeb/WebDriver/BiDi/Script.h>
 #include <LibWeb/WebDriver/Contexts.h>
 #include <LibWeb/WebDriver/ElementReference.h>
 #include <LibWeb/WebDriver/InputState.h>
@@ -396,6 +399,8 @@ void WebDriverConnection::run_command(u64 command_id, Optional<Web::HTML::CrossP
             return synchronous(print_page(move(payload)));
         if (name == "ensure_top_level_browsing_context_is_open"sv)
             return synchronous(ensure_top_level_browsing_context_is_open());
+        if (name == "set_permission"sv)
+            return synchronous(set_permission(move(payload)));
         if (name == "wait_for_navigation"sv)
             return asynchronous(wait_for_navigation());
         return synchronous(Web::WebDriver::Error::from_code(Web::WebDriver::ErrorCode::UnknownCommand, "Unknown WebDriver command"sv));
@@ -2670,7 +2675,77 @@ void WebDriverConnection::wait_for_navigation_to_complete(OnNavigationComplete o
     });
 }
 
-void WebDriverConnection::page_did_open_dialog(Badge<PageClient>)
+// https://w3c.github.io/permissions/#webdriver-command-set-permission
+Web::WebDriver::Response WebDriverConnection::set_permission(JsonValue payload)
+{
+    // 1. Let parametersDict be the parameters argument, converted to an IDL value of type PermissionSetParameters.
+    //    If this throws an exception, return an invalid argument error.
+    auto descriptor = payload.as_object().get_object("descriptor"sv);
+    auto state = payload.as_object().get_string("state"sv);
+    if (!descriptor.has_value() || !state.has_value())
+        return Web::WebDriver::Error::from_code(Web::WebDriver::ErrorCode::InvalidArgument, "Payload must have a 'descriptor' object and a 'state' string"sv);
+
+    // 2. If parametersDict.state is an inappropriate permission state for any implementation-defined reason, return
+    //    an invalid argument error.
+    // 3. Let rootDesc be parametersDict.descriptor.
+    // 4. Let typedDescriptor be the object rootDesc refers to, converted to an IDL value of permission descriptor
+    //    type matching the result of Get(rootDesc, "name"). If this throws an exception, return a invalid argument
+    //    error.
+    // 5. Set a permission with typedDescriptor and parametersDict.state.
+    // NB: Setting a permission without a key uses the current settings object's top-level origin and origin.
+    auto& settings = current_browsing_context().active_document()->relevant_settings_object();
+    TRY(Web::PermissionsAPI::set_permission_for_webdriver(*descriptor, *state, settings.top_level_origin.value_or(settings.origin()), settings.origin()));
+
+    // 6. Return success with data null.
+    return JsonValue {};
+}
+
+// https://w3c.github.io/webdriver-bidi/#type-browsingContext-UserPromptType
+static StringView user_prompt_type(Web::Page::PendingDialog dialog)
+{
+    switch (dialog) {
+    case Web::Page::PendingDialog::Alert:
+        return "alert"sv;
+    case Web::Page::PendingDialog::Confirm:
+        return "confirm"sv;
+    case Web::Page::PendingDialog::Prompt:
+        return "prompt"sv;
+    case Web::Page::PendingDialog::None:
+        break;
+    }
+    VERIFY_NOT_REACHED();
+}
+
+static Web::WebDriver::PromptType prompt_type(Web::Page::PendingDialog dialog)
+{
+    switch (dialog) {
+    case Web::Page::PendingDialog::Alert:
+        return Web::WebDriver::PromptType::Alert;
+    case Web::Page::PendingDialog::Confirm:
+        return Web::WebDriver::PromptType::Confirm;
+    case Web::Page::PendingDialog::Prompt:
+        return Web::WebDriver::PromptType::Prompt;
+    case Web::Page::PendingDialog::None:
+        break;
+    }
+    VERIFY_NOT_REACHED();
+}
+
+// https://w3c.github.io/webdriver-bidi/#type-session-UserPromptHandlerType
+static StringView user_prompt_handler_type(Web::WebDriver::PromptHandler handler)
+{
+    switch (handler) {
+    case Web::WebDriver::PromptHandler::Accept:
+        return "accept"sv;
+    case Web::WebDriver::PromptHandler::Dismiss:
+        return "dismiss"sv;
+    case Web::WebDriver::PromptHandler::Ignore:
+        return "ignore"sv;
+    }
+    VERIFY_NOT_REACHED();
+}
+
+void WebDriverConnection::page_did_open_dialog(Badge<PageClient>, Web::Page::PendingDialog dialog, Utf16String const& message, Optional<Utf16String> const& default_value)
 {
     // OPTMIZATION: If a dialog is opened while we are awaiting a specific document readiness state, that state will
     //              never be reached, as the dialog will block the HTML event loop from any further processing. Instead
@@ -2685,6 +2760,156 @@ void WebDriverConnection::page_did_open_dialog(Badge<PageClient>)
     if (m_current_script_execution_id.has_value()) {
         m_current_script_execution_id.clear();
         driver_execution_complete(JsonValue {});
+    }
+
+    // https://w3c.github.io/webdriver-bidi/#event-browsingContext-userPromptOpened
+    // The remote end event trigger is the WebDriver BiDi user prompt opened steps given Window window, string type,
+    // string message, and optional text default value (default: null).
+    // 1. Let navigable be window's navigable.
+    // 2. Let navigable id be the navigable id for navigable.
+    // FIXME: The page does not know which of its windows opened the dialog; name the top-level traversable.
+    auto navigable_id = Web::WebDriver::BiDi::navigable_id(*m_page_client->page().top_level_traversable());
+
+    // 3. Let user context id be the user context id of navigable's associated user context.
+    // 4. Let handler be get navigable's user prompt handler with type and navigable.
+    auto handler = Web::WebDriver::get_the_prompt_handler(prompt_type(dialog)).handler;
+
+    // 5. Let params be a map matching the browsingContext.UserPromptOpenedParameters production with the context
+    //    field set to navigable id, the userContext field set to user context id, the type field set to type, the
+    //    message field set to message, the defaultValue field set to default value if default value is not null or
+    //    omitted otherwise, and the handler field set to handler.
+    JsonObject params;
+    params.set("context"sv, move(navigable_id));
+    params.set("userContext"sv, "default"sv);
+    params.set("type"sv, user_prompt_type(dialog));
+    params.set("message"sv, message.to_utf8());
+    if (default_value.has_value())
+        params.set("defaultValue"sv, default_value->to_utf8());
+    params.set("handler"sv, user_prompt_handler_type(handler));
+
+    // 6. Let body be a map matching the browsingContext.UserPromptOpened production, with the params field set to
+    //    params.
+    // 7. Let related navigables be a set containing navigable.
+    // 8. For each session in the set of sessions for which an event is enabled given
+    //    "browsingContext.userPromptOpened" and related navigables:
+    //    1. Emit an event with session and body.
+    m_page_client->webdriver_bidi_event("browsingContext.userPromptOpened"_string, move(params));
+}
+
+// https://w3c.github.io/webdriver-bidi/#event-browsingContext-userPromptClosed
+void WebDriverConnection::page_did_close_dialog(Badge<PageClient>, Web::Page::PendingDialog dialog, bool accepted, Optional<Utf16String> const& user_text)
+{
+    // The remote end event trigger is the WebDriver BiDi user prompt closed steps given Window window, string type,
+    // boolean accepted and optional text user text (default: null).
+    // 1. Let navigable be window's navigable.
+    // 2. Let navigable id be the navigable id for navigable.
+    // FIXME: The page does not know which of its windows opened the dialog; name the top-level traversable.
+    auto navigable_id = Web::WebDriver::BiDi::navigable_id(*m_page_client->page().top_level_traversable());
+
+    // 3. Let user context id be the user context id of navigable's associated user context.
+    // 4. Let params be a map matching the browsingContext.UserPromptClosedParameters production with the context
+    //    field set to navigable id, the userContext field set to user context id, the accepted field set to accepted,
+    //    the type field set to type, and the userText field set to user text if user text is not null or omitted
+    //    otherwise.
+    JsonObject params;
+    params.set("context"sv, move(navigable_id));
+    params.set("userContext"sv, "default"sv);
+    params.set("accepted"sv, accepted);
+    params.set("type"sv, user_prompt_type(dialog));
+    if (user_text.has_value())
+        params.set("userText"sv, user_text->to_utf8());
+
+    // 5. Let body be a map matching the BrowsingContextUserPromptClosedEvent production, with the params field set to
+    //    params.
+    // 6. Let related navigables be a set containing navigable.
+    // 7. For each session in the set of sessions for which an event is enabled given
+    //    "browsingContext.userPromptClosed" and related navigables:
+    //    1. Emit an event with session and body.
+    m_page_client->webdriver_bidi_event("browsingContext.userPromptClosed"_string, move(params));
+}
+
+void WebDriverConnection::run_bidi_command(u64 command_id, Web::HTML::CrossProcessId navigable_id, String method, JsonValue parameters)
+{
+    auto complete = [this, command_id](Web::WebDriver::Response response) {
+        m_page_client->webdriver_command_complete(command_id, move(response));
+    };
+
+    // https://w3c.github.io/webdriver-bidi/#get-a-navigable
+    // 2. If there is no navigable with navigable id navigable id return error with error code no such frame
+    auto* navigable = as_if<Web::HTML::LocalNavigable>(m_page_client->page().navigable_with_id(navigable_id).ptr());
+    auto browsing_context = navigable ? navigable->active_browsing_context() : nullptr;
+    if (!browsing_context || !browsing_context->active_document()) {
+        complete(Web::WebDriver::Error::from_code(Web::WebDriver::ErrorCode::NoSuchFrame, "Browsing context not found"sv));
+        return;
+    }
+
+    if (!parameters.is_object()) {
+        complete(Web::WebDriver::Error::from_code(Web::WebDriver::ErrorCode::InvalidArgument, "Command parameters must be an object"sv));
+        return;
+    }
+
+    if (method == "script.callFunction"sv) {
+        Web::WebDriver::BiDi::call_function(*browsing_context, parameters.as_object(), GC::create_function(GC::Heap::the(), move(complete)));
+        return;
+    }
+    if (method == "script.evaluate"sv) {
+        Web::WebDriver::BiDi::evaluate(*browsing_context, parameters.as_object(), GC::create_function(GC::Heap::the(), move(complete)));
+        return;
+    }
+    if (method == "browsingContext.handleUserPrompt"sv) {
+        bidi_handle_user_prompt(command_id, parameters.as_object());
+        return;
+    }
+
+    complete(Web::WebDriver::Error::from_code(Web::WebDriver::ErrorCode::UnknownCommand, "Unknown WebDriver BiDi command"sv));
+}
+
+// https://w3c.github.io/webdriver-bidi/#command-browsingContext-handleUserPrompt
+void WebDriverConnection::bidi_handle_user_prompt(u64 command_id, JsonObject const& parameters)
+{
+    auto& page = m_page_client->page();
+
+    // 3. Let accept be the value of the accept field of command parameters if present, or true otherwise.
+    auto accept = parameters.get_bool("accept"sv).value_or(true);
+
+    // 4. Let userText be the value of the userText field of command parameters if present, or the empty string
+    //    otherwise.
+    auto user_text = parameters.get_string("userText"sv).value_or(String {});
+
+    // 6. Return success with data null.
+    auto on_dialog_closed = GC::create_function(GC::Heap::the(), [this, command_id]() {
+        m_page_client->webdriver_command_complete(command_id, JsonValue { JsonObject {} });
+    });
+
+    // 5. If navigable is currently showing a simple dialog from a call to alert then acknowledge the prompt.
+    //    Otherwise if navigable is currently showing a simple dialog from a call to confirm, then respond positively if
+    //    accept is true, or respond negatively if accept is false.
+    //    Otherwise if navigable is currently showing a simple dialog from a call to prompt, then respond with the
+    //    string value userText if accept is true, or abort if accept is false.
+    //    Otherwise, if navigable is currently showing a prompt as part of the prompt to unload steps, then confirm the
+    //    navigation if accept is true, otherwise refuse the navigation.
+    //    Otherwise return error with error code no such alert.
+    switch (page.pending_dialog()) {
+    case Web::Page::PendingDialog::Alert:
+        page.accept_dialog(on_dialog_closed);
+        break;
+    case Web::Page::PendingDialog::Confirm:
+        if (accept)
+            page.accept_dialog(on_dialog_closed);
+        else
+            page.dismiss_dialog(on_dialog_closed);
+        break;
+    case Web::Page::PendingDialog::Prompt:
+        if (accept) {
+            page.client().page_did_request_set_prompt_text(Utf16String::from_utf8(user_text));
+            page.accept_dialog(on_dialog_closed);
+        } else {
+            page.dismiss_dialog(on_dialog_closed);
+        }
+        break;
+    case Web::Page::PendingDialog::None:
+        m_page_client->webdriver_command_complete(command_id, Web::WebDriver::Error::from_code(Web::WebDriver::ErrorCode::NoSuchAlert, "No user prompt is open"sv));
+        break;
     }
 }
 

@@ -12,6 +12,7 @@
 #include <AK/Function.h>
 #include <AK/NonnullOwnPtr.h>
 #include <AK/NonnullRefPtr.h>
+#include <AK/OwnPtr.h>
 #include <AK/Queue.h>
 #include <AK/RefCounted.h>
 #include <AK/String.h>
@@ -78,6 +79,9 @@ public:
     virtual ResponsePromise traverse_history_from_ui(Parameters parameters, JsonValue payload) = 0;
     virtual ResponsePromise get_session_history(Parameters parameters, JsonValue payload) = 0;
 
+    // Extension: https://w3c.github.io/permissions/#webdriver-command-set-permission
+    virtual ResponsePromise set_permission(Parameters parameters, JsonValue payload) = 0;
+
     // 12. Elements, https://w3c.github.io/webdriver/#elements
     virtual ResponsePromise find_element(Parameters parameters, JsonValue payload) = 0;
     virtual ResponsePromise find_elements(Parameters parameters, JsonValue payload) = 0;
@@ -138,10 +142,19 @@ protected:
     explicit Client(NonnullOwnPtr<Core::BufferedTCPSocket>);
     virtual ResponsePromise enqueue_session_request(StringView session_id, SessionRequestHandler) = 0;
 
+    // https://w3c.github.io/webdriver-bidi/#transport
+    // A WebSocket opening handshake arrives over the HTTP connection. The resource name decides whether the connection
+    // is accepted; an accepted connection's socket is handed over, and this client is done with it.
+    virtual bool is_websocket_resource_available(StringView resource_name) = 0;
+    virtual void did_upgrade_to_websocket(StringView resource_name, NonnullOwnPtr<Core::BufferedTCPSocket>) = 0;
+
 private:
     using WrappedError = Variant<AK::Error, HTTP::HttpRequest::ParseError, WebDriver::Error>;
 
     void die();
+
+    static bool is_websocket_upgrade_request(HTTP::HttpRequest const&);
+    void handle_websocket_upgrade(HTTP::HttpRequest const&);
 
     ErrorOr<void, WrappedError> on_ready_to_read();
     static ErrorOr<JsonValue, WrappedError> read_body_as_json(HTTP::HttpRequest const&);
@@ -156,7 +169,8 @@ private:
     void process_next_pending_request();
     void dequeue_current_pending_request();
 
-    NonnullOwnPtr<Core::BufferedTCPSocket> m_socket;
+    // Null once the connection was upgraded to a WebSocket and the socket handed over.
+    OwnPtr<Core::BufferedTCPSocket> m_socket;
     StringBuilder m_remaining_request;
     bool m_is_dying { false };
 

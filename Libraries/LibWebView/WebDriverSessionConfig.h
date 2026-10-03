@@ -17,6 +17,8 @@ struct WebDriverSessionConfig {
     Web::WebDriver::PageLoadStrategy page_load_strategy { Web::WebDriver::PageLoadStrategy::Normal };
     bool strict_file_interactability { false };
     JsonValue timeouts;
+    // https://w3c.github.io/webdriver-bidi/#bidi-session
+    bool bidi_session { false };
 };
 
 }

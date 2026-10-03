@@ -377,6 +377,19 @@ public:
     void run_webdriver_user_prompt_handling(Function<void(Web::WebDriver::Response)> on_complete);
     void did_complete_webdriver_user_prompt_handling(Badge<WebContentPage>, u64 request_id, Web::WebDriver::Response);
     static Optional<ViewImplementation&> find_view_by_handle(StringView);
+
+    // https://w3c.github.io/webdriver-bidi/#navigable-id
+    // The navigable id of a top-level traversable is its window handle; any other navigable is named by its id.
+    struct WebDriverBiDiContext {
+        ViewImplementation& view;
+        CanonicalNavigable& navigable;
+    };
+    static Optional<WebDriverBiDiContext> find_webdriver_bidi_context(StringView navigable_id);
+    String webdriver_bidi_navigable_id(CanonicalNavigable const&) const;
+    // https://w3c.github.io/webdriver-bidi/#get-the-navigable-info
+    JsonObject webdriver_bidi_navigable_info(CanonicalNavigable const&, Optional<u64> max_depth, bool include_parent_id) const;
+    void run_webdriver_bidi_command(u64 command_id, Web::HTML::CrossProcessId navigable_id, String const& method, JsonValue parameters);
+    void did_receive_webdriver_bidi_event(Badge<WebContentPage>, String method, JsonValue params);
     void did_change_background_color(Badge<WebContentPage>, Gfx::Color);
     Gfx::Color page_background_color() const { return m_page_background_color; }
 
@@ -817,7 +830,12 @@ protected:
     };
     HashMap<u64, PendingWebDriverCommand> m_pending_webdriver_commands;
     HashMap<u64, PendingWebDriverCommand> m_pending_webdriver_crash_commands;
+    enum class WebDriverCommandProtocol : u8 {
+        Classic,
+        BiDi,
+    };
     struct WebDriverCommandWaitingForADocument {
+        WebDriverCommandProtocol protocol { WebDriverCommandProtocol::Classic };
         Optional<Web::HTML::CrossProcessId> navigable_id;
         String name;
         JsonValue payload;
@@ -825,6 +843,7 @@ protected:
     };
     HashMap<u64, WebDriverCommandWaitingForADocument> m_webdriver_commands_waiting_for_a_document;
     void run_webdriver_content_command(u64 command_id, Optional<Web::HTML::CrossProcessId> navigable_id, String const& name, JsonValue payload, Vector<String> arguments);
+    void dispatch_webdriver_content_command(u64 command_id, Optional<Web::HTML::CrossProcessId> navigable_id, String const& name, JsonValue payload, Vector<String> arguments, WebDriverCommandProtocol);
     static bool webdriver_content_command_outlives_its_page(StringView name);
     bool complete_webdriver_content_command_after_navigation(u64 command_id, PendingWebDriverCommand const&);
     void complete_webdriver_content_commands_after_process_replacement(HashMap<u64, PendingWebDriverCommand> const&);

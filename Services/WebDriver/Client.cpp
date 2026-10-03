@@ -17,6 +17,7 @@
 #include <LibWebCommon/WebDriver/Capabilities.h>
 #include <LibWebCommon/WebDriver/Error.h>
 #include <LibWebCommon/WebDriver/UserPrompt.h>
+#include <WebDriver/BiDiConnection.h>
 #include <WebDriver/Client.h>
 #include <WebDriver/Session.h>
 
@@ -58,22 +59,28 @@ find_session_with_ladybird_test_hooks(Web::WebDriver::Parameters const& paramete
     return session;
 }
 
-ErrorOr<NonnullRefPtr<Client>> Client::try_create(NonnullOwnPtr<Core::BufferedTCPSocket> socket, LaunchBrowserCallback launch_browser_callback)
+ErrorOr<NonnullRefPtr<Client>> Client::try_create(NonnullOwnPtr<Core::BufferedTCPSocket> socket)
 {
-    if (!launch_browser_callback)
-        return Error::from_string_literal("The callback to launch the browser must be provided");
-
     TRY(socket->set_blocking(true));
-    return adopt_nonnull_ref_or_enomem(new (nothrow) Client(move(socket), move(launch_browser_callback)));
+    return adopt_nonnull_ref_or_enomem(new (nothrow) Client(move(socket)));
 }
 
-Client::Client(NonnullOwnPtr<Core::BufferedTCPSocket> socket, LaunchBrowserCallback launch_browser_callback)
+Client::Client(NonnullOwnPtr<Core::BufferedTCPSocket> socket)
     : Web::WebDriver::Client(move(socket))
-    , m_launch_browser_callback(move(launch_browser_callback))
 {
 }
 
 Client::~Client() = default;
+
+bool Client::is_websocket_resource_available(StringView resource_name)
+{
+    return WebDriver::is_websocket_resource_available(resource_name);
+}
+
+void Client::did_upgrade_to_websocket(StringView resource_name, NonnullOwnPtr<Core::BufferedTCPSocket> socket)
+{
+    BiDiConnection::accept(resource_name, move(socket));
+}
 
 ResponsePromise Client::enqueue_session_request(StringView session_id, SessionRequestHandler handler)
 {
@@ -111,7 +118,7 @@ ResponsePromise Client::new_session(Web::WebDriver::Parameters, JsonValue payloa
         return promise_from_response(Web::WebDriver::Error::from_code(Web::WebDriver::ErrorCode::SessionNotCreated, "Could not match capabilities"sv));
 
     // 6. Let session be the result of create a session, with capabilities, and flags.
-    auto maybe_session_promise = Session::create(*this, move(capabilities), flags);
+    auto maybe_session_promise = Session::create(move(capabilities), flags);
     if (maybe_session_promise.is_error())
         return promise_from_response(Web::WebDriver::Error::from_code(Web::WebDriver::ErrorCode::SessionNotCreated, MUST(String::formatted("Failed to start session: {}", maybe_session_promise.error()))));
 
@@ -349,6 +356,23 @@ ResponsePromise Client::get_session_history(Web::WebDriver::Parameters parameter
     return session->session_history();
 }
 
+// Extension: Set Permission, https://w3c.github.io/permissions/#webdriver-command-set-permission
+// POST /session/{session id}/permissions
+ResponsePromise Client::set_permission(Web::WebDriver::Parameters parameters, JsonValue payload)
+{
+    dbgln_if(WEBDRIVER_DEBUG, "Handling POST /session/<session_id>/permissions");
+    auto session = WEBDRIVER_TRY(Session::find_session(parameters[0]));
+
+    // 1. Let parametersDict be the parameters argument, converted to an IDL value of type PermissionSetParameters.
+    //    If this throws an exception, return an invalid argument error.
+    if (!payload.is_object() || !payload.as_object().has_object("descriptor"sv) || !payload.as_object().has_string("state"sv))
+        return promise_from_response(Web::WebDriver::Error::from_code(Web::WebDriver::ErrorCode::InvalidArgument, "Payload must have a 'descriptor' object and a 'state' string"sv));
+
+    // NB: The remaining steps set the permission for the current settings object, which the process hosting the
+    //     current browsing context knows.
+    return session->run_content_command("set_permission"sv, move(payload));
+}
+
 // 11.1 Get Window Handle, https://w3c.github.io/webdriver/#get-window-handle
 // GET /session/{session id}/window
 ResponsePromise Client::get_window_handle(Web::WebDriver::Parameters parameters, JsonValue)
@@ -433,45 +457,10 @@ ResponsePromise Client::new_window(Web::WebDriver::Parameters parameters, JsonVa
                           }
 
                           auto handle = handle_member->as_string();
-                          if (session->has_window_handle(handle)) {
-                              promise->resolve(handle_value);
-                              return;
-                          }
-
-                          static constexpr u32 CONNECTION_TIMEOUT_MS = 5000;
-                          struct WaitState : public RefCounted<WaitState> {
-                              Session::WindowHandleBecameAvailableCallbackID callback_id { 0 };
-                              RefPtr<Core::Timer> timer;
-                              bool settled { false };
-                          };
-                          auto wait_state = adopt_ref(*new WaitState);
-                          wait_state->timer = Core::Timer::create_single_shot(CONNECTION_TIMEOUT_MS, [promise, session, handle, wait_state] {
-                              if (wait_state->settled)
-                                  return;
-                              wait_state->settled = true;
-                              Core::deferred_invoke([session, handle, wait_state] {
-                                  session->remove_window_handle_became_available_callback(handle, wait_state->callback_id);
-                                  wait_state->timer = nullptr;
-                              });
-                              promise->reject(Web::WebDriver::Error::from_code(Web::WebDriver::ErrorCode::Timeout, "Timed out waiting for window handle"sv));
-                          });
-
-                          auto handle_response = handle_value;
-                          wait_state->callback_id = session->add_window_handle_became_available_callback(handle, [promise, handle_response = move(handle_response), wait_state]() mutable {
-                              if (wait_state->settled)
-                                  return;
-                              auto timer = move(wait_state->timer);
-                              wait_state->settled = true;
-                              if (timer)
-                                  timer->stop();
-                              promise->resolve(move(handle_response)); }, [promise, wait_state] {
-                              if (wait_state->settled)
-                                  return;
-                              wait_state->settled = true;
-                              if (auto timer = move(wait_state->timer))
-                                  timer->stop();
-                              promise->reject(Web::WebDriver::Error::from_code(Web::WebDriver::ErrorCode::UnknownError, "Browser connection lost"sv)); });
-                          wait_state->timer->start();
+                          auto wait = session->wait_for_window_handle(handle);
+                          promise->add_child(wait);
+                          wait->when_resolved([promise, handle_value](JsonValue&) mutable { promise->resolve(move(handle_value)); })
+                              .when_rejected([promise](Web::WebDriver::Error& error) { promise->reject(Web::WebDriver::Error(error)); });
                       })
         .when_rejected([promise](Web::WebDriver::Error& error) {
             promise->reject(Web::WebDriver::Error(error));

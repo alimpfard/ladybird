@@ -8,6 +8,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Base64.h>
 #include <AK/ByteBuffer.h>
 #include <AK/Debug.h>
 #include <AK/Format.h>
@@ -18,6 +19,7 @@
 #include <AK/StringView.h>
 #include <AK/Time.h>
 #include <LibCore/Promise.h>
+#include <LibCrypto/Hash/HashManager.h>
 #include <LibHTTP/Status.h>
 #include <LibWebCommon/WebDriver/Client.h>
 
@@ -77,6 +79,7 @@ static constexpr auto s_webdriver_endpoints = Array {
     ROUTE(POST, "/session/:session_id/ladybird/load-url-from-ui"sv, load_url_from_ui),
     ROUTE(POST, "/session/:session_id/ladybird/traverse-history-from-ui"sv, traverse_history_from_ui),
     ROUTE(GET, "/session/:session_id/ladybird/session-history"sv, get_session_history),
+    ROUTE(POST, "/session/:session_id/permissions"sv, set_permission),
     ROUTE(POST, "/session/:session_id/element"sv, find_element),
     ROUTE(POST, "/session/:session_id/elements"sv, find_elements),
     ROUTE(POST, "/session/:session_id/element/:element_id/element"sv, find_element_from_element),
@@ -204,7 +207,8 @@ Client::Client(NonnullOwnPtr<Core::BufferedTCPSocket> socket)
 
 Client::~Client()
 {
-    m_socket->close();
+    if (m_socket)
+        m_socket->close();
 }
 
 void Client::die()
@@ -276,6 +280,13 @@ void Client::process_next_pending_request()
             return;
 
         auto pending_request = this_ref->m_pending_requests.head();
+
+        if (is_websocket_upgrade_request(pending_request->http_request)) {
+            this_ref->handle_websocket_upgrade(pending_request->http_request);
+            this_ref->dequeue_current_pending_request();
+            return;
+        }
+
         auto body = read_body_as_json(pending_request->http_request);
         if (body.is_error()) {
             this_ref->handle_error(pending_request->http_request, body.release_error());
@@ -351,6 +362,115 @@ ErrorOr<Client::ResponsePromise, Client::WrappedError> Client::handle_request(HT
         return (*handler)(*this_ref, move(parameters), move(body));
     };
     return enqueue_session_request(session_id, move(request_handler));
+}
+
+static Optional<ByteString> header_value(HTTP::HttpRequest const& request, StringView name)
+{
+    for (auto const& header : request.headers().headers()) {
+        if (header.name.equals_ignoring_ascii_case(name))
+            return header.value.trim_whitespace();
+    }
+    return {};
+}
+
+// https://datatracker.ietf.org/doc/html/rfc6455#section-4.2.1
+bool Client::is_websocket_upgrade_request(HTTP::HttpRequest const& request)
+{
+    // 1. An HTTP/1.1 or higher GET request, including a "Request-URI" [RFC2616] that should be interpreted as a
+    //    /resource name/ defined in Section 3 (or an absolute HTTP/HTTPS URI containing the /resource name/).
+    if (request.method() != HTTP::HttpRequest::Method::GET)
+        return false;
+
+    // 3. An |Upgrade| header field containing the value "websocket", treated as an ASCII case-insensitive value.
+    auto upgrade = header_value(request, "Upgrade"sv);
+    if (!upgrade.has_value() || !upgrade->equals_ignoring_ascii_case("websocket"sv))
+        return false;
+
+    // 4. A |Connection| header field that includes the token "Upgrade", treated as an ASCII case-insensitive value.
+    auto connection = header_value(request, "Connection"sv);
+    if (!connection.has_value())
+        return false;
+    for (auto token : connection->split_view(','))
+        if (token.trim_whitespace().equals_ignoring_ascii_case("Upgrade"sv))
+            return true;
+    return false;
+}
+
+// https://datatracker.ietf.org/doc/html/rfc6455#section-4.2.2
+void Client::handle_websocket_upgrade(HTTP::HttpRequest const& request)
+{
+    auto fail = [&](unsigned status, StringView message) {
+        Error error { status, "unknown command"_string, MUST(String::from_utf8(message)), {} };
+        if (send_error_response(request, error).is_error())
+            die();
+    };
+
+    // 5. A |Sec-WebSocket-Key| header field with a base64-encoded (see Section 4 of [RFC4648]) value that, when
+    //    decoded, is 16 bytes in length.
+    auto key = header_value(request, "Sec-WebSocket-Key"sv);
+    if (!key.has_value()) {
+        fail(400, "Missing Sec-WebSocket-Key header"sv);
+        return;
+    }
+    if (auto decoded = decode_base64(*key); decoded.is_error() || decoded.value().size() != 16) {
+        fail(400, "Invalid Sec-WebSocket-Key header"sv);
+        return;
+    }
+
+    // 6. A |Sec-WebSocket-Version| header field, with a value of 13.
+    // 4. If the requested version is not supported, the server MUST abort the WebSocket handshake [...] and send an
+    //    appropriate HTTP error code (such as 426 Upgrade Required) and a |Sec-WebSocket-Version| header field
+    //    indicating the version(s) the server is capable of understanding.
+    auto version = header_value(request, "Sec-WebSocket-Version"sv);
+    if (!version.has_value() || *version != "13"sv) {
+        fail(426, "Unsupported WebSocket version"sv);
+        return;
+    }
+
+    // https://w3c.github.io/webdriver-bidi/#transport
+    // 1. Let resource name be the resource name from reading the client's opening handshake. If resource name is not
+    //    in listener's list of WebSocket resources, then stop running these steps and act as if the requested service
+    //    is not available.
+    auto resource_name = request.resource();
+    if (!is_websocket_resource_available(resource_name)) {
+        fail(404, "No such WebSocket resource"sv);
+        return;
+    }
+
+    // 5.4. A |Sec-WebSocket-Accept| header field. The value of this header field is constructed by concatenating
+    //      /key/, defined above in step 4 in Section 4.2.2, with the string "258EAFA5-E914-47DA-95CA-C5AB0DC85B11",
+    //      taking the SHA-1 hash of this concatenated value to obtain a 20-byte value and base64-encoding (see
+    //      Section 4 of [RFC4648]) this 20-byte hash.
+    Crypto::Hash::Manager hash;
+    hash.initialize(Crypto::Hash::HashKind::SHA1);
+    hash.update(ByteString::formatted("{}258EAFA5-E914-47DA-95CA-C5AB0DC85B11", *key));
+    auto digest = hash.digest();
+    auto accept = MUST(encode_base64({ digest.immutable_data(), digest.data_length() }));
+
+    // 5. If the server chooses to accept the incoming connection, it MUST reply with a valid HTTP response
+    //    indicating the following.
+    StringBuilder builder;
+    // 5.1. A Status-Line with a 101 response code as per RFC 2616 [RFC2616].
+    builder.append("HTTP/1.1 101 Switching Protocols\r\n"sv);
+    // 5.2. An |Upgrade| header field with value "websocket" as per RFC 2616 [RFC2616].
+    builder.append("Upgrade: websocket\r\n"sv);
+    // 5.3. A |Connection| header field with value "Upgrade".
+    builder.append("Connection: Upgrade\r\n"sv);
+    builder.appendff("Sec-WebSocket-Accept: {}\r\n", accept);
+    builder.append("\r\n"sv);
+
+    if (m_socket->write_until_depleted(builder.string_view()).is_error()) {
+        die();
+        return;
+    }
+
+    log_response(request, 101);
+
+    // The socket belongs to the WebSocket connection from here on; this client is finished.
+    auto socket = m_socket.release_nonnull();
+    socket->on_ready_to_read = nullptr;
+    did_upgrade_to_websocket(resource_name, move(socket));
+    die();
 }
 
 void Client::handle_error(HTTP::HttpRequest const& request, WrappedError const& error)

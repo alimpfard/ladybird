@@ -217,6 +217,7 @@ private:
     virtual void webdriver_user_prompt_handling_complete(u64 request_id, Web::WebDriver::Response response) override;
     virtual void webdriver_did_set_current_browsing_context(u64 command_id, Web::HTML::CrossProcessId navigable_id) override;
     virtual void webdriver_command_complete(u64 command_id, Web::WebDriver::Response response) override;
+    virtual void webdriver_bidi_event(String method, JsonValue params) override;
     virtual void did_update_resource_count(i32 count_waiting) override;
     virtual void did_request_restore_window() override;
     virtual void did_request_reposition_window(Gfx::IntPoint position, u64 completion_id) override;

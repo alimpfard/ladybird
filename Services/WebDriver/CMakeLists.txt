@@ -1,7 +1,14 @@
 set(SOURCES
+    BiDi/BrowsingContextModule.cpp
+    BiDi/Commands.cpp
+    BiDi/PermissionsModule.cpp
+    BiDi/ScriptModule.cpp
+    BiDi/SessionModule.cpp
+    BiDiConnection.cpp
     BrowserConnection.cpp
     Client.cpp
     Session.cpp
+    WebSocketConnection.cpp
     main.cpp
 )
 

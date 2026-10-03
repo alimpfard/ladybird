@@ -211,12 +211,7 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
             return;
         }
 
-        auto launch_browser_callback = [&](ByteString const& webdriver_endpoint, bool headless) {
-            auto arguments = create_arguments(webdriver_endpoint, profile_name, profile_path, headless, expose_experimental_interfaces, expose_internals_object, force_cpu_painting, disable_sandbox, debug_process, default_time_zone, resource_substitution_map_path, site_isolation_mode);
-            return launch_process("Ladybird"sv, arguments.span());
-        };
-
-        auto maybe_client = WebDriver::Client::try_create(maybe_buffered_socket.release_value(), move(launch_browser_callback));
+        auto maybe_client = WebDriver::Client::try_create(maybe_buffered_socket.release_value());
         if (maybe_client.is_error()) {
             warnln("Could not create a WebDriver client: {}", maybe_client.error());
             return;
@@ -231,11 +226,21 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
         clients.set(client);
     };
 
+    WebDriver::Session::set_launch_browser_callback([&](ByteString const& webdriver_endpoint, bool headless) {
+        auto arguments = create_arguments(webdriver_endpoint, profile_name, profile_path, headless, expose_experimental_interfaces, expose_internals_object, force_cpu_painting, disable_sandbox, debug_process, default_time_zone, resource_substitution_map_path, site_isolation_mode);
+        return launch_process("Ladybird"sv, arguments.span());
+    });
+
     TRY(server->listen(ipv4_address.value(), port, Core::TCPServer::AllowAddressReuse::Yes));
     outln("Listening on {}:{}", ipv4_address.value(), port);
 
+    // https://w3c.github.io/webdriver-bidi/#transport
+    // WebSocket connections are accepted on the HTTP port, for the resources of the sessions created here.
+    WebDriver::Session::set_websocket_listener(ipv4_address.value(), static_cast<u16>(port));
+
     auto result = loop.exec();
     WebDriver::Session::close_all();
+    WebDriver::Session::set_launch_browser_callback(nullptr);
 
     if (temporary_profile_path.has_value() && FileSystem::exists(*temporary_profile_path)) {
         if (auto removal_result = FileSystem::remove(*temporary_profile_path, FileSystem::RecursionMode::Allowed); removal_result.is_error())

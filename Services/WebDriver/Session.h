@@ -8,7 +8,10 @@
 
 #pragma once
 
+#include <AK/Badge.h>
 #include <AK/Error.h>
+#include <AK/HashTable.h>
+#include <AK/IPv4Address.h>
 #include <AK/JsonValue.h>
 #include <AK/NonnullRefPtr.h>
 #include <AK/Queue.h>
@@ -33,6 +36,7 @@
 #include <LibWebCommon/WebDriver/TimeoutsConfiguration.h>
 #include <WebDriver/BrowserConnection.h>
 #include <WebDriver/Client.h>
+#include <WebDriver/Forward.h>
 
 namespace WebDriver {
 
@@ -46,7 +50,11 @@ public:
     };
     using NewSessionPromise = Core::Promise<NewSession, Web::WebDriver::Error>;
 
-    static ErrorOr<NonnullRefPtr<NewSessionPromise>> create(NonnullRefPtr<Client> client, JsonValue capabilities, Web::WebDriver::SessionFlags flags);
+    static void set_launch_browser_callback(LaunchBrowserCallback);
+    // https://w3c.github.io/webdriver-bidi/#websocket-listener
+    static void set_websocket_listener(IPv4Address host, u16 port);
+
+    static ErrorOr<NonnullRefPtr<NewSessionPromise>> create(JsonValue capabilities, Web::WebDriver::SessionFlags flags);
     ~Session();
 
     enum class AllowInvalidWindowHandle {
@@ -56,6 +64,7 @@ public:
     static ErrorOr<NonnullRefPtr<Session>, Web::WebDriver::Error> find_session(StringView session_id, Web::WebDriver::SessionFlags = Web::WebDriver::SessionFlags::Default, AllowInvalidWindowHandle = AllowInvalidWindowHandle::No);
     static size_t session_count(Web::WebDriver::SessionFlags);
     static bool has_pending_http_session_creation();
+    static bool is_active(Session const&);
     static void close_all();
 
     NonnullRefPtr<WebDriverPromise> enqueue_http_request(Function<NonnullRefPtr<WebDriverPromise>()>);
@@ -65,11 +74,39 @@ public:
     };
 
     void close();
+    // https://w3c.github.io/webdriver-bidi/#end-the-session
+    void end();
 
     String session_id() const { return m_session_id; }
     Web::WebDriver::SessionFlags session_flags() const { return m_session_flags; }
     String const& current_window_handle() const { return m_current_window_handle; }
     bool test_hooks_enabled() const { return m_options.enable_test_hooks; }
+
+    // https://w3c.github.io/webdriver-bidi/#bidi-session
+    bool is_bidi_session() const { return has_flag(m_session_flags, Web::WebDriver::SessionFlags::BiDi); }
+    void add_websocket_connection(Badge<BiDiConnection>, BiDiConnection&);
+    void remove_websocket_connection(Badge<BiDiConnection>, BiDiConnection&);
+
+    // https://w3c.github.io/webdriver-bidi/#events
+    NonnullRefPtr<WebDriverPromise> subscribe_to_events(Vector<String> events, Optional<Vector<String>> contexts, Optional<Vector<String>> user_contexts);
+    ErrorOr<void, Web::WebDriver::Error> unsubscribe_from_events(Vector<String> events);
+    ErrorOr<void, Web::WebDriver::Error> unsubscribe_from_subscriptions(Vector<String> subscription_ids);
+    bool event_is_enabled(StringView event_name, ReadonlySpan<String> top_level_traversable_ids) const;
+    void emit_event(JsonValue const& body);
+    void did_receive_bidi_event(String method, JsonValue params, Vector<String> related_top_level_traversable_ids);
+
+    NonnullRefPtr<WebDriverPromise> get_browsing_context_tree(Optional<String> root, Optional<u64> max_depth);
+    NonnullRefPtr<WebDriverPromise> run_bidi_content_command(String context_id, String method, JsonValue parameters);
+    NonnullRefPtr<WebDriverPromise> run_content_command_in_window(String const& window_handle, StringView name, JsonValue payload = {});
+    // Resolves once the browser has reported the window with the given handle, or rejects after a timeout.
+    NonnullRefPtr<WebDriverPromise> wait_for_window_handle(String handle);
+    // Resolves once the browser has reported that the window with the given handle closed.
+    NonnullRefPtr<WebDriverPromise> wait_for_window_closed(String handle);
+    // https://w3c.github.io/webdriver-bidi/#command-browsingContext-navigate
+    NonnullRefPtr<WebDriverPromise> navigate_window(String window_handle, URL::URL, StringView wait_condition);
+    Vector<String> window_handles() const { return m_windows.keys(); }
+    // https://w3c.github.io/permissions/#webdriver-bidi-command-permissions-setPermission
+    NonnullRefPtr<WebDriverPromise> set_permission(JsonValue descriptor, String state, String origin, String embedded_origin);
 
     bool has_window_handle(StringView handle) const { return m_windows.contains(handle); }
     using WindowHandleBecameAvailableCallbackID = u64;
@@ -99,16 +136,19 @@ public:
     ErrorOr<void, Web::WebDriver::Error> ensure_current_window_handle_is_valid() const;
 
 private:
-    Session(NonnullRefPtr<Client> client, JsonObject const& capabilities, String session_id, Web::WebDriver::SessionFlags flags);
+    Session(JsonObject const& capabilities, String session_id, Web::WebDriver::SessionFlags flags);
 
     using ServerPromise = Core::Promise<Empty>;
 
     ErrorOr<NonnullRefPtr<ServerPromise>> start(LaunchBrowserCallback const&);
+    void run_bidi_new_session_algorithm(JsonObject& capabilities, Web::WebDriver::SessionFlags& flags);
+    NonnullRefPtr<WebDriverPromise> emit_context_created_events_for_subscription(Vector<String> top_level_traversable_ids, bool is_global);
     ErrorOr<void> accept_browser_transport(NonnullOwnPtr<IPC::Transport>);
     NonnullRefPtr<WebDriverPromise> perform_browser_command(Function<void(u64 command_id)> send_command);
     Optional<u64> page_load_timeout() const;
     NonnullRefPtr<WebDriverPromise> reset_current_browsing_context();
     NonnullRefPtr<WebDriverPromise> run_content_command(Web::WebDriver::SessionBrowsingContext, StringView name, JsonValue payload, Vector<String> arguments);
+    NonnullRefPtr<WebDriverPromise> get_top_level_traversables_for_contexts(Vector<String> context_ids);
     ErrorOr<void> create_server();
     void remove_window(StringView window_handle);
     void dispatch_window_handle_became_available_callbacks(String const& window_handle);
@@ -119,7 +159,6 @@ private:
     void process_next_http_request();
     void dequeue_current_http_request();
 
-    NonnullRefPtr<Client> m_client;
     Web::WebDriver::LadybirdOptions m_options;
 
     String m_session_id;
@@ -168,7 +207,35 @@ private:
         Function<void()> on_session_close;
     };
     HashMap<String, Vector<WindowHandleBecameAvailableCallback>> m_window_handle_became_available_callbacks;
+    HashMap<String, Vector<NonnullRefPtr<WebDriverPromise>>> m_window_closed_promises;
     WindowHandleBecameAvailableCallbackID m_next_window_handle_became_available_callback_id { 1 };
+
+    // https://w3c.github.io/webdriver-bidi/#session-websocket-connections
+    // The connections hold the session; they remove themselves when their WebSocket closes.
+    Vector<BiDiConnection*> m_websocket_connections;
+
+    // https://w3c.github.io/webdriver-bidi/#subscription
+    struct Subscription {
+        String subscription_id;
+        HashTable<String> event_names;
+        HashTable<String> top_level_traversable_ids;
+        HashTable<String> user_context_ids;
+
+        // https://w3c.github.io/webdriver-bidi/#subscription-global
+        bool is_global() const { return top_level_traversable_ids.is_empty() && user_context_ids.is_empty(); }
+    };
+    Vector<String> top_level_traversables_for_which_an_event_is_enabled(StringView event_name) const;
+    String add_subscription(Vector<String> event_names, Vector<String> top_level_traversable_ids, Vector<String> user_context_ids);
+
+    // https://w3c.github.io/webdriver-bidi/#subscriptions
+    Vector<Subscription> m_subscriptions;
+    // https://w3c.github.io/webdriver-bidi/#known-subscription-ids
+    HashTable<String> m_known_subscription_ids;
+
+    // https://w3c.github.io/webdriver-bidi/#log-event-buffer
+    // NB: Keyed by top-level traversable id rather than navigable id, as that is what the browser reports events
+    //     against; the difference only shows for frames navigated before the local end subscribes.
+    HashMap<String, Vector<JsonValue>> m_log_event_buffer;
 };
 
 NonnullRefPtr<Session::WebDriverPromise> continue_with_promise(NonnullRefPtr<Session::WebDriverPromise>, Function<NonnullRefPtr<Session::WebDriverPromise>()>);

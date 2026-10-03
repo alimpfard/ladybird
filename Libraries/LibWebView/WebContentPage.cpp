@@ -1171,6 +1171,11 @@ void WebContentPage::webdriver_command_complete(u64 command_id, Web::WebDriver::
     view().did_complete_webdriver_content_command({}, command_id, move(response));
 }
 
+void WebContentPage::webdriver_bidi_event(String method, JsonValue params)
+{
+    view().did_receive_webdriver_bidi_event({}, move(method), move(params));
+}
+
 void WebContentPage::did_update_resource_count(i32 count_waiting)
 {
     if (displays_tab()) {

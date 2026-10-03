@@ -60,10 +60,15 @@ public:
 
     WebDriverConnection& ensure_webdriver_session();
     void run_webdriver_command(u64 command_id, Optional<Web::HTML::CrossProcessId> navigable_id, String const& name, JsonValue payload, Vector<String> arguments);
+    void run_webdriver_bidi_command(u64 command_id, Web::HTML::CrossProcessId navigable_id, String method, JsonValue parameters);
+    void webdriver_bidi_event(String method, JsonValue params);
+    WebDriverConnection* webdriver() { return m_webdriver.ptr(); }
     void webdriver_did_set_current_browsing_context(u64 command_id, Web::HTML::CrossProcessId navigable_id);
     void did_handle_webdriver_mouse_event(u64 request_id);
     void webdriver_command_complete(u64 command_id, Web::WebDriver::Response);
-    void set_webdriver_session_config(Web::WebDriver::UserPromptHandler, Web::WebDriver::PageLoadStrategy, bool strict_file_interactability, JsonValue const& timeouts);
+    void set_webdriver_session_config(Web::WebDriver::UserPromptHandler, Web::WebDriver::PageLoadStrategy, bool strict_file_interactability, JsonValue const& timeouts, bool bidi_session);
+    // Whether the WebDriver session driving this page is a BiDi session, which is what events are produced for.
+    bool webdriver_bidi_session_active() const { return m_webdriver_bidi_session; }
     ErrorOr<void> connect_to_web_ui(IPC::TransportHandle);
 
     virtual Queue<Web::QueuedInputEvent>& input_event_queue() override;
@@ -388,6 +393,7 @@ private:
     Core::AnonymousBuffer m_document_cookie_version_buffer;
 
     RefPtr<WebDriverConnection> m_webdriver;
+    bool m_webdriver_bidi_session { false };
     HashMap<u64, GC::Ref<GC::Function<void()>>> m_pending_webdriver_mouse_events;
     u64 m_next_webdriver_mouse_event_request_id { 0 };
     RefPtr<WebUIConnection> m_web_ui;

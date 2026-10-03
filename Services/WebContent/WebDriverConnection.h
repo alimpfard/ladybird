@@ -15,6 +15,7 @@
 #include <LibGfx/Rect.h>
 #include <LibJS/Forward.h>
 #include <LibWeb/Forward.h>
+#include <LibWeb/Page/Page.h>
 #include <LibWeb/WebDriver/ElementLocationStrategies.h>
 #include <LibWeb/WebDriver/ExecuteScript.h>
 #include <LibWebCommon/HTML/CrossProcessId.h>
@@ -35,9 +36,11 @@ public:
 
     void visit_edges(JS::Cell::Visitor&);
 
-    void page_did_open_dialog(Badge<PageClient>);
+    void page_did_open_dialog(Badge<PageClient>, Web::Page::PendingDialog, Utf16String const& message, Optional<Utf16String> const& default_value);
+    void page_did_close_dialog(Badge<PageClient>, Web::Page::PendingDialog, bool accepted, Optional<Utf16String> const& user_text);
 
     void run_command(u64 command_id, Optional<Web::HTML::CrossProcessId> navigable_id, String const& name, JsonValue payload, Vector<String> arguments);
+    void run_bidi_command(u64 command_id, Web::HTML::CrossProcessId navigable_id, String method, JsonValue parameters);
     void set_session_config(Web::WebDriver::PageLoadStrategy, bool strict_file_interactability, JsonValue const& timeouts);
 
 private:
@@ -96,6 +99,9 @@ private:
     Web::WebDriver::Response take_element_screenshot(String element_id);
     Web::WebDriver::Response print_page(JsonValue payload);
     Web::WebDriver::Response ensure_top_level_browsing_context_is_open();
+    Web::WebDriver::Response set_permission(JsonValue payload);
+
+    void bidi_handle_user_prompt(u64 command_id, JsonObject const& parameters);
 
     void set_current_browsing_context(Web::HTML::Navigable const&);
     Web::HTML::BrowsingContext& current_browsing_context() { return *m_current_browsing_context; }

@@ -6,6 +6,7 @@
 
 #include <AK/Debug.h>
 #include <AK/Error.h>
+#include <AK/JsonArray.h>
 #include <AK/NeverDestroyed.h>
 #include <AK/NumericLimits.h>
 #include <AK/Random.h>
@@ -95,7 +96,7 @@ ViewImplementation::~ViewImplementation()
     cancel_all_native_geolocation_requests();
 
     if (!m_client_state.client_handle.is_empty())
-        Application::the().notify_webdriver_window_closed(m_client_state.client_handle);
+        Application::the().notify_webdriver_window_closed(m_client_state.client_handle, webdriver_bidi_navigable_info(traversable(), {}, true));
 
     all_views().remove(m_view_id);
 
@@ -2522,6 +2523,16 @@ void ViewImplementation::run_webdriver_content_command(u64 command_id, Web::WebD
 
 void ViewImplementation::run_webdriver_content_command(u64 command_id, Optional<Web::HTML::CrossProcessId> navigable_id, String const& name, JsonValue payload, Vector<String> arguments)
 {
+    dispatch_webdriver_content_command(command_id, navigable_id, name, move(payload), move(arguments), WebDriverCommandProtocol::Classic);
+}
+
+void ViewImplementation::run_webdriver_bidi_command(u64 command_id, Web::HTML::CrossProcessId navigable_id, String const& method, JsonValue parameters)
+{
+    dispatch_webdriver_content_command(command_id, navigable_id, method, move(parameters), {}, WebDriverCommandProtocol::BiDi);
+}
+
+void ViewImplementation::dispatch_webdriver_content_command(u64 command_id, Optional<Web::HTML::CrossProcessId> navigable_id, String const& name, JsonValue payload, Vector<String> arguments, WebDriverCommandProtocol protocol)
+{
     if (m_crash_state.has_value() && !m_crash_state->recovery_started) {
         Application::the().complete_webdriver_content_command(command_id, Web::WebDriver::Error::from_code(Web::WebDriver::ErrorCode::UnknownError, "WebContent has crashed"sv));
         return;
@@ -2544,7 +2555,7 @@ void ViewImplementation::run_webdriver_content_command(u64 command_id, Optional<
     // No page holds the navigable's document between the displayed document's unload and the activation of the
     // document another page populated to replace it, so the command waits for that document.
     if (traversable().is_handing_navigable_to_another_page(*navigable)) {
-        m_webdriver_commands_waiting_for_a_document.set(command_id, { navigable_id, name, move(payload), move(arguments) });
+        m_webdriver_commands_waiting_for_a_document.set(command_id, { protocol, navigable_id, name, move(payload), move(arguments) });
         return;
     }
 
@@ -2557,14 +2568,130 @@ void ViewImplementation::run_webdriver_content_command(u64 command_id, Optional<
         m_pending_webdriver_crash_commands.set(command_id, { *target, name, navigable_id });
     else
         m_pending_webdriver_commands.set(command_id, { *target, name, navigable_id });
-    target->async_run_webdriver_command(command_id, navigable_id, name, move(payload), move(arguments));
+
+    if (protocol == WebDriverCommandProtocol::BiDi)
+        target->async_run_webdriver_bidi_command(command_id, *navigable_id, name, move(payload));
+    else
+        target->async_run_webdriver_command(command_id, navigable_id, name, move(payload), move(arguments));
 }
 
 void ViewImplementation::run_webdriver_commands_waiting_for_a_document(Badge<CanonicalTraversable>)
 {
     auto commands = move(m_webdriver_commands_waiting_for_a_document);
     for (auto& [command_id, command] : commands)
-        run_webdriver_content_command(command_id, command.navigable_id, command.name, move(command.payload), move(command.arguments));
+        dispatch_webdriver_content_command(command_id, command.navigable_id, command.name, move(command.payload), move(command.arguments), command.protocol);
+}
+
+// https://w3c.github.io/webdriver-bidi/#navigable-id
+String ViewImplementation::webdriver_bidi_navigable_id(CanonicalNavigable const& navigable) const
+{
+    // For navigables with an associated WebDriver window handle the navigable id must be the same as the window
+    // handle.
+    if (navigable.is_top_level_traversable())
+        return handle();
+    return MUST(String::formatted("{}", navigable.id()));
+}
+
+// https://w3c.github.io/webdriver-bidi/#get-the-navigable-info
+JsonObject ViewImplementation::webdriver_bidi_navigable_info(CanonicalNavigable const& navigable, Optional<u64> max_depth, bool include_parent_id) const
+{
+    // 1. Let navigable id be the navigable id for navigable.
+    auto navigable_id = webdriver_bidi_navigable_id(navigable);
+
+    // 2. Let parent navigable be navigable's parent.
+    auto const* parent_navigable = navigable.parent();
+
+    // 3. If parent navigable is not null let parent id be the navigable id of parent navigable. Otherwise let parent
+    //    id be null.
+    JsonValue parent_id;
+    if (parent_navigable)
+        parent_id = webdriver_bidi_navigable_id(*parent_navigable);
+
+    // 4. Let document be navigable's active document.
+    // 5. Let url be the result of running the URL serializer, given document's URL.
+    // NB: The active session history entry carries the document's URL, which may have changed since its creation.
+    auto url = navigable.active_session_history_entry()
+        ? navigable.active_session_history_entry()->url.serialize()
+        : navigable.active_document().creation_url().serialize();
+
+    // 6. Let child infos be null.
+    JsonValue child_infos;
+
+    // 7. If max depth is null, or max depth is greater than 0:
+    if (!max_depth.has_value() || *max_depth > 0) {
+        // 1. Let child navigables be get the child navigables given navigable.
+        // 2. Let child depth be max depth - 1 if max depth is not null, or null otherwise.
+        auto child_depth = max_depth.map([](u64 depth) { return depth - 1; });
+
+        // 3. Set child infos to an empty list.
+        JsonArray children;
+
+        // 4. For each child navigable of child navigables:
+        for (auto const& child_navigable : navigable.children()) {
+            // 1. Let info be the result of get the navigable info given child navigable, child depth, and false.
+            // 2. Append info to child infos
+            children.must_append(webdriver_bidi_navigable_info(*child_navigable, child_depth, false));
+        }
+
+        child_infos = move(children);
+    }
+
+    // 8. Let user context be navigable's associated user context.
+    // 9. Let opener id be the navigable id for navigable's original opener, if navigable's original opener is not
+    //    null, and null otherwise.
+    // FIXME: Track the original opener of a navigable.
+    // 10. Let top-level traversable be navigable's top-level traversable.
+    // 11. Let client window id be the client window id for top-level traversable's associated client window.
+
+    // 12. Let navigable info be a map matching the browsingContext.Info production with the context field set to
+    //     navigable id, the parent field set to parent id if include parent id is true, or unset otherwise, the url
+    //     field set to url, the userContext field set to user context's user context id, originalOpener field set to
+    //     opener id, the children field set to child infos, and the clientWindow field set to client window id.
+    JsonObject navigable_info;
+    navigable_info.set("context"sv, move(navigable_id));
+    if (include_parent_id)
+        navigable_info.set("parent"sv, move(parent_id));
+    navigable_info.set("url"sv, move(url));
+    navigable_info.set("userContext"sv, "default"sv);
+    navigable_info.set("originalOpener"sv, JsonValue {});
+    navigable_info.set("children"sv, move(child_infos));
+    navigable_info.set("clientWindow"sv, String::number(view_id()));
+
+    // 13. Return navigable info.
+    return navigable_info;
+}
+
+Optional<ViewImplementation::WebDriverBiDiContext> ViewImplementation::find_webdriver_bidi_context(StringView navigable_id)
+{
+    if (auto view = find_view_by_handle(navigable_id); view.has_value())
+        return WebDriverBiDiContext { *view, view->traversable() };
+
+    // A navigable's id is formatted as "<namespace id>:<local id>".
+    auto separator = navigable_id.find(':');
+    if (!separator.has_value())
+        return {};
+    auto namespace_id = navigable_id.substring_view(0, *separator).to_number<u64>();
+    auto local_id = navigable_id.substring_view(*separator + 1).to_number<u64>();
+    if (!namespace_id.has_value() || !local_id.has_value())
+        return {};
+    Web::HTML::CrossProcessId id { .namespace_id = *namespace_id, .local_id = *local_id };
+
+    Optional<WebDriverBiDiContext> result;
+    for_each_view([&](ViewImplementation& view) {
+        if (auto navigable = view.traversable().find(id); navigable.has_value() && !navigable->is_top_level_traversable()) {
+            result = WebDriverBiDiContext { view, *navigable };
+            return IterationDecision::Break;
+        }
+        return IterationDecision::Continue;
+    });
+    return result;
+}
+
+void ViewImplementation::did_receive_webdriver_bidi_event(Badge<WebContentPage>, String method, JsonValue params)
+{
+    // The navigables of a page all belong to the tab's traversable, so that is the event's related top-level
+    // traversable.
+    Application::the().emit_webdriver_bidi_event(move(method), move(params), { handle() });
 }
 
 void ViewImplementation::prepare_page_for_tab(WebContentPage& page)
@@ -2791,6 +2918,7 @@ void ViewImplementation::did_close_browsing_context(Badge<WebContentPage>)
 {
     reject_pending_selection_requests();
 
+    auto navigable_info = webdriver_bidi_navigable_info(traversable(), {}, true);
     auto window_handle = move(m_client_state.client_handle);
 
     // Headless views retain their closed children. Remove the view from routing immediately so a command racing
@@ -2802,7 +2930,7 @@ void ViewImplementation::did_close_browsing_context(Badge<WebContentPage>)
         client().unregister_view(page_id());
 
     if (!window_handle.is_empty())
-        Application::the().notify_webdriver_window_closed(window_handle);
+        Application::the().notify_webdriver_window_closed(window_handle, move(navigable_info));
 
     auto pending_user_prompt_requests = move(m_pending_webdriver_user_prompt_requests);
     for (auto& request : pending_user_prompt_requests)

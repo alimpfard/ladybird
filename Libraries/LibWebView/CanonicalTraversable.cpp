@@ -149,6 +149,9 @@ CanonicalNavigable& CanonicalTraversable::insert(NonnullRefPtr<WebContentPage> r
     auto& navigable_ref = parent.append_child(move(navigable));
     m_navigable_index.set(navigable_ref.id(), navigable_ref.make_weak_ptr());
 
+    if (auto view = this->view(); view.has_value())
+        Application::the().notify_webdriver_navigable_created(*view, navigable_ref);
+
     for_each_page_representing(navigable_ref, [&](WebContentPage& page) {
         page.async_insert_remote_navigable({ .id = navigable_ref.id(), .parent_id = parent.id(), .replicated_state = *navigable_ref.replicated_state() });
     });
@@ -531,6 +534,8 @@ void CanonicalTraversable::remove(CanonicalNavigable& navigable)
 
     auto* parent = navigable.parent();
     VERIFY(parent);
+    if (auto view = this->view(); view.has_value())
+        Application::the().notify_webdriver_navigable_destroyed(*view, navigable);
     (void)parent->remove_child(navigable);
     if (host)
         release_page_if_unused(host.release_nonnull());

@@ -23,15 +23,15 @@ class Client final : public Web::WebDriver::Client {
     C_OBJECT_ABSTRACT(Client);
 
 public:
-    static ErrorOr<NonnullRefPtr<Client>> try_create(NonnullOwnPtr<Core::BufferedTCPSocket>, LaunchBrowserCallback);
+    static ErrorOr<NonnullRefPtr<Client>> try_create(NonnullOwnPtr<Core::BufferedTCPSocket>);
     virtual ~Client() override;
 
-    LaunchBrowserCallback const& launch_browser_callback() const { return m_launch_browser_callback; }
-
 private:
-    Client(NonnullOwnPtr<Core::BufferedTCPSocket>, LaunchBrowserCallback);
+    explicit Client(NonnullOwnPtr<Core::BufferedTCPSocket>);
 
     virtual ResponsePromise enqueue_session_request(StringView session_id, SessionRequestHandler) override;
+    virtual bool is_websocket_resource_available(StringView resource_name) override;
+    virtual void did_upgrade_to_websocket(StringView resource_name, NonnullOwnPtr<Core::BufferedTCPSocket>) override;
     virtual ResponsePromise new_session(Web::WebDriver::Parameters parameters, JsonValue payload) override;
     virtual ResponsePromise delete_session(Web::WebDriver::Parameters parameters, JsonValue payload) override;
     virtual ResponsePromise get_status(Web::WebDriver::Parameters parameters, JsonValue payload) override;
@@ -60,6 +60,7 @@ private:
     virtual ResponsePromise load_url_from_ui(Web::WebDriver::Parameters parameters, JsonValue payload) override;
     virtual ResponsePromise traverse_history_from_ui(Web::WebDriver::Parameters parameters, JsonValue payload) override;
     virtual ResponsePromise get_session_history(Web::WebDriver::Parameters parameters, JsonValue payload) override;
+    virtual ResponsePromise set_permission(Web::WebDriver::Parameters parameters, JsonValue payload) override;
     virtual ResponsePromise find_element(Web::WebDriver::Parameters parameters, JsonValue payload) override;
     virtual ResponsePromise find_elements(Web::WebDriver::Parameters parameters, JsonValue payload) override;
     virtual ResponsePromise find_element_from_element(Web::WebDriver::Parameters parameters, JsonValue payload) override;
@@ -98,8 +99,6 @@ private:
     virtual ResponsePromise take_screenshot(Web::WebDriver::Parameters parameters, JsonValue payload) override;
     virtual ResponsePromise take_element_screenshot(Web::WebDriver::Parameters parameters, JsonValue payload) override;
     virtual ResponsePromise print_page(Web::WebDriver::Parameters parameters, JsonValue payload) override;
-
-    LaunchBrowserCallback m_launch_browser_callback;
 };
 
 }

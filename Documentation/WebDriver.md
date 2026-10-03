@@ -133,6 +133,34 @@ removes the example's resource files; the screenshot and log remain available.
 WebDriver launches the browser and its helper processes, so they do not need to
 be started separately.
 
+## Drive the browser over WebDriver BiDi
+
+Requesting the `webSocketUrl` capability when creating a session makes the
+session reachable over the [WebDriver BiDi](https://w3c.github.io/webdriver-bidi/)
+protocol as well. The response names the WebSocket URL, which is served on the
+same port as the HTTP endpoints:
+
+```sh
+curl -s -X POST http://127.0.0.1:8000/session \
+    -d '{"capabilities": {"alwaysMatch": {"webSocketUrl": true}}}'
+# {"value":{"sessionId":"<id>","capabilities":{...,"webSocketUrl":"ws://127.0.0.1:8000/session/<id>"}}}
+```
+
+A connection to `ws://127.0.0.1:8000/session` can also create a BiDi-only
+session with the `session.new` command. Commands and events use the JSON
+messages defined by the specification. The implemented commands are the
+`session` module (`status`, `new`, `end`, `subscribe`, `unsubscribe`),
+`browsingContext.create`, `browsingContext.close`, `browsingContext.getTree`,
+`browsingContext.handleUserPrompt`, `browsingContext.navigate`,
+`script.callFunction`, `script.evaluate`
+and `permissions.setPermission`; the emitted events are
+`browsingContext.contextCreated`, `browsingContext.contextDestroyed`,
+`browsingContext.userPromptOpened`, `browsingContext.userPromptClosed` and
+`log.entryAdded`. The classic `POST /session/{session id}/permissions`
+extension command from the Permissions specification is supported as well. Classic HTTP commands and BiDi commands can be used on the
+same session at the same time, which is how `wptrunner` drives tests that opt
+into BiDi with `testdriver.js?feature=bidi`.
+
 ## Adapt the example to a website
 
 Change the navigation URL and the JavaScript passed to `/execute/sync`. Remove

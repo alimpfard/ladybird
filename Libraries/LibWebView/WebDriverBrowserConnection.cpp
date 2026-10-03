@@ -4,10 +4,14 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/HashTable.h>
+#include <AK/JsonArray.h>
 #include <AK/JsonObject.h>
 #include <LibCore/EventLoop.h>
 #include <LibWebView/Application.h>
+#include <LibWebView/CanonicalTraversable.h>
 #include <LibWebView/ViewImplementation.h>
+#include <LibWebView/WebContentClient.h>
 #include <LibWebView/WebDriverBrowserConnection.h>
 #if defined(AK_OS_MACOS)
 #    include <LibIPC/TransportBootstrapMach.h>
@@ -245,6 +249,13 @@ void WebDriverBrowserConnection::set_strict_file_interactability(bool strict_fil
     });
 }
 
+void WebDriverBrowserConnection::set_bidi_session(bool bidi_session)
+{
+    Application::the().update_webdriver_session_config({}, [bidi_session](auto& config) {
+        config.bidi_session = bidi_session;
+    });
+}
+
 void WebDriverBrowserConnection::set_timeouts_configuration(JsonValue timeouts)
 {
     Application::the().update_webdriver_session_config({}, [timeouts = move(timeouts)](auto& config) {
@@ -307,6 +318,90 @@ void WebDriverBrowserConnection::get_session_history(u64 command_id, String wind
     JsonObject result;
     result.set("ui"sv, view->webdriver_session_history());
     async_command_complete(command_id, JsonValue { move(result) });
+}
+
+// https://w3c.github.io/webdriver-bidi/#command-browsingContext-getTree
+void WebDriverBrowserConnection::get_browsing_context_tree(u64 command_id, Optional<String> root, Optional<u64> max_depth)
+{
+    // 5. Let navigables infos be an empty list.
+    JsonArray navigables_infos;
+
+    // 4. If root id is not null, append the result of trying to get a navigable given root id to navigables.
+    //    Otherwise append all top-level traversables to navigables.
+    // 6. For each navigable of navigables:
+    //    1. Let info be the result of get the navigable info given navigable, max depth, and true.
+    //    2. Append info to navigables infos
+    if (root.has_value()) {
+        auto context = ViewImplementation::find_webdriver_bidi_context(*root);
+        if (!context.has_value()) {
+            async_command_complete(command_id, Web::WebDriver::Error::from_code(Web::WebDriver::ErrorCode::NoSuchFrame, "No such browsing context"sv));
+            return;
+        }
+        navigables_infos.must_append(context->view.webdriver_bidi_navigable_info(context->navigable, max_depth, true));
+    } else {
+        ViewImplementation::for_each_view([&](ViewImplementation& view) {
+            navigables_infos.must_append(view.webdriver_bidi_navigable_info(view.traversable(), max_depth, true));
+            return IterationDecision::Continue;
+        });
+    }
+
+    // 7. Let body be a map matching the browsingContext.GetTreeResult production, with the contexts field set to
+    //    navigables infos.
+    JsonObject body;
+    body.set("contexts"sv, move(navigables_infos));
+
+    // 8. Return success with data body.
+    async_command_complete(command_id, JsonValue { move(body) });
+}
+
+// https://w3c.github.io/webdriver-bidi/#get-valid-navigables-by-ids
+// https://w3c.github.io/webdriver-bidi/#get-top-level-traversables
+void WebDriverBrowserConnection::get_top_level_traversables_for_contexts(u64 command_id, Vector<String> context_ids)
+{
+    HashTable<String> top_level_traversable_ids;
+
+    for (auto const& context_id : context_ids) {
+        auto context = ViewImplementation::find_webdriver_bidi_context(context_id);
+        if (!context.has_value()) {
+            async_command_complete(command_id, Web::WebDriver::Error::from_code(Web::WebDriver::ErrorCode::NoSuchFrame, "No such browsing context"sv));
+            return;
+        }
+        top_level_traversable_ids.set(context->view.handle());
+    }
+
+    JsonArray result;
+    for (auto const& id : top_level_traversable_ids)
+        result.must_append(id);
+    async_command_complete(command_id, JsonValue { move(result) });
+}
+
+void WebDriverBrowserConnection::run_bidi_content_command(u64 command_id, String context_id, String method, JsonValue parameters)
+{
+    // https://w3c.github.io/webdriver-bidi/#get-a-navigable
+    // 2. If there is no navigable with navigable id navigable id return error with error code no such frame
+    auto context = ViewImplementation::find_webdriver_bidi_context(context_id);
+    if (!context.has_value()) {
+        async_command_complete(command_id, Web::WebDriver::Error::from_code(Web::WebDriver::ErrorCode::NoSuchFrame, "No such browsing context"sv));
+        return;
+    }
+
+    context->view.run_webdriver_bidi_command(command_id, context->navigable.id(), method, move(parameters));
+}
+
+// https://w3c.github.io/permissions/#webdriver-bidi-command-permissions-setPermission
+void WebDriverBrowserConnection::set_permission(u64 command_id, JsonValue descriptor, String state, String origin, String embedded_origin)
+{
+    // 11. Set a permission with typedDescriptor, state, key, and user agent.
+    // NB: Every process hosting web content keeps its own permission store, so each one sets the permission.
+    WebContentClient::for_each_client([&](WebContentClient& client) {
+        client.for_each_page([&](WebContentPage& page) {
+            page.async_webdriver_set_permission(descriptor, state, origin, embedded_origin);
+            return IterationDecision::Continue;
+        });
+        return IterationDecision::Continue;
+    });
+
+    async_command_complete(command_id, JsonValue {});
 }
 
 }

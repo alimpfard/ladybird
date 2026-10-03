@@ -30,6 +30,7 @@
 #include <LibIPC/Transport.h>
 #include <LibJS/Runtime/ConsoleObject.h>
 #include <LibJS/Runtime/Date.h>
+#include <LibURL/Parser.h>
 #include <LibUnicode/TimeZone.h>
 #include <LibWasm/Types.h>
 #include <LibWeb/ARIA/RoleType.h>
@@ -84,6 +85,7 @@
 #include <LibWeb/Painting/DocumentPaintState.h>
 #include <LibWeb/Painting/FlexboxInspectorOverlay.h>
 #include <LibWeb/Painting/PaintingRustBridge.h>
+#include <LibWeb/PermissionsAPI/Permissions.h>
 #include <LibWeb/Platform/EventLoopPlugin.h>
 #include <LibWeb/Platform/FontPlugin.h>
 #include <LibWeb/Selection/Selection.h>
@@ -462,10 +464,36 @@ void ConnectionFromClient::run_webdriver_command(Web::PageId page_id, u64 comman
     page->run_webdriver_command(command_id, navigable_id, name, move(payload), move(arguments));
 }
 
-void ConnectionFromClient::set_webdriver_session_config(Web::PageId page_id, Web::WebDriver::UserPromptHandler user_prompt_handler, Web::WebDriver::PageLoadStrategy page_load_strategy, bool strict_file_interactability, JsonValue timeouts)
+void ConnectionFromClient::run_webdriver_bidi_command(Web::PageId page_id, u64 command_id, Web::HTML::CrossProcessId navigable_id, String method, JsonValue parameters)
+{
+    auto page = this->page(page_id);
+    if (!page.has_value()) {
+        // NB: A command the driver is waiting on must be answered even when its page is gone here.
+        async_webdriver_command_complete(page_id, command_id, Web::WebDriver::Error::from_code(Web::WebDriver::ErrorCode::NoSuchFrame, "Browsing context not found"sv));
+        return;
+    }
+
+    page->run_webdriver_bidi_command(command_id, navigable_id, move(method), move(parameters));
+}
+
+void ConnectionFromClient::webdriver_set_permission(Web::PageId, JsonValue descriptor, String state, String origin, String embedded_origin)
+{
+    // NB: The permission store is shared by every page of this process.
+    auto parsed_origin = URL::Parser::basic_parse(origin);
+    auto parsed_embedded_origin = URL::Parser::basic_parse(embedded_origin);
+    if (!parsed_origin.has_value() || !parsed_embedded_origin.has_value() || !descriptor.is_object()) {
+        dbgln("WebDriver asked to set a permission with invalid parameters");
+        return;
+    }
+
+    if (auto result = Web::PermissionsAPI::set_permission_for_webdriver(descriptor.as_object(), state, parsed_origin->origin(), parsed_embedded_origin->origin()); result.is_error())
+        dbgln("WebDriver asked to set a permission that is not supported: {}", result.error().message);
+}
+
+void ConnectionFromClient::set_webdriver_session_config(Web::PageId page_id, Web::WebDriver::UserPromptHandler user_prompt_handler, Web::WebDriver::PageLoadStrategy page_load_strategy, bool strict_file_interactability, JsonValue timeouts, bool bidi_session)
 {
     if (auto page = this->page(page_id); page.has_value())
-        page->set_webdriver_session_config(move(user_prompt_handler), page_load_strategy, strict_file_interactability, timeouts);
+        page->set_webdriver_session_config(move(user_prompt_handler), page_load_strategy, strict_file_interactability, timeouts, bidi_session);
 }
 
 void ConnectionFromClient::did_handle_webdriver_mouse_event(Web::PageId page_id, u64 request_id)

@@ -1135,11 +1135,13 @@ void PageClient::page_did_request_alert(Utf16String const& message)
     client().async_did_request_alert(m_id, message);
 
     if (m_webdriver)
-        m_webdriver->page_did_open_dialog({});
+        m_webdriver->page_did_open_dialog({}, Web::Page::PendingDialog::Alert, message, {});
 }
 
 void PageClient::alert_closed()
 {
+    if (m_webdriver && page().pending_dialog() == Web::Page::PendingDialog::Alert)
+        m_webdriver->page_did_close_dialog({}, Web::Page::PendingDialog::Alert, true, {});
     page().alert_closed();
 }
 
@@ -1148,11 +1150,13 @@ void PageClient::page_did_request_confirm(Utf16String const& message)
     client().async_did_request_confirm(m_id, message);
 
     if (m_webdriver)
-        m_webdriver->page_did_open_dialog({});
+        m_webdriver->page_did_open_dialog({}, Web::Page::PendingDialog::Confirm, message, {});
 }
 
 void PageClient::confirm_closed(bool accepted)
 {
+    if (m_webdriver && page().pending_dialog() == Web::Page::PendingDialog::Confirm)
+        m_webdriver->page_did_close_dialog({}, Web::Page::PendingDialog::Confirm, accepted, {});
     page().confirm_closed(accepted);
 }
 
@@ -1161,7 +1165,7 @@ void PageClient::page_did_request_prompt(Utf16String const& message, Utf16String
     client().async_did_request_prompt(m_id, message, default_);
 
     if (m_webdriver)
-        m_webdriver->page_did_open_dialog({});
+        m_webdriver->page_did_open_dialog({}, Web::Page::PendingDialog::Prompt, message, default_);
 }
 
 void PageClient::page_did_request_set_prompt_text(Utf16String const& text)
@@ -1171,6 +1175,8 @@ void PageClient::page_did_request_set_prompt_text(Utf16String const& text)
 
 void PageClient::prompt_closed(Optional<Utf16String> response)
 {
+    if (m_webdriver && page().pending_dialog() == Web::Page::PendingDialog::Prompt)
+        m_webdriver->page_did_close_dialog({}, Web::Page::PendingDialog::Prompt, response.has_value(), response);
     page().prompt_closed(move(response));
 }
 
@@ -1913,6 +1919,16 @@ void PageClient::run_webdriver_command(u64 command_id, Optional<Web::HTML::Cross
     ensure_webdriver_session().run_command(command_id, navigable_id, name, move(payload), move(arguments));
 }
 
+void PageClient::run_webdriver_bidi_command(u64 command_id, Web::HTML::CrossProcessId navigable_id, String method, JsonValue parameters)
+{
+    ensure_webdriver_session().run_bidi_command(command_id, navigable_id, move(method), move(parameters));
+}
+
+void PageClient::webdriver_bidi_event(String method, JsonValue params)
+{
+    client().async_webdriver_bidi_event(m_id, move(method), move(params));
+}
+
 void PageClient::webdriver_did_set_current_browsing_context(u64 command_id, Web::HTML::CrossProcessId navigable_id)
 {
     client().async_webdriver_did_set_current_browsing_context(m_id, command_id, navigable_id);
@@ -1923,8 +1939,9 @@ void PageClient::webdriver_command_complete(u64 command_id, Web::WebDriver::Resp
     client().async_webdriver_command_complete(m_id, command_id, move(response));
 }
 
-void PageClient::set_webdriver_session_config(Web::WebDriver::UserPromptHandler user_prompt_handler, Web::WebDriver::PageLoadStrategy page_load_strategy, bool strict_file_interactability, JsonValue const& timeouts)
+void PageClient::set_webdriver_session_config(Web::WebDriver::UserPromptHandler user_prompt_handler, Web::WebDriver::PageLoadStrategy page_load_strategy, bool strict_file_interactability, JsonValue const& timeouts, bool bidi_session)
 {
+    m_webdriver_bidi_session = bidi_session;
     Web::WebDriver::set_user_prompt_handler(move(user_prompt_handler));
     ensure_webdriver_session().set_session_config(page_load_strategy, strict_file_interactability, timeouts);
 }
@@ -2011,6 +2028,7 @@ void PageClient::initialize_js_console(Web::DOM::Document& document)
 
     auto console_client = DevToolsConsoleClient::create(realm, console_object->console(), *this);
     document.set_console_client(console_client);
+    console_object->console().set_client(*console_client);
 }
 
 void PageClient::did_execute_js_console_input(JsonValue const& result)
