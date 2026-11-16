@@ -28,6 +28,7 @@
 #include <LibWeb/Infra/JSON.h>
 #include <LibWeb/MediaCapture/MediaStream.h>
 #include <LibWeb/MediaCapture/MediaStreamTrack.h>
+#include <LibWeb/MediaCapture/VideoTrackEncoder.h>
 #include <LibWeb/PermissionsAPI/Permissions.h>
 #include <LibWeb/WebIDL/ExceptionOr.h>
 #include <LibWeb/WebIDL/Promise.h>
@@ -143,6 +144,8 @@ void RTCPeerConnection::visit_edges(JS::Cell::Visitor& visitor)
     visitor.visit(m_remote_receivers_by_id);
     for (auto& [_, pipeline] : m_outgoing_audio_pipelines)
         visitor.visit(pipeline->track);
+    for (auto& [_, video] : m_outgoing_video)
+        visitor.visit(video.track);
 }
 
 GC::Ref<WebIDL::Promise> RTCPeerConnection::chain_operation(GC::Ref<WebIDL::ReactionSteps> operation)
@@ -218,12 +221,19 @@ void RTCPeerConnection::close_the_connection_algorithm(bool disappear)
             pipeline->track->remove_audio_sink(*pipeline->sink);
     }
     m_outgoing_audio_pipelines.clear();
+    for (auto& [_, video] : m_outgoing_video) {
+        if (video.track && video.sink)
+            video.track->remove_video_sink(*video.sink);
+    }
+    m_outgoing_video.clear();
+    m_sender_video_codecs.clear();
     m_last_operation = nullptr;
     m_pending_void_requests.clear();
     m_pending_description_requests.clear();
     m_pending_description_payloads.clear();
     m_held_ice_events.clear();
     m_receiver_audio_decoders.clear();
+    m_received_video.clear();
     agent.unregister_peer_connection(m_pc_id);
     // 6. If connection.[[SctpTransport]] is not null...
     if (m_sctp) {
@@ -935,6 +945,13 @@ void RTCPeerConnection::on_connection_state_event(String state)
         return;
     if (auto parsed = parse_connection_state(state); parsed.has_value()) {
         m_connection_state = *parsed;
+        // Nothing that was sent before now went anywhere, and video can only be decoded from a key frame on.
+        if (m_connection_state == Bindings::RTCPeerConnectionState::Connected) {
+            for (auto& [_, video] : m_outgoing_video) {
+                if (video.track)
+                    video.track->request_video_key_frame();
+            }
+        }
         HTML::TemporaryExecutionContext context(relevant_realm());
         dispatch_event(DOM::Event::create(relevant_global_object(), HTML::EventNames::connectionstatechange));
     }
@@ -1217,6 +1234,14 @@ void RTCPeerConnection::on_remote_track_added(u64 receiver_id, u64 transceiver_i
     auto receiver = transceiver->receiver();
     m_remote_receivers_by_id.set(receiver_id, receiver);
 
+    if (kind == Bindings::MediaStreamTrackKind::Video) {
+        // Whatever starts playing the track partway through needs a frame to start decoding from.
+        receiver->track()->on_video_key_frame_requested = [pc_id = m_pc_id, receiver_id] {
+            if (auto* client = WebRTCAgent::the().existing_client())
+                client->async_request_key_frame(pc_id, receiver_id);
+        };
+    }
+
     // Drive the spec's "process remote tracks" algorithm. The IPC only signals new
     // tracks today (no removals), so direction is recvonly.
     GC::RootVector<StreamTrackPair> add_list;
@@ -1243,9 +1268,12 @@ void RTCPeerConnection::on_remote_track_added(u64 receiver_id, u64 transceiver_i
             HighResolutionTime::current_high_resolution_time(relevant_global_object()));
         dispatch_event(event);
     }
-    // FIXME: muteTracks step is "set track.muted to true and fire mute on it";
-    //        MediaStreamTrack.muted is a getter so we'd need an internal set_muted.
-    (void)mute_tracks;
+    for (auto& track : mute_tracks)
+        track->set_muted(true);
+
+    // The backend only tells us of a track once media has arrived for it, which is when a receiver's track stops
+    // being muted.
+    receiver->track()->set_muted(false);
 }
 
 GC::Ptr<MediaCapture::MediaStream> RTCPeerConnection::find_or_create_remote_stream_for_msid(String const& msid)
@@ -1263,12 +1291,13 @@ void RTCPeerConnection::stop_sender(RTCRtpSender& sender)
     auto pipeline = m_outgoing_audio_pipelines.take(id);
     if (pipeline.has_value() && (*pipeline)->track && (*pipeline)->sink)
         (*pipeline)->track->remove_audio_sink(*(*pipeline)->sink);
-    if (m_requested_audio_senders.contains(id)) {
+    stop_outgoing_video_for_sender(id);
+    if (m_requested_senders.contains(id)) {
         if (auto* client = WebRTCAgent::the().existing_client())
             client->async_remove_track(m_pc_id, id);
     }
-    m_requested_audio_senders.remove(id);
-    m_ready_audio_senders.remove(id);
+    m_requested_senders.remove(id);
+    m_ready_senders.remove(id);
 }
 
 WebIDL::ExceptionOr<void> RTCPeerConnection::remove_track(GC::Ref<RTCRtpSender> sender)
@@ -1293,6 +1322,35 @@ WebIDL::ExceptionOr<void> RTCPeerConnection::remove_track(GC::Ref<RTCRtpSender> 
     return {};
 }
 
+static constexpr u32 VIDEO_CLOCK_RATE = 90'000;
+
+static Optional<Media::CodecID> video_codec_from_name(StringView name);
+
+static StringView name_of_video_codec(Media::CodecID codec)
+{
+    switch (codec) {
+    case Media::CodecID::VP8:
+        return "VP8"sv;
+    case Media::CodecID::VP9:
+        return "VP9"sv;
+    case Media::CodecID::H264:
+        return "H264"sv;
+    default:
+        return {};
+    }
+}
+
+// The codecs that video can be sent in, which are the ones a track can encode its pictures in.
+static Vector<String> sendable_video_codecs()
+{
+    Vector<String> codecs;
+    for (auto codec : MediaCapture::VideoTrackEncoder::supported_codecs()) {
+        if (auto name = name_of_video_codec(codec); !name.is_empty())
+            codecs.append(MUST(String::from_utf8(name)));
+    }
+    return codecs;
+}
+
 void RTCPeerConnection::on_sender_track_changed(RTCRtpSender& sender)
 {
     if (m_is_closed)
@@ -1301,42 +1359,61 @@ void RTCPeerConnection::on_sender_track_changed(RTCRtpSender& sender)
     auto old = m_outgoing_audio_pipelines.take(sender_id);
     if (old.has_value() && (*old)->track && (*old)->sink)
         (*old)->track->remove_audio_sink(*(*old)->sink);
+    stop_outgoing_video_for_sender(sender_id);
     auto track = sender.track();
-    if (!track || track->track_kind() != Bindings::MediaStreamTrackKind::Audio)
+    if (!track)
         return;
-    if (m_ready_audio_senders.contains(sender_id)) {
-        start_outgoing_audio_for_sender(sender);
+    if (m_ready_senders.contains(sender_id)) {
+        if (track->is_audio())
+            start_outgoing_audio_for_sender(sender);
+        else
+            start_outgoing_video_for_sender(sender);
         return;
     }
-    if (m_requested_audio_senders.contains(sender_id))
+    if (m_requested_senders.contains(sender_id))
         return;
-    m_requested_audio_senders.set(sender_id);
-    if (auto* client = WebRTCAgent::the().existing_client())
+    m_requested_senders.set(sender_id);
+    auto* client = WebRTCAgent::the().existing_client();
+    if (!client)
+        return;
+    if (track->is_audio())
         client->async_add_audio_track(m_pc_id, sender_id);
+    else
+        client->async_add_video_track(m_pc_id, sender_id, sendable_video_codecs());
 }
 
-void RTCPeerConnection::on_audio_track_ssrc_assigned(u64 sender_id, u32 ssrc)
+GC::Ptr<RTCRtpSender> RTCPeerConnection::find_sender(u64 sender_id) const
+{
+    for (auto const& transceiver : m_transceivers) {
+        if (transceiver->sender()->sender_id() == sender_id)
+            return transceiver->sender();
+    }
+    return nullptr;
+}
+
+// The backend has given a sender what it sends through, and says which SSRC that goes out under.
+void RTCPeerConnection::on_sender_track_ready(u64 sender_id, u32 ssrc)
 {
     if (m_is_closed)
         return;
-    GC::Ptr<RTCRtpSender> sender;
-    for (auto& transceiver : m_transceivers) {
-        if (transceiver->sender()->sender_id() == sender_id) {
-            sender = transceiver->sender();
-            break;
-        }
-    }
+    auto sender = find_sender(sender_id);
     if (!sender) {
-        dbgln_if(WEBRTC_DEBUG, "RTCPeerConnection: on_audio_track_ssrc_assigned for unknown sender_id={}", sender_id);
+        dbgln_if(WEBRTC_DEBUG, "RTCPeerConnection: on_sender_track_ready for unknown sender_id={}", sender_id);
         return;
     }
-    if (!m_requested_audio_senders.contains(sender_id))
+    if (!m_requested_senders.contains(sender_id))
         return;
     sender->set_ssrc(ssrc);
-    m_ready_audio_senders.set(sender_id);
-    if (m_outgoing_audio_pipelines.contains(sender_id))
+    m_ready_senders.set(sender_id);
+    auto track = sender->track();
+    if (!track)
         return;
-    start_outgoing_audio_for_sender(*sender);
+    if (track->is_audio()) {
+        if (!m_outgoing_audio_pipelines.contains(sender_id))
+            start_outgoing_audio_for_sender(*sender);
+    } else if (!m_outgoing_video.contains(sender_id)) {
+        start_outgoing_video_for_sender(*sender);
+    }
 }
 
 void RTCPeerConnection::on_sender_transform_changed(RTCRtpSender& sender)
@@ -1347,10 +1424,128 @@ void RTCPeerConnection::on_sender_transform_changed(RTCRtpSender& sender)
     auto sender_id = sender.sender_id();
     if (script_transform->has_frame_written_callback())
         return;
-    script_transform->set_on_frame_written([self = GC::Weak { *this }, sender_id](ByteBuffer payload, u32, u8 payload_type, u32 rtp_timestamp, u16 sequence_number) {
+    script_transform->set_on_frame_written([self = GC::Weak { *this }, sender_id](EncodedFrame frame) {
         if (self)
-            self->on_outgoing_encrypted_frame(sender_id, move(payload), rtp_timestamp, sequence_number, payload_type);
+            self->on_outgoing_encrypted_frame(sender_id, move(frame));
     });
+}
+
+void RTCPeerConnection::start_outgoing_video_for_sender(GC::Ref<RTCRtpSender> sender)
+{
+    auto sender_id = sender->sender_id();
+    auto track = sender->track();
+    if (!track || !track->is_video())
+        return;
+    // Nothing is sent until the session has a codec for the sender that there is an encoder for.
+    auto codec = m_sender_video_codecs.get(sender_id);
+    if (!codec.has_value())
+        return;
+
+    auto sink = adopt_ref(*new MediaCapture::VideoFrameSink);
+    sink->codec = codec->codec;
+    sink->on_frame = [weak_self = GC::Weak { *this }, sender_id](MediaCapture::EncodedVideoFrame const& frame) {
+        if (auto self = weak_self.ptr())
+            self->route_outgoing_video_frame(sender_id, frame);
+    };
+    OutgoingVideo video;
+    video.sink = sink;
+    video.track = track;
+    video.codec = *codec;
+    m_outgoing_video.set(sender_id, move(video));
+    // The track gives a new sink a key frame to begin with.
+    track->add_video_sink(sink);
+}
+
+void RTCPeerConnection::stop_outgoing_video_for_sender(u64 sender_id)
+{
+    auto video = m_outgoing_video.take(sender_id);
+    if (!video.has_value())
+        return;
+    if (video->sink)
+        video->sink->on_frame = nullptr;
+    if (video->track && video->sink)
+        video->track->remove_video_sink(*video->sink);
+}
+
+void RTCPeerConnection::route_outgoing_video_frame(u64 sender_id, MediaCapture::EncodedVideoFrame const& frame)
+{
+    if (m_is_closed)
+        return;
+    auto video = m_outgoing_video.get(sender_id);
+    auto sender = find_sender(sender_id);
+    if (!video.has_value() || !sender)
+        return;
+
+    // FIXME: A track that carries what another connection received may be in another codec, which this should
+    //        decode and encode again in the sender's.
+    if (frame.codec_id != video->codec.codec) {
+        if (!video->has_warned_about_codec)
+            dbgln("RTCPeerConnection: Not sending a track's video, which is in {} and would have to be in {}", frame.codec_id, video->codec.codec);
+        video->has_warned_about_codec = true;
+        return;
+    }
+
+    auto payload = ByteBuffer::copy(frame.data);
+    if (payload.is_error())
+        return;
+    if (!video->first_timestamp.has_value())
+        video->first_timestamp = frame.timestamp;
+    auto elapsed = frame.timestamp - *video->first_timestamp;
+    EncodedFrame encoded_frame {
+        .payload = payload.release_value(),
+        .ssrc = sender->ssrc(),
+        .payload_type = video->codec.payload_type,
+        // NB: RTP timestamps wrap around.
+        .rtp_timestamp = static_cast<u32>(elapsed.to_microseconds() * VIDEO_CLOCK_RATE / 1'000'000),
+        .sequence_number = video->next_sequence_number++,
+        .video = EncodedFrame::Video {
+            .codec = frame.codec_id,
+            .is_key_frame = frame.is_key_frame,
+            .frame_id = video->next_frame_id++,
+        },
+    };
+
+    // https://w3c.github.io/webrtc-encoded-transform/#stream-processing
+    // The frame goes through the sender's transform, if it has one, and what the transform writes is what is sent.
+    if (auto script_transform = sender->script_transform()) {
+        script_transform->enqueue_encoded_frame(move(encoded_frame));
+        return;
+    }
+    // FIXME: An SFrame transform should encrypt the frame, rather than keep it from being sent.
+    if (sender->transform().has<Empty>())
+        on_outgoing_encrypted_frame(sender_id, move(encoded_frame));
+}
+
+// The session has settled on what a sender's video is sent in, or on something else than before.
+void RTCPeerConnection::on_video_sender_codec(u64 sender_id, String codec, u8 payload_type)
+{
+    if (m_is_closed)
+        return;
+    auto codec_id = video_codec_from_name(codec);
+    if (codec_id.has_value() && MediaCapture::VideoTrackEncoder::supported_codecs().contains_slow(*codec_id)) {
+        m_sender_video_codecs.set(sender_id, { .codec = *codec_id, .payload_type = payload_type });
+    } else {
+        if (m_outgoing_video.contains(sender_id))
+            dbgln("RTCPeerConnection: The session has no codec to send video in that there is an encoder for");
+        m_sender_video_codecs.remove(sender_id);
+    }
+
+    // What the sender's track encodes in follows.
+    auto was_sending = m_outgoing_video.contains(sender_id);
+    stop_outgoing_video_for_sender(sender_id);
+    auto sender = find_sender(sender_id);
+    if (sender && (was_sending || m_ready_senders.contains(sender_id)))
+        start_outgoing_video_for_sender(*sender);
+}
+
+// The end receiving a sender's video has lost too much of it to go on decoding.
+void RTCPeerConnection::on_key_frame_requested(u64 sender_id)
+{
+    if (m_is_closed)
+        return;
+    auto video = m_outgoing_video.get(sender_id);
+    if (video.has_value() && video->track)
+        video->track->request_video_key_frame();
 }
 
 void RTCPeerConnection::start_outgoing_audio_for_sender(GC::Ref<RTCRtpSender> sender)
@@ -1505,37 +1700,188 @@ void RTCPeerConnection::encode_and_route_outgoing_pcm(u64 sender_id, ByteBuffer 
         auto script_transform = sender->script_transform();
         if (!script_transform) {
             if (sender->transform().has<Empty>())
-                on_outgoing_encrypted_frame(sender_id, move(packet.data), rtp_ts, seq, 111);
+                on_outgoing_encrypted_frame(sender_id, { .payload = move(packet.data), .ssrc = sender->ssrc(), .payload_type = 111, .rtp_timestamp = rtp_ts, .sequence_number = seq, .video = {} });
             continue;
         }
 
-        script_transform->enqueue_encoded_audio_frame(move(packet.data), sender->ssrc(), 111 /* opus */, rtp_ts, seq);
+        script_transform->enqueue_encoded_frame({
+            .payload = move(packet.data),
+            .ssrc = sender->ssrc(),
+            .payload_type = 111, // Opus
+            .rtp_timestamp = rtp_ts,
+            .sequence_number = seq,
+            .video = {},
+        });
     }
 }
 
-void RTCPeerConnection::on_outgoing_encrypted_frame(u64 sender_id, ByteBuffer payload, u32 rtp_timestamp, u16 sequence_number, u8 payload_type)
+// Hands the backend a frame that is ready for the wire: encoded, and transformed if the sender has a transform.
+void RTCPeerConnection::on_outgoing_encrypted_frame(u64 sender_id, EncodedFrame frame)
 {
     if (m_is_closed)
         return;
-    (void)rtp_timestamp;
-    (void)sequence_number;
-    (void)payload_type;
     auto* client = WebRTCAgent::the().client();
     if (!client)
         return;
-    constexpr u32 FRAME_DURATION_MICROS = 20'000;
-    dbgln_if(WEBRTC_DEBUG, "RTCPeerConnection: shipping encoded frame to rust sender_id={} len={}", sender_id, payload.size());
-    client->async_audio_track_encoded_frame(sender_id, FRAME_DURATION_MICROS, payload.bytes());
+    dbgln_if(WEBRTC_DEBUG, "RTCPeerConnection: shipping encoded frame to rust sender_id={} len={}", sender_id, frame.payload.size());
+
+    if (!frame.video.has_value()) {
+        constexpr u32 FRAME_DURATION_MICROS = 20'000;
+        client->async_audio_track_encoded_frame(sender_id, FRAME_DURATION_MICROS, frame.payload.bytes());
+        return;
+    }
+
+    auto video = m_outgoing_video.get(sender_id);
+    if (!video.has_value())
+        return;
+    // NB: The backend stamps each frame with its own clock and then moves the clock on by the duration given with
+    //     the frame. Given the time since the frame before, the clock keeps the pace of the frames, one frame late.
+    static constexpr u32 FIRST_FRAME_DURATION_MICROS = 33'333;
+    static constexpr u32 MAXIMUM_FRAME_DURATION_MICROS = 5'000'000;
+    auto duration_micros = FIRST_FRAME_DURATION_MICROS;
+    if (video->last_sent_rtp_timestamp.has_value()) {
+        // NB: RTP timestamps wrap around, and so does their difference.
+        u32 ticks = frame.rtp_timestamp - *video->last_sent_rtp_timestamp;
+        duration_micros = static_cast<u32>(min<u64>(static_cast<u64>(ticks) * 1'000'000 / VIDEO_CLOCK_RATE, MAXIMUM_FRAME_DURATION_MICROS));
+    }
+    video->last_sent_rtp_timestamp = frame.rtp_timestamp;
+    client->async_video_track_encoded_frame(sender_id, duration_micros, frame.payload.bytes());
 }
 
+// The remote end has stopped sending what a receiver was receiving, as a remote description said it would: the
+// receiver's media description is inactive now, or names another source.
 void RTCPeerConnection::on_remote_track_ended(u64 receiver_id)
 {
     if (m_is_closed)
         return;
     HTML::TemporaryExecutionContext context(relevant_realm());
-    if (auto receiver = m_remote_receivers_by_id.get(receiver_id); receiver.has_value())
-        (*receiver)->track()->end();
     m_receiver_audio_decoders.remove(receiver_id);
+    m_received_video.remove(receiver_id);
+    m_receivers_with_undeliverable_video.remove(receiver_id);
+
+    auto receiver = m_remote_receivers_by_id.take(receiver_id);
+    if (!receiver.has_value())
+        return;
+    // The receiver may already be receiving the source that took this one's place.
+    for (auto const& [_, other_receiver] : m_remote_receivers_by_id) {
+        if (other_receiver == *receiver)
+            return;
+    }
+    auto transceiver = m_transceivers.find_if([&](auto& candidate) { return candidate->receiver() == *receiver; });
+    if (transceiver.is_end() || (*transceiver)->is_stopped())
+        return;
+
+    // The track isn't over: its transceiver may be given something else to receive, which the track then carries.
+    // This is what applying the remote description does for a media description that stops sending, in
+    // https://w3c.github.io/webrtc-pc/#set-the-session-description.
+    // FIXME: Do this when the description is applied, going by what it says, rather than when the backend notices.
+    //        A media description that goes inactive without dropping its source isn't noticed at all.
+    GC::RootVector<StreamTrackPair> add_list;
+    GC::RootVector<StreamTrackPair> remove_list;
+    GC::RootVector<TrackEventInit> track_event_inits;
+    GC::RootVector<GC::Ref<MediaCapture::MediaStreamTrack>> mute_tracks;
+    process_remote_tracks(*this, **transceiver, Bindings::RTCRtpTransceiverDirection::Inactive,
+        {}, add_list, remove_list, track_event_inits, mute_tracks);
+    for (auto& pair : remove_list)
+        pair.stream->remove_track(pair.track);
+    for (auto& track : mute_tracks)
+        track->set_muted(true);
+}
+
+static Optional<Media::CodecID> video_codec_from_name(StringView name)
+{
+    if (name == "VP8"sv)
+        return Media::CodecID::VP8;
+    if (name == "VP9"sv)
+        return Media::CodecID::VP9;
+    if (name == "H264"sv)
+        return Media::CodecID::H264;
+    return {};
+}
+
+void RTCPeerConnection::on_encoded_video_frame_received(u64 receiver_id, u32 ssrc, u32 rtp_timestamp, u8 payload_type, String codec, bool is_key_frame, ByteBuffer payload)
+{
+    if (m_is_closed)
+        return;
+    auto receiver = m_remote_receivers_by_id.get(receiver_id);
+    if (!receiver.has_value())
+        return;
+
+    auto codec_id = video_codec_from_name(codec);
+    auto transform = (*receiver)->transform();
+    auto* script_transform = transform.get_pointer<GC::Ref<RTCRtpScriptTransform>>();
+    // FIXME: Pass video through SFrame transforms too.
+    if (!codec_id.has_value() || (!script_transform && !transform.has<Empty>())) {
+        if (m_receivers_with_undeliverable_video.set(receiver_id) == HashSetResult::InsertedNewEntry)
+            dbgln("RTCPeerConnection: Unable to deliver {} video of receiver {}{}", codec, receiver_id, codec_id.has_value() ? ", which has an SFrame transform"sv : ""sv);
+        return;
+    }
+
+    EncodedFrame frame {
+        .payload = move(payload),
+        .ssrc = ssrc,
+        .payload_type = payload_type,
+        .rtp_timestamp = rtp_timestamp,
+        .sequence_number = 0,
+        .video = EncodedFrame::Video {
+            .codec = *codec_id,
+            .is_key_frame = is_key_frame,
+            .frame_id = m_received_video.ensure(receiver_id).next_frame_id++,
+        },
+    };
+    if (!script_transform) {
+        deliver_received_video_frame(receiver_id, move(frame));
+        return;
+    }
+
+    if (!(*script_transform)->has_frame_written_callback()) {
+        (*script_transform)->set_on_frame_written([self = GC::Weak { *this }, receiver_id](EncodedFrame frame) {
+            if (self && frame.video.has_value())
+                self->deliver_received_video_frame(receiver_id, move(frame));
+        });
+    }
+    (*script_transform)->enqueue_encoded_frame(move(frame));
+}
+
+void RTCPeerConnection::deliver_received_video_frame(u64 receiver_id, EncodedFrame frame)
+{
+    static constexpr u32 VIDEO_RTP_CLOCK_RATE = 90'000;
+
+    if (m_is_closed)
+        return;
+    auto receiver = m_remote_receivers_by_id.get(receiver_id);
+    if (!receiver.has_value())
+        return;
+    auto const& video = frame.video.value();
+    auto& received = m_received_video.ensure(receiver_id);
+
+    // The backend only lets through frames that follow on from each other, and a transform is free to undo that:
+    // its script may drop a frame, or fall behind until frames are dropped for it.
+    auto is_stale = received.last_delivered_frame_id.has_value() && video.frame_id <= *received.last_delivered_frame_id;
+    auto follows_the_last_frame = received.last_delivered_frame_id.has_value() && video.frame_id == *received.last_delivered_frame_id + 1;
+    if (is_stale || (!video.is_key_frame && !follows_the_last_frame)) {
+        if (!is_stale && !received.has_requested_key_frame) {
+            received.has_requested_key_frame = true;
+            if (auto* client = WebRTCAgent::the().existing_client())
+                client->async_request_key_frame(m_pc_id, receiver_id);
+        }
+        return;
+    }
+    received.last_delivered_frame_id = video.frame_id;
+    received.has_requested_key_frame = false;
+
+    // Frames are in order, so the difference to the last one is small unless the timestamp wrapped around.
+    if (received.last_rtp_timestamp.has_value())
+        received.elapsed_rtp_ticks += static_cast<i32>(frame.rtp_timestamp - *received.last_rtp_timestamp);
+    received.last_rtp_timestamp = frame.rtp_timestamp;
+
+    HTML::TemporaryExecutionContext context(relevant_realm());
+    (*receiver)->track()->deliver_video_frame({
+        .codec_id = video.codec,
+        .is_key_frame = video.is_key_frame,
+        .timestamp = AK::Duration::from_time_units(received.elapsed_rtp_ticks, 1, VIDEO_RTP_CLOCK_RATE),
+        .data = frame.payload.bytes(),
+    });
 }
 
 void RTCPeerConnection::on_encoded_audio_frame_received(u64 receiver_id, u32 ssrc, u32 rtp_timestamp, u16 sequence_number, u8 payload_type, ByteBuffer payload)
@@ -1554,13 +1900,20 @@ void RTCPeerConnection::on_encoded_audio_frame_received(u64 receiver_id, u32 ssr
     }
     auto& script_transform = **script_transform_ref;
     if (!script_transform.has_frame_written_callback()) {
-        script_transform.set_on_frame_written([self = GC::Weak { *this }, receiver_id](ByteBuffer transformed_payload, u32, u8, u32 rtp_timestamp, u16) {
+        script_transform.set_on_frame_written([self = GC::Weak { *this }, receiver_id](EncodedFrame frame) {
             if (self)
-                self->feed_decoded_audio(receiver_id, move(transformed_payload), rtp_timestamp);
+                self->feed_decoded_audio(receiver_id, move(frame.payload), frame.rtp_timestamp);
         });
     }
 
-    script_transform.enqueue_encoded_audio_frame(move(payload), ssrc, payload_type, rtp_timestamp, sequence_number);
+    script_transform.enqueue_encoded_frame({
+        .payload = move(payload),
+        .ssrc = ssrc,
+        .payload_type = payload_type,
+        .rtp_timestamp = rtp_timestamp,
+        .sequence_number = sequence_number,
+        .video = {},
+    });
 }
 
 // Decode one decrypted Opus packet and deliver the PCM through the receiver's track.
@@ -1654,8 +2007,32 @@ bool RTCPeerConnection::is_setting_local_description() const
     return any_of(m_pending_description_payloads, [](auto const& entry) { return entry.value.is_local; });
 }
 
-void RTCPeerConnection::on_set_local_description_result_received(u64 request_id, bool ok, String, String error_message)
+// Each transceiver's place in the description that was just applied, as the backend that applied it sees it.
+void RTCPeerConnection::update_transceivers(Vector<WebRTCClient::TransceiverState> const& states)
 {
+    for (auto const& state : states) {
+        auto transceiver = m_transceivers.find_if([&](auto& candidate) { return candidate->transceiver_id() == state.transceiver_id; });
+        if (transceiver.is_end() || (*transceiver)->is_stopped())
+            continue;
+        (*transceiver)->set_mid(state.mid.map([](String const& mid) { return Utf16String::from_utf8(mid); }));
+
+        Optional<Bindings::RTCRtpTransceiverDirection> current_direction;
+        if (state.current_direction == "sendrecv"sv)
+            current_direction = Bindings::RTCRtpTransceiverDirection::Sendrecv;
+        else if (state.current_direction == "sendonly"sv)
+            current_direction = Bindings::RTCRtpTransceiverDirection::Sendonly;
+        else if (state.current_direction == "recvonly"sv)
+            current_direction = Bindings::RTCRtpTransceiverDirection::Recvonly;
+        else if (state.current_direction == "inactive"sv)
+            current_direction = Bindings::RTCRtpTransceiverDirection::Inactive;
+        (*transceiver)->set_current_direction(current_direction);
+    }
+}
+
+void RTCPeerConnection::on_set_local_description_result_received(u64 request_id, bool ok, String, String error_message, Vector<WebRTCClient::TransceiverState> transceivers)
+{
+    if (ok)
+        update_transceivers(transceivers);
     settle_local_description(request_id, ok, error_message);
 
     // The page has seen the description by now, along with whatever its promise's reactions did with it, so the
@@ -1703,8 +2080,10 @@ void RTCPeerConnection::settle_local_description(u64 request_id, bool ok, String
     WebIDL::resolve_promise(realm, promise_ref, JS::js_undefined());
 }
 
-void RTCPeerConnection::on_set_remote_description_result_received(u64 request_id, bool ok, String, String error_message)
+void RTCPeerConnection::on_set_remote_description_result_received(u64 request_id, bool ok, String, String error_message, Vector<WebRTCClient::TransceiverState> transceivers)
 {
+    if (ok)
+        update_transceivers(transceivers);
     auto promise = m_pending_void_requests.take(request_id);
     auto payload = m_pending_description_payloads.take(request_id);
     if (!promise.has_value())

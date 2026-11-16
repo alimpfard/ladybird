@@ -13,11 +13,13 @@
 #include <AK/Utf16String.h>
 #include <AK/Utf16StringBuilder.h>
 #include <LibAudio/ClientConnection.h>
+#include <LibCamera/ClientConnection.h>
 #include <LibCompositing/DisplayList/DisplayListResources.h>
 #include <LibCore/EventLoop.h>
 #include <LibCore/System.h>
 #include <LibCore/ThreadEventQueue.h>
 #include <LibCore/TimeZone.h>
+#include <LibCore/Timer.h>
 #include <LibGC/Heap.h>
 #include <LibGC/RootVector.h>
 #include <LibGfx/Cursor.h>
@@ -26,13 +28,18 @@
 #include <LibJS/HostClassBuilder.h>
 #include <LibJS/Runtime/AbstractOperations.h>
 #include <LibJS/Runtime/Array.h>
+#include <LibJS/Runtime/ArrayBuffer.h>
 #include <LibJS/Runtime/Date.h>
 #include <LibJS/Runtime/Environment.h>
 #include <LibJS/Runtime/Error.h>
 #include <LibJS/Runtime/Intrinsics.h>
 #include <LibJS/Runtime/Object.h>
 #include <LibJS/Runtime/VM.h>
+#include <LibMedia/Demuxer.h>
+#include <LibMedia/DemuxerRegistry.h>
+#include <LibMedia/IncrementallyPopulatedStream.h>
 #include <LibMediaClient/Client.h>
+#include <LibMediaCodecs/CodedFrame.h>
 #include <LibURL/Parser.h>
 #include <LibWeb/ARIA/AriaData.h>
 #include <LibWeb/ARIA/StateAndProperties.h>
@@ -111,6 +118,7 @@
 #include <LibWeb/Loader/ContentBlocker.h>
 #include <LibWeb/Loader/LoaderConfig.h>
 #include <LibWeb/Loader/ResourceLoader.h>
+#include <LibWeb/MediaCapture/MediaStreamTrack.h>
 #include <LibWeb/MediaSession/ActiveMediaSessionTracker.h>
 #include <LibWeb/MediaSession/MediaSession.h>
 #include <LibWeb/NotificationsAPI/Notification.h>
@@ -128,6 +136,7 @@
 #include <LibWeb/StyleValueRustFFI.h>
 #include <LibWeb/WebDriver/Actions.h>
 #include <LibWeb/WebDriver/InputState.h>
+#include <LibWeb/WebIDL/Buffers.h>
 #include <LibWeb/WebIDL/ExceptionOr.h>
 #include <LibWeb/WebIDL/Promise.h>
 #include <LibWeb/XHR/XMLHttpRequest.h>
@@ -1782,6 +1791,91 @@ void Internals::record_display_list_for_testing(bool paint_overlay, bool cold, b
     (void)document.record_display_list(read, HTML::PaintConfig { .paint_overlay = paint_overlay, .records_in_finest_runs = finest_runs }, Painting::PaintCommandCacheMode::ReadWrite);
 }
 
+namespace {
+
+// Plays the frames of a media file over and over, at the pace they were recorded at.
+struct EncodedVideoTrackSource final : public RefCounted<EncodedVideoTrackSource> {
+    Vector<Media::CodedFrame> frames;
+    size_t next_frame_index { 0 };
+    AK::Duration elapsed;
+    GC::Weak<MediaCapture::MediaStreamTrack> track;
+    RefPtr<Core::Timer> timer;
+
+    void deliver_next_frame()
+    {
+        auto strong_track = track.ptr();
+        if (!strong_track || strong_track->track_ready_state() == Bindings::MediaStreamTrackState::Ended) {
+            timer->stop();
+            return;
+        }
+        auto const& frame = frames[next_frame_index];
+        next_frame_index = (next_frame_index + 1) % frames.size();
+        strong_track->deliver_video_frame({
+            .codec_id = frame.codec_id(),
+            .is_key_frame = frame.is_keyframe(),
+            .timestamp = elapsed,
+            .data = frame.data(),
+        });
+        elapsed += frame.duration();
+    }
+};
+
+}
+
+WebIDL::ExceptionOr<GC::Ref<MediaCapture::MediaStreamTrack>> Internals::create_encoded_video_track(WebIDL::BufferSourceVariant const& media)
+{
+    static constexpr size_t MAXIMUM_FRAME_COUNT = 1000;
+    static constexpr AK::Duration DEFAULT_FRAME_DURATION = AK::Duration::from_milliseconds(33);
+
+    auto invalid_media = [] {
+        return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, "The media has no video track that can be read"_utf16 };
+    };
+
+    WebIDL::BufferSource buffer_source { media };
+    ByteBuffer media_data;
+    if (auto array_buffer = buffer_source.viewed_array_buffer(); array_buffer && !array_buffer->is_detached()) {
+        array_buffer->with_readonly_bytes(buffer_source.byte_offset(), buffer_source.byte_length(), [&](ReadonlyBytes bytes) {
+            media_data = MUST(ByteBuffer::copy(bytes));
+        });
+    }
+
+    auto demuxer_or_error = Media::create_demuxer(Media::IncrementallyPopulatedStream::create_from_buffer(media_data));
+    if (demuxer_or_error.is_error())
+        return invalid_media();
+    auto demuxer = demuxer_or_error.release_value();
+    auto video_tracks = demuxer->get_tracks_for_type(Media::TrackType::Video);
+    if (video_tracks.is_error() || video_tracks.value().is_empty())
+        return invalid_media();
+    auto const& media_track = video_tracks.value().first();
+    if (demuxer->create_context_for_track(media_track).is_error())
+        return invalid_media();
+
+    auto source = adopt_ref(*new EncodedVideoTrackSource);
+    while (source->frames.size() < MAXIMUM_FRAME_COUNT) {
+        auto frame = demuxer->get_next_sample_for_track(media_track);
+        if (frame.is_error())
+            break;
+        source->frames.append(frame.release_value());
+        if (source->frames.last().duration() <= AK::Duration::zero())
+            source->frames.last().set_duration(DEFAULT_FRAME_DURATION);
+    }
+    if (source->frames.is_empty() || !source->frames.first().is_keyframe())
+        return invalid_media();
+
+    auto track = MediaCapture::MediaStreamTrack::create(Bindings::MediaStreamTrackKind::Video, "Encoded video for testing"_utf16);
+    source->track = track;
+    source->timer = Core::Timer::create_repeating(source->frames.first().duration(), [source = source.ptr()] {
+        source->deliver_next_frame();
+    });
+    source->timer->start();
+    // The track keeps its source alive. Whatever starts playing the track gets the frames from a key frame on.
+    track->on_video_key_frame_requested = [source] {
+        while (!source->frames[source->next_frame_index].is_keyframe())
+            source->next_frame_index = (source->next_frame_index + 1) % source->frames.size();
+    };
+    return track;
+}
+
 void Internals::set_autoplay_policy(Utf16String const& policy)
 {
     if (auto parsed = HTML::autoplay_policy_from_string(policy.utf16_view()); parsed.has_value())
@@ -2825,6 +2919,16 @@ bool Internals::tab_is_heard_playing_audio()
 bool Internals::tab_is_using_microphone()
 {
     return window().associated_document().page().client().page_did_request_tab_is_using_microphone_for_testing();
+}
+
+bool Internals::tab_is_capturing_video()
+{
+    return window().associated_document().page().client().page_did_request_tab_is_capturing_video_for_testing();
+}
+
+unsigned long Internals::camera_capture_stream_count()
+{
+    return Camera::ClientConnection::capture_stream_count_for_testing();
 }
 
 bool Internals::tab_is_capturing_audio()

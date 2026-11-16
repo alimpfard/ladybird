@@ -24,7 +24,7 @@ Every record has these fields:
 | --- | --- |
 | `type` | `sample` or `event` |
 | `time_ns` | Integer nanoseconds from `CLOCK_MONOTONIC`, shared across processes on a host |
-| `process` | `Ladybird`, `WebDriver`, `WebContent`, `RequestServer`, `Compositor`, `ImageDecoder`, `AudioServer`, `MediaServer`, or `VideoDecoderServer` |
+| `process` | `Ladybird`, `WebDriver`, `WebContent`, `RequestServer`, `Compositor`, `ImageDecoder`, `AudioServer`, `CameraServer`, `MediaServer`, or `VideoDecoderServer` |
 | `pid` | Integer operating system process ID |
 
 For example:

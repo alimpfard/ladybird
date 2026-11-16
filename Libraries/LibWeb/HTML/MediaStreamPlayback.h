@@ -6,68 +6,66 @@
 
 #pragma once
 
-#include <AK/AtomicRefCounted.h>
+#include <AK/Function.h>
 #include <AK/NonnullOwnPtr.h>
 #include <AK/NonnullRefPtr.h>
+#include <AK/Optional.h>
 #include <AK/RefPtr.h>
-#include <AK/Time.h>
 #include <AK/Vector.h>
-#include <AK/WeakPtr.h>
-#include <AK/Weakable.h>
-#include <LibAudio/Forward.h>
 #include <LibGC/Ptr.h>
 #include <LibGC/Weak.h>
-#include <LibMedia/Forward.h>
+#include <LibMedia/Track.h>
+#include <LibMediaClient/Forward.h>
 #include <LibWeb/Forward.h>
+#include <LibWeb/MediaCapture/MediaStream.h>
 #include <LibWeb/MediaCapture/MediaStreamTrack.h>
 
 namespace Web::HTML {
 
-// Plays the audio tracks of a MediaStream assigned to a media element's srcObject, mixed into one output stream.
+// Feeds srcObject tracks into the element's playback as live sources, keeping them synchronized and subject to
+// the element's controls.
 // https://w3c.github.io/mediacapture-main/#mediastreams-in-media-elements
-class MediaStreamPlayback final : public Weakable<MediaStreamPlayback> {
+class MediaStreamPlayback final : public MediaCapture::MediaStream::Observer {
     AK_MAKE_NONCOPYABLE(MediaStreamPlayback);
     AK_MAKE_NONMOVABLE(MediaStreamPlayback);
     AK_ALLOC_WITH_KMALLOC;
 
 public:
-    static NonnullOwnPtr<MediaStreamPlayback> create(NonnullRefPtr<Media::AudioOutputFactory>);
-    ~MediaStreamPlayback();
+    // The playback manager must outlive this.
+    static NonnullOwnPtr<MediaStreamPlayback> create(MediaClient::RemotePlaybackManager&, MediaCapture::MediaStream&);
+    virtual ~MediaStreamPlayback() override;
 
-    void set_tracks(ReadonlySpan<GC::Ref<MediaCapture::MediaStreamTrack>>);
+    // Called once the playback knows a track of the stream, with what it knows it as.
+    Function<void(Media::Track const&)> on_track_added;
 
-    void play();
-    void pause();
-    void set_volume(double);
+    // Stops feeding the playback. This must happen before the garbage collector may have collected the stream.
+    void stop();
 
-    // A MediaStream has no timeline of its own, so the position is the time spent playing.
-    double current_time() const;
-
-    struct Mixer;
-    struct TrackInput;
+    struct AudioInput;
 
 private:
-    explicit MediaStreamPlayback(NonnullRefPtr<Media::AudioOutputFactory>);
+    MediaStreamPlayback(MediaClient::RemotePlaybackManager&, MediaCapture::MediaStream&);
 
-    void remove_input(size_t index);
-
-    NonnullRefPtr<Mixer> m_mixer;
-    NonnullRefPtr<Media::AudioOutputFactory> m_audio_output_factory;
+    virtual void media_stream_tracks_changed() override;
 
     struct Subscription {
         GC::Weak<MediaCapture::MediaStreamTrack> track;
-        NonnullRefPtr<MediaCapture::AudioFrameSink> sink;
-        NonnullRefPtr<TrackInput> input;
+        // Unset while the track has given nothing to play.
+        Optional<u64> live_source_id;
+        RefPtr<MediaCapture::AudioFrameSink> audio_sink;
+        RefPtr<AudioInput> audio_input;
+        RefPtr<MediaCapture::VideoFrameSink> video_sink;
     };
+
+    void update_subscriptions();
+    void subscribe(MediaCapture::MediaStreamTrack&);
+    void unsubscribe(Subscription&);
+    void announce_live_source(MediaClient::RemotePlaybackManager::LiveSource const&);
+    Subscription* find_subscription_for_live_source(u64 live_source_id);
+
+    MediaClient::RemotePlaybackManager& m_playback_manager;
+    GC::Weak<MediaCapture::MediaStream> m_stream;
     Vector<Subscription> m_subscriptions;
-
-    RefPtr<Audio::PlaybackStream> m_output;
-    bool m_creating_output { false };
-    bool m_playing { false };
-    double m_volume { 1.0 };
-
-    AK::Duration m_time_played;
-    Optional<MonotonicTime> m_playing_since;
 };
 
 }

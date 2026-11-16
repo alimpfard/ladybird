@@ -30,6 +30,8 @@ static StringView plain_process_name(StringView process)
         return "Media process"sv;
     if (process == "AudioServer"sv)
         return "Audio process"sv;
+    if (process == "CameraServer"sv)
+        return "Camera process"sv;
     if (process == "VideoDecoderServer"sv)
         return "Video decoder"sv;
     if (process == "WebRTCClient"sv)

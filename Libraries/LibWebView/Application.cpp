@@ -2666,6 +2666,9 @@ void Application::process_did_exit(Process&& process, Optional<int>)
         // The connection's holder launches a new AudioServer when it next connects a client; the streams of the old
         // one report their loss and reopen.
         break;
+    case ProcessType::CameraServer:
+        // Likewise for the CameraServer and the streams of its cameras.
+        break;
     case ProcessType::VideoDecoderServer:
         // The MediaServer it served asks for a new one once its decoders notice the loss.
         break;
@@ -3033,7 +3036,7 @@ void Application::permissions_changed(Badge<ApplicationPermissionManagerObserver
     });
     WebContentClient::for_each_client([&](WebContentClient& client) {
         if (client.session().permission_manager.ptr() == &manager)
-            client.update_audio_capture_permission();
+            client.update_capture_permissions();
         return IterationDecision::Continue;
     });
 

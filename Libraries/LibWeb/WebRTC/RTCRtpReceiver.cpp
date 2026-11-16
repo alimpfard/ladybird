@@ -8,6 +8,7 @@
 #include <LibGC/Heap.h>
 #include <LibWeb/MediaCapture/MediaStream.h>
 #include <LibWeb/MediaCapture/MediaStreamTrack.h>
+#include <LibWeb/WebRTC/RTCRtpCapabilities.h>
 #include <LibWeb/WebRTC/RTCRtpReceiver.h>
 #include <LibWeb/WebRTC/RTCRtpScriptTransform.h>
 #include <LibWeb/WebRTC/RTCSFrameReceiverTransform.h>
@@ -28,6 +29,12 @@ RTCRtpReceiver::RTCRtpReceiver(GC::Ref<MediaCapture::MediaStreamTrack> track)
 }
 
 RTCRtpReceiver::~RTCRtpReceiver() = default;
+
+// https://w3c.github.io/webrtc-pc/#dom-rtcrtpreceiver-getcapabilities
+Optional<Bindings::RTCRtpCapabilities> RTCRtpReceiver::get_capabilities(Utf16View kind)
+{
+    return capabilities_for_receiving(kind);
+}
 
 GC::Ref<MediaCapture::MediaStreamTrack> RTCRtpReceiver::track() const { return m_track; }
 

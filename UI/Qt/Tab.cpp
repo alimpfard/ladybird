@@ -568,6 +568,9 @@ void Tab::initialize(Optional<u64> hub_view_id)
             position();
             view().did_show_permission_prompt(request);
         };
+        popover->on_device_chosen = [this, request](ByteString const& device_id) {
+            view().did_choose_permission_prompt_device(request, device_id);
+        };
         popover->on_open_settings = [] {
             if (auto* authorizer = Application::the().microphone_authorizer())
                 authorizer->open_system_settings();
@@ -601,6 +604,10 @@ void Tab::initialize(Optional<u64> hub_view_id)
         case WebView::TabIndicator::UsingMicrophone:
             m_location_edit->set_microphone_in_use(visible);
             emit microphone_in_use_changed();
+            break;
+        case WebView::TabIndicator::UsingCamera:
+            // FIXME: Show the camera on the tab as well, as the microphone is.
+            m_location_edit->set_camera_in_use(visible);
             break;
         }
     };

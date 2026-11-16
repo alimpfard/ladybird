@@ -130,6 +130,7 @@ void MediaStream::add_track(JS::Object& global_object, GC::Ref<MediaStreamTrack>
 
     // 3. Add track to stream's track set.
     m_tracks.append(track);
+    notify_observers();
 
     // 4. Fire a track event named addtrack with track at stream.
     MediaStreamTrackEventInit event_init { {}, track };
@@ -145,6 +146,27 @@ void MediaStream::append_track(GC::Ref<MediaStreamTrack> track)
             return;
     }
     m_tracks.append(track);
+    notify_observers();
+}
+
+void MediaStream::add_observer(Observer& observer)
+{
+    m_observers.append(observer.make_weak_ptr());
+}
+
+void MediaStream::remove_observer(Observer& observer)
+{
+    m_observers.remove_all_matching([&](auto const& existing) { return !existing || existing.ptr() == &observer; });
+}
+
+void MediaStream::notify_observers()
+{
+    // An observer may stop observing while it is told.
+    auto observers = m_observers;
+    for (auto& observer : observers) {
+        if (observer)
+            observer->media_stream_tracks_changed();
+    }
 }
 
 // https://w3c.github.io/mediacapture-main/#dom-mediastream-removetrack
@@ -163,6 +185,7 @@ void MediaStream::remove_track(JS::Object& global_object, GC::Ref<MediaStreamTra
     });
     if (!removed)
         return;
+    notify_observers();
 
     // 4. Fire a track event named removetrack with track at stream.
     MediaStreamTrackEventInit event_init { {}, track };

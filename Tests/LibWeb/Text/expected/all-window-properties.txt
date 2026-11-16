@@ -103,6 +103,7 @@ CSSUnparsedValue
 CSSVariableReferenceValue
 Cache
 CacheStorage
+CanvasCaptureMediaStreamTrack
 CanvasGradient
 CanvasPattern
 CanvasRenderingContext2D

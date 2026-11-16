@@ -7,6 +7,7 @@
 #include <AK/ByteString.h>
 #include <LibAudio/RecordStream.h>
 #include <LibAudio/SampleSpecification.h>
+#include <LibCore/Timer.h>
 #include <LibGC/Heap.h>
 #include <LibGC/Weak.h>
 #include <LibJS/Runtime/Value.h>
@@ -17,6 +18,8 @@
 #include <LibWeb/HighResolutionTime/TimeOrigin.h>
 #include <LibWeb/MediaCapture/MediaDevices.h>
 #include <LibWeb/MediaCapture/MediaStreamTrack.h>
+#include <LibWeb/MediaCapture/VideoPictureSource.h>
+#include <LibWeb/MediaCapture/VideoTrackEncoder.h>
 #include <LibWeb/Page/Page.h>
 #include <LibWeb/WebIDL/Promise.h>
 
@@ -25,6 +28,8 @@ namespace Web::MediaCapture {
 GC_DEFINE_ALLOCATOR(MediaStreamTrack);
 
 Atomic<u64> MediaStreamTrack::s_next_provider_id { 1 };
+
+static constexpr auto VIDEO_REFRESH_INTERVAL = AK::Duration::from_seconds(1);
 
 // A single make-up gain point for audio delivered by this track's source.
 // FIXME: This is where the autoGainControl constraint belongs once constraint processing can
@@ -95,38 +100,47 @@ GC::Ref<MediaStreamTrack> MediaStreamTrack::create(MediaStreamTrackKind kind, Op
     // https://w3c.github.io/mediacapture-main/#dfn-create-a-mediastreamtrack
     // 1. Let track be a new object of type source's MediaStreamTrack source type.
     auto track = GC::Heap::the().allocate<MediaStreamTrack>();
-
-    // Initialize track with the following internal slots.
-    // FIXME: [[Source]], initialized to source.
-
-    // [[Id]]: See MediaStream.id attribute for guidelines on how to generate such an identifier.
-    track->m_id = Utf16String::from_utf8(Crypto::generate_random_uuid());
-
-    // [[Kind]]: "audio" if source is an audio source, or "video" if source is a video source.
-    track->m_kind = kind;
-
-    // [[Label]]: source label or empty string.
-    track->m_label = label.value_or({});
-
-    // [[ReadyState]]: "live".
-    track->m_state = MediaStreamTrackState::Live;
-
-    // [[Enabled]]: true.
-    track->m_enabled = true;
-
-    // [[Muted]]: true if source is muted, false otherwise.
-    track->m_muted = muted;
-    track->update_audio_silence_state();
-
-    // [[Capabilities]], [[Constraints]], and [[Settings]], all initialized as specified in the ConstrainablePattern.
-    // [[Restrictable]], initialized to false.
-    track->m_provider_id = s_next_provider_id.fetch_add(1, AK::MemoryOrder::memory_order_relaxed);
+    track->initialize_track(kind, move(label), muted);
 
     // FIXME: 2. If mediaDevicesToTieSourceTo is not null, tie track source to MediaDevices with source and mediaDevicesToTieSourceTo.
     // FIXME: 3. Run source's MediaStreamTrack source-specific construction steps with track as parameter.
 
     // 4. Return track.
     return track;
+}
+
+void MediaStreamTrack::initialize_track(MediaStreamTrackKind kind, Optional<Utf16String> label, bool muted)
+{
+    // Initialize track with the following internal slots.
+    // NB: [[Source]], initialized to source, is set by whoever makes the track, for the sources that are objects.
+
+    // [[Id]]: See MediaStream.id attribute for guidelines on how to generate such an identifier.
+    m_id = Utf16String::from_utf8(Crypto::generate_random_uuid());
+
+    // [[Kind]]: "audio" if source is an audio source, or "video" if source is a video source.
+    m_kind = kind;
+
+    // [[Label]]: source label or empty string.
+    m_label = label.value_or({});
+
+    // [[ReadyState]]: "live".
+    m_state = MediaStreamTrackState::Live;
+
+    // [[Enabled]]: true.
+    m_enabled = true;
+
+    // [[Muted]]: true if source is muted, false otherwise.
+    m_muted = muted;
+    update_audio_silence_state();
+
+    // [[Capabilities]], [[Constraints]], and [[Settings]], all initialized as specified in the ConstrainablePattern.
+    // [[Restrictable]], initialized to false.
+    m_provider_id = s_next_provider_id.fetch_add(1, AK::MemoryOrder::memory_order_relaxed);
+}
+
+GC::Ref<MediaStreamTrack> MediaStreamTrack::allocate_clone() const
+{
+    return GC::Heap::the().allocate<MediaStreamTrack>();
 }
 
 void MediaStreamTrack::set_settings(MediaTrackSettings settings)
@@ -157,11 +171,62 @@ void MediaStreamTrack::stop()
     // 3. Notify track's source that track is ended.
     // NB: Every track of a device holds a stream of it, and the process keeps the device's capture open while any does.
     stop_audio_capture();
+    stop_video_encoders();
+    m_last_video_picture = nullptr;
+    if (auto source = move(m_video_picture_source))
+        source->remove_track(*this);
 
     // 4. Set track's [[ReadyState]] to "ended".
     m_state = MediaStreamTrackState::Ended;
 
     update_audio_silence_state();
+}
+
+// https://w3c.github.io/mediacapture-main/#set-track-muted
+void MediaStreamTrack::set_muted(bool muted)
+{
+    // 1. If track.[[Muted]] is already newState, then abort these steps.
+    if (m_muted == muted)
+        return;
+
+    // 2. Set track.[[Muted]] to newState.
+    m_muted = muted;
+    update_audio_silence_state();
+
+    // 3. If newState is true let eventName be mute, otherwise unmute.
+    // 4. Fire an event named eventName on track.
+    dispatch_event(DOM::Event::create(muted ? HTML::EventNames::mute : HTML::EventNames::unmute,
+        HighResolutionTime::current_high_resolution_time(HTML::current_global_object())));
+}
+
+void MediaStreamTrack::set_onmute(WebIDL::CallbackType* callback)
+{
+    set_event_handler_attribute(HTML::EventNames::mute, callback);
+}
+
+WebIDL::CallbackType* MediaStreamTrack::onmute()
+{
+    return event_handler_attribute(HTML::EventNames::mute);
+}
+
+void MediaStreamTrack::set_onunmute(WebIDL::CallbackType* callback)
+{
+    set_event_handler_attribute(HTML::EventNames::unmute, callback);
+}
+
+WebIDL::CallbackType* MediaStreamTrack::onunmute()
+{
+    return event_handler_attribute(HTML::EventNames::unmute);
+}
+
+void MediaStreamTrack::set_onended(WebIDL::CallbackType* callback)
+{
+    set_event_handler_attribute(HTML::EventNames::ended, callback);
+}
+
+WebIDL::CallbackType* MediaStreamTrack::onended()
+{
+    return event_handler_attribute(HTML::EventNames::ended);
 }
 
 void MediaStreamTrack::end()
@@ -180,10 +245,12 @@ GC::Ref<MediaStreamTrack> MediaStreamTrack::clone() const
     // https://w3c.github.io/mediacapture-main/#clone-a-track
     // 1. Let track be the MediaStreamTrack object to be cloned.
     //
-    // FIXME: 2. Let source be track's [[Source]].
+    // 2. Let source be track's [[Source]].
+    // NB: Only the sources of pictures are objects. The clone is given this track's further down.
 
     // 3. Let trackClone be the result of creating a MediaStreamTrack with source and null.
-    auto track_clone = create(m_kind, m_label, m_muted);
+    auto track_clone = allocate_clone();
+    track_clone->initialize_track(m_kind, m_label, m_muted);
 
     // 4. Set trackClone's [[ReadyState]] to track's [[ReadyState]] value.
     track_clone->m_state = m_state;
@@ -205,8 +272,13 @@ GC::Ref<MediaStreamTrack> MediaStreamTrack::clone() const
         media_devices->track_was_cloned({}, track_clone);
         track_clone->m_media_devices = m_media_devices;
     }
-    if (track_clone->m_state == MediaStreamTrackState::Live && device_id().has_value())
+    if (track_clone->m_state == MediaStreamTrackState::Live && is_audio() && device_id().has_value())
         track_clone->start_audio_capture();
+    if (track_clone->m_state == MediaStreamTrackState::Live && m_video_picture_source) {
+        track_clone->set_video_picture_source(*m_video_picture_source);
+        // The clone shows what this track is showing, without waiting for the source to have something new.
+        track_clone->m_last_video_picture = m_last_video_picture;
+    }
 
     // 9. Return trackClone.
     return track_clone;
@@ -287,6 +359,172 @@ void MediaStreamTrack::remove_audio_sink(AudioFrameSink const& sink)
 void MediaStreamTrack::deliver_audio_frames(float const* samples, size_t frame_count, u8 channel_count, u32 sample_rate)
 {
     m_audio_fanout->deliver(samples, frame_count, channel_count, sample_rate);
+}
+
+void MediaStreamTrack::add_video_sink(NonnullRefPtr<VideoFrameSink> sink)
+{
+    sink->needs_key_frame = true;
+    m_video_sinks.append(move(sink));
+    request_video_key_frame();
+}
+
+void MediaStreamTrack::remove_video_sink(VideoFrameSink const& sink)
+{
+    m_video_sinks.remove_first_matching([&](auto const& existing) { return existing.ptr() == &sink; });
+    stop_unwanted_video_encoders();
+}
+
+void MediaStreamTrack::deliver_video_frame(EncodedVideoFrame const& frame)
+{
+    // FIXME: A muted or disabled track should render black frames rather than nothing.
+    //        https://w3c.github.io/mediacapture-main/#dfn-enabled
+    auto is_rendering = m_enabled && !m_muted && m_state == MediaStreamTrackState::Live;
+
+    auto key_frame_is_needed = false;
+    // A sink may remove itself, or add another, while it is given the frame.
+    auto sinks = m_video_sinks;
+    for (auto const& sink : sinks) {
+        if (!is_rendering) {
+            sink->needs_key_frame = true;
+            continue;
+        }
+        if (sink->needs_key_frame && !frame.is_key_frame) {
+            key_frame_is_needed = true;
+            continue;
+        }
+        sink->needs_key_frame = false;
+        if (sink->on_frame)
+            sink->on_frame(frame);
+    }
+    if (key_frame_is_needed)
+        request_video_key_frame();
+}
+
+void MediaStreamTrack::request_video_key_frame()
+{
+    if (m_video_picture_source) {
+        for (auto& [_, encoder] : m_video_encoders)
+            encoder->request_key_frame();
+        // The source may not have another picture for a while: a canvas has one when it is next drawn to.
+        encode_last_video_picture();
+        return;
+    }
+    if (on_video_key_frame_requested)
+        on_video_key_frame_requested();
+}
+
+void MediaStreamTrack::set_video_picture_source(NonnullRefPtr<VideoPictureSource> source)
+{
+    VERIFY(is_video());
+    VERIFY(!m_video_picture_source);
+    m_video_picture_source = source;
+    source->add_track(*this);
+}
+
+void MediaStreamTrack::deliver_video_picture(NonnullRefPtr<Media::I420Picture> picture)
+{
+    if (m_state != MediaStreamTrackState::Live)
+        return;
+    m_last_video_picture = move(picture);
+    encode_last_video_picture();
+}
+
+// The codec a sink gets a track's pictures in when it doesn't ask for one.
+static Media::CodecID codec_for(VideoFrameSink const& sink)
+{
+    return sink.codec.value_or(VideoTrackEncoder::supported_codecs().first());
+}
+
+// Everything that takes a track's video takes it encoded: an element plays it through a pipeline in another process,
+// which decodes what it is sent, and a sender sends it. A sender says which codec it sends.
+// FIXME: A sender should encode for itself, at the bitrate that was negotiated for it and that the network allows.
+void MediaStreamTrack::encode_last_video_picture()
+{
+    if (!m_last_video_picture || m_video_sinks.is_empty())
+        return;
+    // FIXME: A muted or disabled track should render black frames rather than nothing.
+    //        https://w3c.github.io/mediacapture-main/#dfn-enabled
+    if (!m_enabled || m_muted)
+        return;
+
+    auto now = MonotonicTime::now();
+    if (!m_first_video_picture_time.has_value())
+        m_first_video_picture_time = now;
+    m_last_video_encode_time = now;
+
+    for (auto const& sink : m_video_sinks) {
+        auto codec = codec_for(sink);
+        if (m_video_encoders.contains(codec))
+            continue;
+        m_video_encoders.set(codec, VideoTrackEncoder::create(codec, [weak_track = GC::Weak { *this }](Media::CodecID codec_id, bool is_key_frame, AK::Duration timestamp, ByteBuffer data) {
+            if (auto track = weak_track.ptr())
+                track->deliver_encoded_video_picture({ .codec_id = codec_id, .is_key_frame = is_key_frame, .timestamp = timestamp, .data = data.bytes() });
+        }));
+    }
+    for (auto& [_, encoder] : m_video_encoders)
+        encoder->encode(*m_last_video_picture, now - *m_first_video_picture_time);
+
+    // Repeat the last picture of an idle source so receivers can distinguish it from a lost stream and detect gaps.
+    if (!m_video_refresh_timer) {
+        m_video_refresh_timer = Core::Timer::create_repeating(VIDEO_REFRESH_INTERVAL, [weak_track = GC::Weak { *this }] {
+            auto track = weak_track.ptr();
+            if (track && MonotonicTime::now() - track->m_last_video_encode_time >= VIDEO_REFRESH_INTERVAL)
+                track->encode_last_video_picture();
+        });
+        m_video_refresh_timer->start();
+    }
+}
+
+void MediaStreamTrack::deliver_encoded_video_picture(EncodedVideoFrame const& frame)
+{
+    auto is_rendering = m_enabled && !m_muted && m_state == MediaStreamTrackState::Live;
+    auto key_frame_is_needed = false;
+    // A sink may remove itself, or add another, while it is given the frame.
+    auto sinks = m_video_sinks;
+    for (auto const& sink : sinks) {
+        if (codec_for(sink) != frame.codec_id)
+            continue;
+        if (!is_rendering) {
+            sink->needs_key_frame = true;
+            continue;
+        }
+        if (sink->needs_key_frame && !frame.is_key_frame) {
+            key_frame_is_needed = true;
+            continue;
+        }
+        sink->needs_key_frame = false;
+        if (sink->on_frame)
+            sink->on_frame(frame);
+    }
+    if (!key_frame_is_needed)
+        return;
+    // NB: The encoder has the picture this frame was made from, so it isn't given another to make the key frame from
+    //     unless the source has stopped giving them; the refresh sees to that.
+    if (auto encoder = m_video_encoders.get(frame.codec_id); encoder.has_value())
+        (*encoder)->request_key_frame();
+}
+
+void MediaStreamTrack::stop_unwanted_video_encoders()
+{
+    Vector<Media::CodecID> unwanted;
+    for (auto& [codec, _] : m_video_encoders) {
+        if (!m_video_sinks.contains([&](auto const& sink) { return codec_for(sink) == codec; }))
+            unwanted.append(codec);
+    }
+    for (auto codec : unwanted) {
+        if (auto encoder = m_video_encoders.take(codec); encoder.has_value())
+            (*encoder)->stop();
+    }
+    if (m_video_encoders.is_empty())
+        m_video_refresh_timer = nullptr;
+}
+
+void MediaStreamTrack::stop_video_encoders()
+{
+    m_video_refresh_timer = nullptr;
+    for (auto& [_, encoder] : m_video_encoders)
+        encoder->stop();
+    m_video_encoders.clear();
 }
 
 void MediaStreamTrack::start_audio_capture(GC::Ptr<GC::Function<void(ErrorOr<void>)>> on_started)
@@ -378,6 +616,15 @@ void MediaStreamTrack::audio_source_ended()
         media_devices->track_source_ended({}, *this);
 }
 
+void MediaStreamTrack::video_source_ended()
+{
+    // A track that some MediaDevices made ends in a task, with its ended event; any other has nobody to tell.
+    if (auto media_devices = m_media_devices.ptr())
+        media_devices->track_source_ended({}, *this);
+    else
+        end();
+}
+
 void MediaStreamTrack::stop_audio_capture()
 {
     m_audio_capture_start_pending = false;
@@ -393,6 +640,9 @@ void MediaStreamTrack::finalize()
     // the callback only references the atomically ref-counted fan-out, never this GC-managed
     // track.
     stop_audio_capture();
+    stop_video_encoders();
+    if (auto source = move(m_video_picture_source))
+        source->remove_track(*this);
 }
 
 }

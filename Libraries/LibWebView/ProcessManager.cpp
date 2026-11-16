@@ -35,6 +35,8 @@ ProcessType process_type_from_name(StringView name)
         return ProcessType::MediaServer;
     if (name == "AudioServer"sv)
         return ProcessType::AudioServer;
+    if (name == "CameraServer"sv)
+        return ProcessType::CameraServer;
     if (name == "VideoDecoderServer"sv)
         return ProcessType::VideoDecoderServer;
     if (name == "WebRTCClient"sv)
@@ -65,6 +67,8 @@ StringView process_name_from_type(ProcessType type)
         return "MediaServer"sv;
     case ProcessType::AudioServer:
         return "AudioServer"sv;
+    case ProcessType::CameraServer:
+        return "CameraServer"sv;
     case ProcessType::VideoDecoderServer:
         return "VideoDecoderServer"sv;
     case ProcessType::WebRTCClient:

@@ -46,6 +46,9 @@ pub(crate) struct PermissionDescriptor {
 
 impl PermissionName {
     pub(crate) fn from_name(name: &Utf16String) -> Option<Self> {
+        if *name == "camera" {
+            return Some(Self::Camera);
+        }
         if *name == "geolocation" {
             return Some(Self::Geolocation);
         }

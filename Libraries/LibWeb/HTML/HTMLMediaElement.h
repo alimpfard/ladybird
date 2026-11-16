@@ -313,6 +313,7 @@ private:
 
     void on_audio_track_added(Media::Track const&);
     void on_video_track_added(Media::Track const&);
+    void on_media_stream_track_added(Media::Track const&);
     void on_metadata_parsed(SourceType);
     void on_playback_manager_state_change();
     void upon_current_playback_position_possibly_changed();

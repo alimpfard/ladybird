@@ -7,6 +7,7 @@
 #pragma once
 
 #include <LibWeb/Bindings/MediaStreamTrack.h>
+#include <LibWeb/Bindings/RTCRtpSender.h>
 #include <LibWeb/Bindings/Wrappable.h>
 #include <LibWeb/Forward.h>
 
@@ -21,6 +22,8 @@ class RTCRtpReceiver final : public Bindings::GCAllocatedWrappable {
 public:
     static GC::Ref<RTCRtpReceiver> create(Bindings::MediaStreamTrackKind);
     virtual ~RTCRtpReceiver() override;
+
+    static Optional<Bindings::RTCRtpCapabilities> get_capabilities(Utf16View kind);
 
     GC::Ref<MediaCapture::MediaStreamTrack> track() const;
 

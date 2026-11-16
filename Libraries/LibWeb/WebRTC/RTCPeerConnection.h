@@ -22,6 +22,13 @@
 #include <LibWeb/Forward.h>
 #include <LibWeb/MediaCapture/MediaStreamTrack.h>
 #include <LibWeb/WebIDL/Promise.h>
+#include <LibWeb/WebRTC/EncodedFrame.h>
+
+namespace WebRTCClient {
+
+struct TransceiverState;
+
+}
 
 namespace Web::WebRTC {
 
@@ -120,11 +127,14 @@ public:
     void on_remote_track_added(u64 receiver_id, u64 transceiver_id, String kind, Vector<String> stream_ids);
     void on_remote_track_ended(u64 receiver_id);
     void on_encoded_audio_frame_received(u64 receiver_id, u32 ssrc, u32 rtp_timestamp, u16 sequence_number, u8 payload_type, ByteBuffer payload);
-    void on_audio_track_ssrc_assigned(u64 sender_id, u32 ssrc);
+    void on_encoded_video_frame_received(u64 receiver_id, u32 ssrc, u32 rtp_timestamp, u8 payload_type, String codec, bool is_key_frame, ByteBuffer payload);
+    void on_sender_track_ready(u64 sender_id, u32 ssrc);
+    void on_video_sender_codec(u64 sender_id, String codec, u8 payload_type);
+    void on_key_frame_requested(u64 sender_id);
     void on_create_offer_result_received(u64 request_id, bool ok, String sdp_type, String sdp, String error_kind, String error_message);
     void on_create_answer_result_received(u64 request_id, bool ok, String sdp_type, String sdp, String error_kind, String error_message);
-    void on_set_local_description_result_received(u64 request_id, bool ok, String error_kind, String error_message);
-    void on_set_remote_description_result_received(u64 request_id, bool ok, String error_kind, String error_message);
+    void on_set_local_description_result_received(u64 request_id, bool ok, String error_kind, String error_message, Vector<WebRTCClient::TransceiverState>);
+    void on_set_remote_description_result_received(u64 request_id, bool ok, String error_kind, String error_message, Vector<WebRTCClient::TransceiverState>);
     void on_add_ice_candidate_result_received(u64 request_id, bool ok, String error_kind, String error_message);
     void on_remote_data_channel_received(u64 channel_id, String label, bool ordered, Optional<u16> max_packet_life_time, Optional<u16> max_retransmits, String protocol, bool negotiated, Optional<u16> id);
 
@@ -204,6 +214,7 @@ private:
     HashMap<u64, PendingDescription> m_pending_description_payloads;
     bool is_setting_local_description() const;
     void settle_local_description(u64 request_id, bool ok, String const& error_message);
+    void update_transceivers(Vector<WebRTCClient::TransceiverState> const&);
     // ICE events the helper sent before the local description they follow was set; see on_ice_candidate_received().
     Vector<Function<void()>> m_held_ice_events;
     // [[LastCreatedAnswer]]
@@ -222,6 +233,21 @@ private:
     HashMap<u64, NonnullOwnPtr<Media::AudioDecoder>> m_receiver_audio_decoders;
     Vector<float> m_decoded_audio_scratch;
     void feed_decoded_audio(u64 receiver_id, ByteBuffer payload, u32 rtp_timestamp);
+
+    // Received video stays encoded on its way to the receiver's track, and is decoded by whatever plays the track.
+    struct ReceivedVideo {
+        // RTP timestamps wrap around every 13 hours or so, and are counted on from the first one delivered.
+        Optional<u32> last_rtp_timestamp;
+        i64 elapsed_rtp_ticks { 0 };
+        // Frames are numbered as they arrive. Each one but a key frame needs the one before it, so when a transform
+        // doesn't hand a frame back, the ones after it are of no use until the next key frame.
+        u64 next_frame_id { 0 };
+        Optional<u64> last_delivered_frame_id;
+        bool has_requested_key_frame { false };
+    };
+    HashMap<u64, ReceivedVideo> m_received_video;
+    HashTable<u64> m_receivers_with_undeliverable_video;
+    void deliver_received_video_frame(u64 receiver_id, EncodedFrame);
 
     // The track may outlive this connection, so its producer callback owns this state independently.
     struct OutgoingAudioProducerState : public AtomicRefCounted<OutgoingAudioProducerState> {
@@ -242,11 +268,39 @@ private:
         u16 next_sequence_number { 0 };
     };
     HashMap<u64, NonnullOwnPtr<OutgoingAudioPipeline>> m_outgoing_audio_pipelines;
-    HashTable<u64> m_requested_audio_senders;
-    HashTable<u64> m_ready_audio_senders;
+    // The senders that the backend has been asked to make ready to send, and those it has.
+    HashTable<u64> m_requested_senders;
+    HashTable<u64> m_ready_senders;
     void start_outgoing_audio_for_sender(GC::Ref<RTCRtpSender>);
     void encode_and_route_outgoing_pcm(u64 sender_id, ByteBuffer pcm_s16le);
-    void on_outgoing_encrypted_frame(u64 sender_id, ByteBuffer payload, u32 rtp_timestamp, u16 sequence_number, u8 payload_type);
+    void on_outgoing_encrypted_frame(u64 sender_id, EncodedFrame);
+
+    // The codec that each video sender was told to send in, and the payload type it goes out under.
+    struct SentVideoCodec {
+        Media::CodecID codec { Media::CodecID::Unknown };
+        u8 payload_type { 0 };
+    };
+
+    // A sender's video comes from its track already encoded, and goes out as it comes, by way of the sender's
+    // transform if it has one.
+    struct OutgoingVideo {
+        RefPtr<MediaCapture::VideoFrameSink> sink;
+        GC::Ptr<MediaCapture::MediaStreamTrack> track;
+        // Frames are stamped with how long after the first one they were captured.
+        Optional<AK::Duration> first_timestamp;
+        u64 next_frame_id { 0 };
+        u16 next_sequence_number { 0 };
+        // The backend moves its clock on by a duration after each frame, which is the time from the frame before.
+        Optional<u32> last_sent_rtp_timestamp;
+        SentVideoCodec codec;
+        bool has_warned_about_codec { false };
+    };
+    HashMap<u64, OutgoingVideo> m_outgoing_video;
+    HashMap<u64, SentVideoCodec> m_sender_video_codecs;
+    GC::Ptr<RTCRtpSender> find_sender(u64 sender_id) const;
+    void start_outgoing_video_for_sender(GC::Ref<RTCRtpSender>);
+    void stop_outgoing_video_for_sender(u64 sender_id);
+    void route_outgoing_video_frame(u64 sender_id, MediaCapture::EncodedVideoFrame const&);
 };
 
 }

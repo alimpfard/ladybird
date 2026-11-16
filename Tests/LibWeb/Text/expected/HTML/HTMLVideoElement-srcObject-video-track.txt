@@ -1,0 +1,11 @@
+track: video, live
+duration: Infinity
+seekable ranges: 0
+video tracks: 1, selected: true
+size: 64x36
+frames were presented
+currentTime advanced: true
+ended: false
+seeking: false
+frames were presented after pausing
+most frames were shown: true
