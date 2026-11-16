@@ -47,6 +47,7 @@
         "swresample",
         "dav1d",
         "opus",
+        "vpx",
         "zlib",
         "ladybird-components",
         {
@@ -110,6 +111,7 @@
         "simd"
       ]
     },
+    "libyuv",
     "llvm-libc",
     {
       "name": "mman",
@@ -361,6 +363,10 @@
     {
       "name": "libwebp",
       "version": "1.6.0#3"
+    },
+    {
+      "name": "libyuv",
+      "version": "1916#0"
     },
     {
       "name": "llvm-libc",
