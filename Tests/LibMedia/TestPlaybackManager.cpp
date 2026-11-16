@@ -11,6 +11,7 @@
 #include <LibCore/Timer.h>
 #include <LibMedia/DecoderRegistrations.h>
 #include <LibMedia/IncrementallyPopulatedStream.h>
+#include <LibMedia/LiveDemuxer.h>
 #include <LibMedia/PlaybackManager.h>
 #include <LibMedia/Sinks/AudioOutputFactory.h>
 #include <LibTest/TestCase.h>
@@ -133,6 +134,44 @@ TEST_CASE(seek_after_pausing_at_the_end_stays_paused)
     manager->seek(AK::Duration::zero(), Media::SeekMode::Accurate);
     EXPECT(spin_until(loop, [&] { return manager->state() != Media::PlaybackState::Seeking; }, AK::Duration::from_seconds(2)));
     EXPECT_EQ(manager->state(), Media::PlaybackState::Paused);
+}
+
+// A live source needs nothing but the playback it is added to: no other process, and no connection to one.
+TEST_CASE(a_live_source_plays_as_it_is_given_audio)
+{
+    auto& loop = never_destroyed_event_loop();
+    auto manager = Media::PlaybackManager::create(Media::AudioOutputFactory::create_null());
+
+    Audio::SampleSpecification sample_specification { 48'000, Audio::ChannelMap::mono() };
+    auto live_source = Media::LiveDemuxer::create_for_audio(1, sample_specification);
+    bool source_added = false;
+    manager->add_live_source(live_source)->when_resolved([&](auto&) { source_added = true; });
+    EXPECT(spin_until(loop, [&] { return source_added; }, AK::Duration::from_seconds(2)));
+    if (manager->audio_tracks().is_empty()) {
+        FAIL("Expected an audio track");
+        return;
+    }
+    manager->enable_an_audio_track(manager->audio_tracks()[0], Media::PlaybackManager::ResumeEndedPlayback::No);
+    manager->start();
+    manager->play();
+
+    // A tenth of a second of audio at a time, for as long as it takes playback to get half a second in.
+    Vector<float> samples;
+    samples.resize(4'800);
+    auto feed = Core::Timer::create_repeating(AK::Duration::from_milliseconds(100), [&] {
+        live_source->push_audio({ samples.data(), samples.size() * sizeof(float) });
+    });
+    feed->start();
+    EXPECT(spin_until(loop, [&] { return manager->current_time() >= AK::Duration::from_milliseconds(500); }, AK::Duration::from_seconds(5)));
+    EXPECT_EQ(manager->state(), Media::PlaybackState::Playing);
+
+    // What arrives is placed where playback has got to, and no earlier.
+    EXPECT(live_source->audio_end_time() >= manager->current_time());
+
+    // Once the source has ended and played out, so has the playback.
+    feed->stop();
+    live_source->end();
+    EXPECT(spin_until(loop, [&] { return manager->state() == Media::PlaybackState::Ended; }, AK::Duration::from_seconds(5)));
 }
 
 }

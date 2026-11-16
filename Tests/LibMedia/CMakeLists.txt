@@ -26,6 +26,7 @@ set(TEST_SOURCES
     TestID3.cpp
     TestIncrementallyPopulatedStream.cpp
     TestISOBMFF.cpp
+    TestLiveDemuxer.cpp
     TestMatroskaDemuxer.cpp
     TestMediaSupport.cpp
     TestMediaTime.cpp
@@ -42,6 +43,7 @@ set(TEST_SOURCES
     TestRemoteVideoNode.cpp
     TestSourceBufferDemuxer.cpp
     TestTimeRanges.cpp
+    TestVideoEncoder.cpp
     TestVideoFramePool.cpp
     TestVorbisDecode.cpp
     TestVP9Decode.cpp

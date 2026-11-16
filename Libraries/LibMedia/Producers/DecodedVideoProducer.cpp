@@ -250,7 +250,7 @@ DecoderErrorOr<void> DecodedVideoProducer::ThreadData::create_decoder_for_frame(
     if (!selection.has_value())
         return DecoderError::format(DecoderErrorCategory::NotImplemented, "Could not find a video decoder for codec {}", frame.codec_id());
 
-    m_decoder = TRY(create_video_decoder(selection, frame.codec_id(), *codec_initialization_data));
+    m_decoder = TRY(create_video_decoder(selection, frame.codec_id(), *codec_initialization_data, m_demuxer->decoder_latency()));
     m_decoder_selection = selection;
     // Only the decode thread waits for storage, so a release on the decode thread itself never needs a wake:
     // its next attempt to take output comes after this release in program order.
